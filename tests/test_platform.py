@@ -335,6 +335,28 @@ def test_external_platform_contract_inventory_needs_no_runtime_root(
     assert not platform.simulation.default.file.bound
 
 
+def test_asset_free_external_platform_is_not_runtime_bound(
+    tmp_path: Path,
+) -> None:
+    write_project_context(tmp_path)
+    write_test_platform(tmp_path)
+    manifest = tmp_path / "configs/platform/testpdk/platform.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8")
+        .replace('simulation = "simulation.toml"\n', "")
+        .replace(
+            "\n[contracts]\n",
+            '\nasset_scope = "external"\n\n[contracts]\n',
+        ),
+        encoding="utf-8",
+    )
+
+    platform = load_platform(Project.open(tmp_path), "testpdk")
+
+    assert platform.assets == ()
+    assert not platform.runtime_bound
+
+
 def test_external_platform_model_cannot_traverse_a_symlink(
     tmp_path: Path,
 ) -> None:

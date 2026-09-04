@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
-import sys
 from types import MappingProxyType
 from typing import Mapping
 
@@ -151,6 +151,7 @@ def build_layout_plan_from_sources(
     *,
     project_root: Path,
     generator_source: Path,
+    python_executable: Path,
 ) -> LayoutPlan:
     """Run sealed owner code through the JSON subprocess boundary."""
 
@@ -158,8 +159,11 @@ def build_layout_plan_from_sources(
         raise TypeError("layout generator input must be LayoutGeneratorInput")
     root = project_root.resolve()
     source = generator_source.absolute()
+    executable = Path(python_executable).absolute()
     if source != source.resolve() or not source.is_relative_to(root):
         raise ValueError("layout generator must be inside the sealed project")
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        raise ValueError("layout generator Python must be an explicit executable")
     request = {
         "schema": 1,
         "project_root": str(root),
@@ -174,7 +178,7 @@ def build_layout_plan_from_sources(
         completed = managed_process.run(
             ProcessRequest(
                 argv=(
-                    sys.executable,
+                    str(executable),
                     "-I",
                     "-B",
                     "-m",

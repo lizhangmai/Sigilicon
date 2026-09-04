@@ -38,6 +38,7 @@ artifact_root = "artifacts"
 [runtime.directories]
 "release-store.fixture" = "{root / 'artifacts/release-store'}"
 "release-store.native-provider" = "{root / 'artifacts/release-store'}"
+"release-store.rtl-fixture" = "{root / 'artifacts/release-store'}"
 """,
         encoding="utf-8",
     )

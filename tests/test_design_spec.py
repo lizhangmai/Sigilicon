@@ -7,6 +7,7 @@ import pytest
 from conftest import write_component_owner
 from sigilicon.domain.design import load_design_spec, resolve_design_spec
 from sigilicon.project import Project
+from sigilicon.workflows.design_lifecycle import inspect_design
 
 
 def test_design_loader_rejects_project_escape_and_symlink(
@@ -122,3 +123,12 @@ def test_design_spec_preserves_and_resolves_its_source_document(
     with pytest.raises(ValueError, match="source document drift"):
         resolve_design_spec(path, project=project, snapshot=spec)
     spec.source_netlist.write_text(source_text, encoding="utf-8")
+
+
+def test_design_inspection_reports_the_model_path(project_factory) -> None:
+    root, path = project_factory()
+    inspection = inspect_design(path, project=Project.open(root))
+
+    assert inspection.as_dict()["pdk"]["model_file"] == str(
+        root / "configs/platform/testpdk/model.scs"
+    )

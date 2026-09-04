@@ -37,6 +37,11 @@ class DesignInspection:
 
     def as_dict(self) -> dict[str, object]:
         model = self.spec.pdk.simulation.default
+        model_file = (
+            model.file.require_path()
+            if model.file.bound
+            else model.file.logical
+        )
         return {
             "passed": True,
             "library": self.spec.library,
@@ -47,7 +52,7 @@ class DesignInspection:
             "pdk": {
                 "name": self.spec.pdk.name,
                 "technology_library": self.spec.pdk.oa.technology_library,
-                "model_file": str(model.file),
+                "model_file": str(model_file),
                 "model_section": model.single_section,
             },
         }

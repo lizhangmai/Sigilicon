@@ -45,6 +45,7 @@ from sigilicon.virtuoso.bridge import (
 _XRUN = "cadence.xrun"
 _XSTREAM = "cadence.xstream"
 _CALIBRE = "mentor.calibre"
+_PYTHON = "runtime.python"
 _OA_CAPABILITIES = frozenset({"tool.virtuoso-bridge", "license.cadence-oa"})
 _OA_TEXT_VIEW_KINDS = frozenset({"spectre_model", "veriloga", "system_verilog"})
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -168,16 +169,17 @@ def _bridge_check(resources: Resources) -> PreflightCheck:
 
 
 def _oa_runtime_executables(planning: Any, operation: str) -> tuple[str, ...]:
-    if operation != "rebuild":
-        return ()
     required: list[str] = []
-    if getattr(planning, "designs", ()) or getattr(planning, "testbenches", ()):
-        required.append(CADENCE_SPICEIN_TOOL)
-    if any(
-        item.view.kind in _OA_TEXT_VIEW_KINDS
-        for item in getattr(planning, "views", ())
-    ):
-        required.append(CADENCE_TEXT_IMPORT_TOOL)
+    if operation in {"check", "rebuild"}:
+        required.append(_PYTHON)
+    if operation == "rebuild":
+        if getattr(planning, "designs", ()) or getattr(planning, "testbenches", ()):
+            required.append(CADENCE_SPICEIN_TOOL)
+        if any(
+            item.view.kind in _OA_TEXT_VIEW_KINDS
+            for item in getattr(planning, "views", ())
+        ):
+            required.append(CADENCE_TEXT_IMPORT_TOOL)
     return tuple(required)
 
 
@@ -872,6 +874,7 @@ class NativeOaAdapter(_CadenceDomainAdapter):
         return (
             _bridge_check(resources),
             _executable_check(resources, CADENCE_VIRTUOSO_TOOL),
+            _executable_check(resources, _PYTHON),
             *_capability_checks(resources, _OA_CAPABILITIES),
         )
 
@@ -930,7 +933,11 @@ class NativeOaAdapter(_CadenceDomainAdapter):
                 required,
                 resources,
             ),
-            runtime_identities=(*_BRIDGE_RESOURCES, CADENCE_VIRTUOSO_TOOL),
+            runtime_identities=(
+                *_BRIDGE_RESOURCES,
+                CADENCE_VIRTUOSO_TOOL,
+                _PYTHON,
+            ),
         )
 
     def run(self, context: ExecutionIO) -> StepResult:
@@ -947,6 +954,7 @@ class NativeOaAdapter(_CadenceDomainAdapter):
             prepared.plan,
             source_paths=prepared.source_paths(context),
             workspace=context.workspace("layout-ir", {}),
+            python_executable=context.runtime.require_tool(_PYTHON),
         )
         matches = tuple(item for item in plan.testbenches if item.cell == testbench)
         if len(matches) != 1:
@@ -1059,7 +1067,11 @@ class _OaAdapter(_CadenceDomainAdapter):
         if prepared:
             selected = prepared.get("runtime_executables")
             if not isinstance(selected, tuple) or any(
-                item not in {CADENCE_SPICEIN_TOOL, CADENCE_TEXT_IMPORT_TOOL}
+                item not in {
+                    CADENCE_SPICEIN_TOOL,
+                    CADENCE_TEXT_IMPORT_TOOL,
+                    _PYTHON,
+                }
                 for item in selected
             ):
                 raise ContractError(
@@ -1164,6 +1176,7 @@ class _OaAdapter(_CadenceDomainAdapter):
                 planning,
                 source_paths=prepared.source_paths(context),
                 workspace=context.workspace("layout-ir", {}),
+                python_executable=context.runtime.require_tool(_PYTHON),
             )
         selected = None
         if self.spec.requires_testbench:
@@ -1255,6 +1268,7 @@ class LayoutAdapter(_CadenceDomainAdapter):
         _positive_integer(config, "timeout_seconds")
         return (
             _bridge_check(resources),
+            _executable_check(resources, _PYTHON),
             *_capability_checks(resources, _OA_CAPABILITIES),
         )
 
@@ -1299,7 +1313,7 @@ class LayoutAdapter(_CadenceDomainAdapter):
             prepared=prepared_identity,
             source_records=planning.source_records,
             resource_identities=platform_resource_identities(planning.spec.pdk),
-            runtime_identities=_BRIDGE_RESOURCES,
+            runtime_identities=(*_BRIDGE_RESOURCES, _PYTHON),
         )
 
     def run(self, context: ExecutionIO) -> StepResult:
@@ -1311,6 +1325,7 @@ class LayoutAdapter(_CadenceDomainAdapter):
             prepared.plan,
             source_paths=prepared.source_paths(context),
             workspace=context.workspace("layout-ir", {}),
+            python_executable=context.runtime.require_tool(_PYTHON),
         )
         return self._execute(context, planning)
 
@@ -1394,6 +1409,7 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
         _positive_integer(config, "calibre_timeout_seconds")
         return (
             _bridge_check(resources),
+            _executable_check(resources, _PYTHON),
             _executable_check(resources, _XSTREAM),
             _executable_check(resources, _CALIBRE),
             *_capability_checks(resources, _OA_CAPABILITIES),
@@ -1450,7 +1466,7 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
             source_records=planning.source_records,
             resource_identities=platform_resource_identities(planning.spec.pdk),
             extra_resources=(planning.spec.layout_pdk.layermap.require_path(), deck),
-            runtime_identities=(*_BRIDGE_RESOURCES, _XSTREAM, _CALIBRE),
+            runtime_identities=(*_BRIDGE_RESOURCES, _PYTHON, _XSTREAM, _CALIBRE),
         )
 
     def run(self, context: ExecutionIO) -> StepResult:
@@ -1464,6 +1480,7 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
             prepared.plan,
             source_paths=prepared.source_paths(context),
             workspace=context.workspace("layout-ir", {}),
+            python_executable=context.runtime.require_tool(_PYTHON),
         )
         return self._execute(
             context,

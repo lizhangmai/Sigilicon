@@ -122,6 +122,7 @@ def build_managed_layout_ir(
     *,
     source_paths: Mapping[Path, Path],
     workspace: ExecutionWorkspace,
+    python_executable: Path,
 ) -> LayoutPlanningResult:
     """Generate LayoutIR from sealed inputs inside one managed work tree."""
 
@@ -189,6 +190,7 @@ def build_managed_layout_ir(
         generator_input,
         project_root=root,
         generator_source=bound(planning.spec.generator_source),
+        python_executable=python_executable,
     )
     return with_layout_ir(planning, plan)
 

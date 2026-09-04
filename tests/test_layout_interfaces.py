@@ -117,6 +117,7 @@ def build_layout_plan(spec):
         spec,
         project_root=project_root,
         generator_source=generator,
+        python_executable=Path(sys.executable),
     ).dbu_per_micron == 1007
     assert str(project_root) not in sys.path
     assert Path.cwd() == outside
@@ -126,6 +127,7 @@ def build_layout_plan(spec):
         spec,
         project_root=project_root,
         generator_source=generator,
+        python_executable=Path(sys.executable),
     ).dbu_per_micron == 1011
 
 
@@ -214,6 +216,7 @@ def build_layout_plan(spec):
             log_root=tmp_path / "managed/logs",
             source={},
         ),
+        python_executable=Path(sys.executable),
     )
 
     assert managed.plan is not None
@@ -252,6 +255,7 @@ def test_layout_generator_cannot_import_unsealed_project_module(
             spec,
             project_root=managed_root,
             generator_source=generator,
+            python_executable=Path(sys.executable),
         )
     assert Path.cwd() == source_root
 
@@ -287,6 +291,7 @@ def test_layout_generator_discards_unsealed_namespace_package(
             spec,
             project_root=managed_root,
             generator_source=generator,
+            python_executable=Path(sys.executable),
         )
 
 
@@ -321,6 +326,7 @@ def test_explicit_source_exclusion_wins_inside_runtime_prefix(
             spec,
             project_root=managed_root,
             generator_source=generator,
+            python_executable=Path(sys.executable),
         )
 
 

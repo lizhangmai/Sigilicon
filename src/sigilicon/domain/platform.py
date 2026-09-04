@@ -203,6 +203,8 @@ class Platform:
     def runtime_bound(self) -> bool:
         """Whether external asset paths were resolved for this invocation."""
 
+        if self.asset_root_resource is not None and self.asset_root is None:
+            return False
         return all(asset.bound for asset in self.assets)
 
     @property

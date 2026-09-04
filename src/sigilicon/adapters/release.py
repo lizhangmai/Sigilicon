@@ -28,6 +28,7 @@ from sigilicon.workflows.ip_packaging import (
     _publish_ip_release,
     plan_ip_release,
 )
+from sigilicon.release_store import release_store_resource
 
 
 def _text(config: Mapping[str, Any], name: str) -> str:
@@ -124,15 +125,17 @@ class IpReleaseAdapter:
             source = Source.capture(original, root=root, scope=scope)
             sources[original] = (scope, source.path, source.sha256)
             captured.append(source)
+        store_identity = release_store_resource(str(release.record["release_store"]))
         action = _ReleaseAction(
             release,
             sources,
-            project.artifact_root / "release-store",
+            _resources.require_directory(store_identity),
         )
         planned = _bind_step(
             step,
             action=action,
             source_closure=tuple(captured),
+            resource_closure=(_resources.capture(store_identity),),
         )
         self.preflight(planned, _resources)
         return planned

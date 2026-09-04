@@ -941,6 +941,7 @@ def build_oa_layout_ir(
     *,
     source_paths: Mapping[Path, Path],
     workspace: ExecutionWorkspace,
+    python_executable: Path,
 ) -> OALibraryRebuildPlan:
     """Generate every owner layout from sealed sources during managed execution."""
 
@@ -953,6 +954,7 @@ def build_oa_layout_ir(
                 workspace=workspace.scoped(
                     f"{index:03d}-{step.spec.cell}-{step.spec.view}"
                 ),
+                python_executable=python_executable,
             ),
         )
         for index, step in enumerate(plan.layouts)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -400,7 +401,11 @@ def _oa_context(
             capabilities=frozenset(
                 {"tool.virtuoso-bridge", "license.cadence-oa"}
             ),
-            tools={"cadence.virtuoso": str(virtuoso), **(tools or {})},
+            tools={
+                "cadence.virtuoso": str(virtuoso),
+                "runtime.python": sys.executable,
+                **(tools or {}),
+            },
             values={
                 "virtuoso-bridge.host": "127.0.0.1",
                 "virtuoso-bridge.port": "65432",
@@ -449,7 +454,10 @@ def test_native_oa_preflight_requires_explicit_virtuoso_executable(
         step,
         Resources(
             capabilities=capabilities,
-            tools={"cadence.virtuoso": str(executable)},
+            tools={
+                "cadence.virtuoso": str(executable),
+                "runtime.python": sys.executable,
+            },
             values=values,
         ),
     )
@@ -662,7 +670,7 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
     )
     assert {
         check.subject for check in blocked if check.status == "blocked"
-    } == {"cadence.spice-in", "cadence.cds-text-to-5x"}
+    } == {"runtime.python", "cadence.spice-in", "cadence.cds-text-to-5x"}
     assert all(
         check.status == "ready"
         for check in adapter.preflight(prepared, context.runtime)
@@ -854,9 +862,10 @@ def test_layout_verification_backend_publishes_classified_evidence(
                 "license.cadence-oa",
             }
         ),
-        tools={
-            "cadence.xstream": str(xstream),
-            "mentor.calibre": str(calibre),
+            tools={
+                "runtime.python": sys.executable,
+                "cadence.xstream": str(xstream),
+                "mentor.calibre": str(calibre),
         },
         values={
             "virtuoso-bridge.host": "127.0.0.1",

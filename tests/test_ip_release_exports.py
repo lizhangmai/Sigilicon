@@ -323,6 +323,7 @@ def test_release_publication_runs_as_one_managed_adapter_step(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     contract = _rtl_contract_fixture(tmp_path)
+    (tmp_path / "artifacts/release-store").mkdir(parents=True)
     component = contract.parent / "ip.toml"
     component.write_text(
         component.read_text(encoding="utf-8")
