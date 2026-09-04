@@ -875,7 +875,7 @@ def test_rtl_release_dependency_is_consumed_without_physical_identity(
     monkeypatch.setattr(
         ip_integration,
         "plan_ip_release_contract",
-        lambda *_args, **_kwargs: {
+        lambda *_args, **_kwargs: SimpleNamespace(record={
             "contract": "ip/fixture/configs/release.toml",
             "release_id": release_id,
             "exports": [
@@ -891,7 +891,7 @@ def test_rtl_release_dependency_is_consumed_without_physical_identity(
                     "module": "fixture_rtl",
                 }
             ],
-        },
+        }),
     )
     plan = plan_ip_integration(
         contract_path,
@@ -948,7 +948,7 @@ def test_native_oa_release_dependency_is_typed_planned_and_consumed(
     monkeypatch.setattr(
         ip_integration,
         "plan_ip_release_contract",
-        lambda *_args, **_kwargs: {
+        lambda *_args, **_kwargs: SimpleNamespace(record={
             "contract": "ip/fixture/configs/release.toml",
             "release_id": release_id,
             "exports": [
@@ -970,7 +970,7 @@ def test_native_oa_release_dependency_is_typed_planned_and_consumed(
                 {"export": "macro", "role": role}
                 for role in release.roles
             ],
-        },
+        }),
     )
 
     plan = plan_ip_integration(
@@ -1040,7 +1040,7 @@ def test_native_oa_planner_takes_interface_identity_from_provider_export(
     monkeypatch.setattr(
         ip_integration,
         "plan_ip_release_contract",
-        lambda *_args, **_kwargs: {
+        lambda *_args, **_kwargs: SimpleNamespace(record={
             "contract": "ip/fixture/configs/release.toml",
             "release_id": release_id,
             "exports": [
@@ -1058,7 +1058,7 @@ def test_native_oa_planner_takes_interface_identity_from_provider_export(
                     "circuit_netlist",
                 )
             ],
-        },
+        }),
     )
 
     plan = plan_ip_integration(

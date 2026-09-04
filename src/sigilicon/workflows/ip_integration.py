@@ -278,13 +278,14 @@ def plan_ip_integration_contract(
                 oa_source_inventory=oa_source_inventory,
                 oa_plan_inventory=oa_plan_inventory,
             )
-            exported = _release_export(expected, release.export)
+            release_record = expected.record
+            exported = _release_export(release_record, release.export)
             row["release"] = {
                 "export": release.export,
-                "provider": expected["contract"],
+                "provider": release_record["contract"],
                 "required_maturity": release.required_maturity,
                 "roles": list(release.roles),
-                "expected_release_id": expected["release_id"],
+                "expected_release_id": release_record["release_id"],
             }
         dependencies.append(row)
     return {

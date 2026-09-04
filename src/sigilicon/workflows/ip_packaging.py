@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import dataclass
 import hashlib
+import json
 import os
 from pathlib import Path, PurePosixPath
 import re
 import stat
 import uuid
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
 
 from sigilicon.artifacts import (
@@ -67,6 +70,41 @@ if TYPE_CHECKING:
 
 class IpReleaseError(RuntimeError):
     """The requested release is not backed by accepted immutable evidence."""
+
+
+@dataclass(frozen=True)
+class IpReleasePlan:
+    """Immutable publication plan and generated native collateral."""
+
+    contract: IpContract
+    _record_json: str
+    native_bundles: Mapping[tuple[str, str], str]
+
+    @classmethod
+    def create(
+        cls,
+        contract: IpContract,
+        record: Mapping[str, Any],
+        native_bundles: Mapping[tuple[str, str], str],
+    ) -> "IpReleasePlan":
+        return cls(
+            contract,
+            json.dumps(record, sort_keys=True, separators=(",", ":")),
+            MappingProxyType(dict(native_bundles)),
+        )
+
+    @property
+    def record(self) -> dict[str, Any]:
+        """Return a detached portable projection for CLI and manifests."""
+
+        value = json.loads(self._record_json)
+        if not isinstance(value, dict):
+            raise RuntimeError("IP release plan record is not an object")
+        return value
+
+    @property
+    def identity(self) -> str:
+        return hashlib.sha256(self._record_json.encode("utf-8")).hexdigest()
 
 
 _IMPLEMENTATION_ROLE_FORMATS = {
@@ -1297,7 +1335,7 @@ def _plan_loaded_ip_release(
     platform_inventory: PlatformSet | None = None,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
     oa_plan_inventory: Mapping[Path, OALibraryRebuildPlan] | None = None,
-) -> dict[str, Any]:
+) -> IpReleasePlan:
     repository = contract.project
     contract = resolve_ip_contract(
         contract.path,
@@ -1410,16 +1448,19 @@ def _plan_loaded_ip_release(
         )
     }
     native_bundle_metadata: dict[tuple[str, str], dict[str, Any]] = {}
+    native_bundles: dict[tuple[str, str], str] = {}
     if oa_library is not None:
         for exported in contract.exports:
             if not isinstance(exported.interface, OaNativeIpInterface):
                 continue
-            _, metadata = _native_oa_spectre_bundle(
+            text, metadata = _native_oa_spectre_bundle(
                 contract,
                 exported,
                 library=oa_library,
             )
-            native_bundle_metadata[(exported.name, "circuit_netlist")] = metadata
+            key = (exported.name, "circuit_netlist")
+            native_bundle_metadata[key] = metadata
+            native_bundles[key] = text
     collateral_source_identity: dict[tuple[str, str], dict[str, Any]] = {}
     for item in contract.collateral:
         source = _project_path(
@@ -1432,7 +1473,7 @@ def _plan_loaded_ip_release(
             "source_size": source_metadata.st_size,
             "source_sha256": source_digest,
         }
-    return {
+    record = {
         "ip_name": contract.name,
         "owner": contract.owner,
         "contract": contract.path.relative_to(contract.project_root).as_posix(),
@@ -1478,6 +1519,7 @@ def _plan_loaded_ip_release(
             for item in contract.collateral
         ],
     }
+    return IpReleasePlan.create(contract, record, native_bundles)
 
 
 def plan_ip_release(
@@ -1488,7 +1530,7 @@ def plan_ip_release(
     platform_inventory: PlatformSet | None = None,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
     oa_plan_inventory: Mapping[Path, OALibraryRebuildPlan] | None = None,
-) -> dict[str, Any]:
+) -> IpReleasePlan:
     contract = load_ip_contract(contract_path, project=project)
     return plan_ip_release_contract(
         contract,
@@ -1506,7 +1548,7 @@ def plan_ip_release_contract(
     platform_inventory: PlatformSet | None = None,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
     oa_plan_inventory: Mapping[Path, OALibraryRebuildPlan] | None = None,
-) -> dict[str, Any]:
+) -> IpReleasePlan:
     """Plan one already validated IP release contract."""
 
     return _plan_loaded_ip_release(
@@ -1588,27 +1630,50 @@ def _remove_tree_at(parent_fd: int, name: str) -> None:
     os.rmdir(name, dir_fd=parent_fd)
 
 
-def build_ip_release(
-    contract_path: Path,
+def _publish_ip_release(
+    plan: IpReleasePlan,
     *,
-    project: Project,
-    maturity: str | None = None,
+    store_root: Path,
+    source_paths: Mapping[Path, Path],
 ) -> dict[str, Any]:
-    contract = load_ip_contract(contract_path, project=project)
-    plan = _plan_loaded_ip_release(contract, maturity=maturity)
-    if plan["missing_items"]:
-        missing = ", ".join(plan["missing_items"])
+    """Publish one planned release exclusively from its sealed source closure."""
+
+    if not isinstance(plan, IpReleasePlan):
+        raise TypeError("release publication requires an IpReleasePlan")
+    contract = plan.contract
+    record = plan.record
+    expected_sources = {
+        (contract.project_root / relative).absolute()
+        for relative in record["source_files"]
+    }
+    selected_sources = {
+        Path(source).absolute(): Path(sealed).absolute()
+        for source, sealed in source_paths.items()
+    }
+    if set(selected_sources) != expected_sources:
+        raise IpReleaseError("release execution source closure disagrees with its plan")
+    if record["missing_items"]:
+        missing = ", ".join(record["missing_items"])
         raise IpReleaseError(
-            f"cannot build {plan['maturity_level']} IP release; missing: {missing}"
+            f"cannot build {record['maturity_level']} IP release; missing: {missing}"
         )
-    if plan["working_tree_dirty"]:
+    if record["working_tree_dirty"]:
         raise IpReleaseError(
             "IP releases require a clean source checkout"
         )
-    store = ReleaseStore(project.artifact_root / "release-store")
-    namespace = store.root / str(plan["release_store"]) / "objects"
+    source_state = inspect_checkout(
+        contract.project_root,
+        contract.project.resources(),
+    )
+    if (
+        source_state.commit != record["source_commit"]
+        or source_state.working_tree_dirty
+    ):
+        raise IpReleaseError("source checkout changed during release build")
+    store = ReleaseStore(store_root)
+    namespace = store.root / str(record["release_store"]) / "objects"
     with owned_directory(namespace, create_missing=True) as release_namespace:
-        temporary_name = f".{plan['release_id']}.{uuid.uuid4().hex}.tmp"
+        temporary_name = f".{record['release_id']}.{uuid.uuid4().hex}.tmp"
         os.mkdir(temporary_name, dir_fd=release_namespace.fd)
         temporary = namespace / temporary_name
         installed = False
@@ -1616,17 +1681,8 @@ def build_ip_release(
             views: list[dict[str, Any]] = []
             planned_collateral = {
                 (item["export"], item["role"]): item
-                for item in plan["collateral"]
+                for item in record["collateral"]
             }
-            oa_library = None
-            if any(
-                item.get("composition") == "reachable-spectre-hierarchy"
-                for item in plan["collateral"]
-            ):
-                _, oa_library = _resolve_release_oa_source(
-                    contract,
-                    oa_source_inventory=None,
-                )
             for item in contract.collateral:
                 source = _project_path(
                     contract.project_root,
@@ -1636,7 +1692,8 @@ def build_ip_release(
                 destination = temporary / item.package_path
                 ensure_nofollow_directory(destination.parent)
                 expected = planned_collateral[(item.export, item.role)]
-                source_metadata, source_digest = _inspect_nofollow_file(source)
+                sealed_source = selected_sources[source]
+                source_metadata, source_digest = _inspect_nofollow_file(sealed_source)
                 if (
                     source_metadata.st_size != expected["source_size"]
                     or source_digest != expected["source_sha256"]
@@ -1646,26 +1703,23 @@ def build_ip_release(
                         f"{item.export}/{item.role}"
                     )
                 if expected.get("composition") == "reachable-spectre-hierarchy":
-                    if oa_library is None:
-                        raise RuntimeError("native OA release source is unavailable")
-                    text, metadata = _native_oa_spectre_bundle(
-                        contract,
-                        contract.get_export(item.export),
-                        library=oa_library,
-                    )
-                    if any(
-                        expected.get(key) != value
-                        for key, value in metadata.items()
+                    key = (item.export, item.role)
+                    try:
+                        text = plan.native_bundles[key]
+                    except KeyError as exc:
+                        raise RuntimeError(
+                            "native OA release bundle is absent from its plan"
+                        ) from exc
+                    if hashlib.sha256(text.encode("utf-8")).hexdigest() != expected.get(
+                        "sha256"
                     ):
                         raise RuntimeError(
-                            "native OA Spectre hierarchy changed during release "
-                            "build: "
-                            f"{item.export}"
+                            f"native OA release bundle identity drift: {item.export}"
                         )
                     write_immutable_text(destination, text)
                 else:
                     copy_immutable_file(
-                        source,
+                        sealed_source,
                         destination,
                         expected_size=expected["source_size"],
                         expected_sha256=expected["source_sha256"],
@@ -1695,45 +1749,36 @@ def build_ip_release(
                     if field in expected:
                         view[field] = expected[field]
                 views.append(view)
-            final_source_state = inspect_checkout(
-                contract.project_root,
-                contract.project.resources(),
-            )
-            if (
-                final_source_state.commit != plan["source_commit"]
-                or final_source_state.working_tree_dirty
-            ):
-                raise IpReleaseError("source checkout changed during release build")
             manifest: dict[str, Any] = {
                 "schema": 2,
                 "contract_kind": "ip-release-manifest",
                 "release_kind": "source-package",
-                "ip_name": plan["ip_name"],
-                "owner": plan["owner"],
-                "release_id": plan["release_id"],
-                "source_commit": plan["source_commit"],
-                "source_files": plan["source_files"],
-                "component": plan["component"],
-                "exports": plan["exports"],
+                "ip_name": record["ip_name"],
+                "owner": record["owner"],
+                "release_id": record["release_id"],
+                "source_commit": record["source_commit"],
+                "source_files": record["source_files"],
+                "component": record["component"],
+                "exports": record["exports"],
                 "views": views,
                 "maturity": {
-                    "level": plan["maturity_level"],
-                    "checks": plan["maturity_checks"],
-                    "missing_items": plan["missing_items"],
+                    "level": record["maturity_level"],
+                    "checks": record["maturity_checks"],
+                    "missing_items": record["missing_items"],
                 },
                 "provenance": {
-                    "contract": plan["contract"],
-                    "producer": plan["producer"],
+                    "contract": record["contract"],
+                    "producer": record["producer"],
                     "generator": "flow-ip-packaging",
                 },
-                "availability": plan["availability"],
+                "availability": record["availability"],
             }
             atomic_write_json(temporary / "manifest.json", manifest)
             manifest_digest = hashlib.sha256(
                 read_nofollow_bytes(temporary / "manifest.json")
             ).hexdigest()
             ref = ReleaseRef(
-                str(plan["release_store"]),
+                str(record["release_store"]),
                 manifest_digest,
             )
             object_name = _release_object_name(ref)
@@ -1764,7 +1809,7 @@ def build_ip_release(
                 except FileNotFoundError:
                     pass
     audited = store.open(ref, validate=validate_ip_release_package)
-    return _audit_loaded_ip_release(contract, plan, audited)
+    return _audit_loaded_ip_release(contract, record, audited)
 
 
 def _manifest_exports(manifest: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:

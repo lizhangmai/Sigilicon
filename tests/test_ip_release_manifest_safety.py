@@ -164,19 +164,37 @@ def test_release_build_rejects_symlinked_namespace_ancestor(
     outside = tmp_path / "outside"
     outside.mkdir()
     (store_root / "fixture").symlink_to(outside, target_is_directory=True)
-    contract = SimpleNamespace(project=project, collateral=())
-    monkeypatch.setattr(ip_packaging, "load_ip_contract", lambda *_args, **_kw: contract)
-    monkeypatch.setattr(
-        ip_packaging,
-        "_plan_loaded_ip_release",
-        lambda *_args, **_kw: {
+    contract = SimpleNamespace(
+        project=project,
+        project_root=project.project_root,
+        collateral=(),
+    )
+    plan = ip_packaging.IpReleasePlan.create(
+        contract,
+        {
+            "source_files": [],
             "missing_items": [],
             "working_tree_dirty": False,
+            "source_commit": "d" * 40,
             "release_store": "fixture",
+            "release_id": "development-fixture",
         },
+        {},
+    )
+    monkeypatch.setattr(
+        ip_packaging,
+        "inspect_checkout",
+        lambda *_args, **_kw: SimpleNamespace(
+            commit="d" * 40,
+            working_tree_dirty=False,
+        ),
     )
 
     with pytest.raises(OSError):
-        ip_packaging.build_ip_release(tmp_path / "release.toml", project=project)
+        ip_packaging._publish_ip_release(
+            plan,
+            store_root=store_root,
+            source_paths={},
+        )
 
     assert list(outside.iterdir()) == []

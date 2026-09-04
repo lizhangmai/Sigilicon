@@ -33,6 +33,39 @@ def _built_manifest(project: Project, built: dict[str, object]) -> Path:
     )
 
 
+def _publish_release(
+    contract_path: Path,
+    *,
+    project: Project,
+    maturity: str | None = None,
+) -> dict[str, object]:
+    plan = ip_packaging.plan_ip_release(
+        contract_path,
+        project=project,
+        maturity=maturity,
+    )
+    sources = {
+        project.project_root / relative: project.project_root / relative
+        for relative in plan.record["source_files"]
+    }
+    return ip_packaging._publish_ip_release(
+        plan,
+        store_root=project.artifact_root / "release-store",
+        source_paths=sources,
+    )
+
+
+def _minimal_release_inputs(contract, **_kwargs) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                contract.path.relative_to(contract.project_root).as_posix(),
+                *(item.source.as_posix() for item in contract.collateral),
+            }
+        )
+    )
+
+
 def test_readonly_release_tree_rejects_symlink_members(tmp_path: Path) -> None:
     staging = tmp_path / "staging"
     staging.mkdir()
@@ -283,6 +316,63 @@ root = "ip/rtl_fixture"
         encoding="utf-8",
     )
     return contract
+
+
+def test_release_publication_runs_as_one_managed_adapter_step(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = _rtl_contract_fixture(tmp_path)
+    component = contract.parent / "ip.toml"
+    component.write_text(
+        component.read_text(encoding="utf-8")
+        .replace(
+            'release_contract = "release"',
+            'release_contract = "release"\noperation_catalog = "operations"',
+        )
+        .replace(
+            "[sources]\n",
+            '[sources]\noperations = "ip/rtl_fixture/configs/operations.toml"\n',
+        )
+        + '\n[filesets]\nrelease = ["release"]\n',
+        encoding="utf-8",
+    )
+    (contract.parent / "operations.toml").write_text(
+        '''schema = 3
+contract_kind = "owner-operations"
+path_scope = "owner"
+owner = "rtl-fixture"
+
+[operations.release]
+uses = "sigilicon.ip-release"
+filesets = ["release"]
+
+[operations.release.config]
+owner = "rtl-fixture"
+maturity = "development"
+''',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        ip_packaging,
+        "inspect_checkout",
+        lambda _root, _resources: SimpleNamespace(
+            commit="a" * 40,
+            working_tree_dirty=False,
+        ),
+    )
+    project = Project.open(tmp_path)
+
+    plan = project.plan("rtl-fixture:release")
+    checked = project.preflight(plan)
+    result = project.run(plan, run_id="a" * 32)
+
+    assert checked.ready
+    assert result.status == "succeeded"
+    step = result.outcomes[0].result
+    assert step.facts["release_id"] == f"development-{'a' * 40}"
+    assert step.facts["passed"] is True
+    assert step.artifacts[0].kind == "summary.ip-release"
 
 
 def _oa_source_closure_fixture(root: Path) -> Path:
@@ -674,9 +764,7 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
     monkeypatch.setattr(
         ip_packaging,
         "_source_inputs",
-        lambda *_args, **_kwargs: (
-            "ip/native_fixture/configs/release.toml",
-        ),
+        _minimal_release_inputs,
     )
     monkeypatch.setattr(
         ip_packaging,
@@ -693,8 +781,8 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
 
     plan = ip_packaging.plan_ip_release_contract(contract)
 
-    assert plan["missing_items"] == []
-    assert plan["exports"] == [
+    assert plan.record["missing_items"] == []
+    assert plan.record["exports"] == [
         {
             "name": "native-top",
             "oa": {
@@ -722,7 +810,7 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
             },
         }
     ]
-    assert plan["maturity_checks"][1] == {
+    assert plan.record["maturity_checks"][1] == {
         "name": "development_interface_consistency:native-top",
         "export": "native-top",
         "passed": True,
@@ -733,13 +821,13 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
         "native_oa_port_contract_checked": True,
     }
     circuit = next(
-        item for item in plan["collateral"] if item["role"] == "circuit_netlist"
+        item for item in plan.record["collateral"] if item["role"] == "circuit_netlist"
     )
     assert circuit["composition"] == "reachable-spectre-hierarchy"
     assert circuit["subcircuits"] == ["NATIVE_CHILD", "NATIVE_TOP"]
     assert circuit["primitive_masters"] == ["nch_mac"]
 
-    built = ip_packaging.build_ip_release(
+    built = _publish_release(
         contract_path,
         project=contract.project,
     )
@@ -753,7 +841,7 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
     assert set(audited["provenance"]) == {"contract", "producer", "generator"}
     assert all(len(view["sha256"]) == 64 for view in audited["views"])
     snapshot = manifest.read_bytes()
-    repeated = ip_packaging.build_ip_release(
+    repeated = _publish_release(
         contract_path,
         project=contract.project,
     )
@@ -763,7 +851,7 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
         key: built[key] for key in ("store", "manifest_sha256")
     }
     assert manifest.read_bytes() == snapshot
-    assert audited["exports"] == plan["exports"]
+    assert audited["exports"] == plan.record["exports"]
     circuit_path = ip_packaging.resolve_release_role(
         audited,
         manifest,
@@ -795,7 +883,7 @@ def test_release_build_rejects_checkout_drift_before_publication(
     )
 
     with pytest.raises(ip_packaging.IpReleaseError, match="changed during"):
-        ip_packaging.build_ip_release(
+        _publish_release(
             contract_path,
             project=Project.open(tmp_path),
         )
@@ -849,9 +937,7 @@ capabilities = ["synthesis"]
     monkeypatch.setattr(
         ip_packaging,
         "_source_inputs",
-        lambda *_args, **_kwargs: (
-            "ip/native_fixture/configs/release.toml",
-        ),
+        _minimal_release_inputs,
     )
     monkeypatch.setattr(
         ip_packaging,
@@ -868,18 +954,18 @@ capabilities = ["synthesis"]
 
     plan = ip_packaging.plan_ip_release_contract(contract)
 
-    assert plan["exports"][0]["availability"] == {
+    assert plan.record["exports"][0]["availability"] == {
         "simulation": True,
         "synthesis": True,
         "physical_implementation": False,
     }
-    built = ip_packaging.build_ip_release(
+    built = _publish_release(
         contract_path,
         project=contract.project,
     )
     manifest = _built_manifest(contract.project, built)
     audited = ip_packaging.audit_ip_release_manifest(manifest)
-    assert audited["exports"][0]["availability"] == plan["exports"][0][
+    assert audited["exports"][0]["availability"] == plan.record["exports"][0][
         "availability"
     ]
     assert ip_packaging.resolve_release_role(
@@ -916,9 +1002,7 @@ def test_native_oa_package_rejects_digital_interface_sections(
     monkeypatch.setattr(
         ip_packaging,
         "_source_inputs",
-        lambda *_args, **_kwargs: (
-            "ip/native_fixture/configs/release.toml",
-        ),
+        _minimal_release_inputs,
     )
     monkeypatch.setattr(
         ip_packaging,
@@ -932,7 +1016,7 @@ def test_native_oa_package_rejects_digital_interface_sections(
         "load_oa_library_source",
         lambda *_args, **_kwargs: _native_oa_library_fixture(tmp_path),
     )
-    built = ip_packaging.build_ip_release(
+    built = _publish_release(
         contract_path,
         project=contract.project,
     )
@@ -979,9 +1063,7 @@ def test_native_oa_package_rejects_missing_reachable_subcircuit(
     monkeypatch.setattr(
         ip_packaging,
         "_source_inputs",
-        lambda *_args, **_kwargs: (
-            "ip/native_fixture/configs/release.toml",
-        ),
+        _minimal_release_inputs,
     )
     monkeypatch.setattr(
         ip_packaging,
@@ -995,7 +1077,7 @@ def test_native_oa_package_rejects_missing_reachable_subcircuit(
         "load_oa_library_source",
         lambda *_args, **_kwargs: _native_oa_library_fixture(tmp_path),
     )
-    built = ip_packaging.build_ip_release(
+    built = _publish_release(
         contract_path,
         project=contract.project,
     )
@@ -1054,7 +1136,7 @@ def test_rtl_release_plans_and_audits_without_oa_sources(
 
     plan = ip_packaging.plan_ip_release_contract(contract)
 
-    assert plan["exports"] == [
+    assert plan.record["exports"] == [
         {
             "name": "rtl-top",
             "interface": {
@@ -1077,16 +1159,16 @@ def test_rtl_release_plans_and_audits_without_oa_sources(
     implementation = ip_packaging.plan_ip_release_contract(
         contract, maturity="implementation"
     )
-    assert implementation["missing_items"] == [
+    assert implementation.record["missing_items"] == [
         "rtl-top:synthesis_receipt"
     ]
-    built = ip_packaging.build_ip_release(
+    built = _publish_release(
         contract_path,
         project=contract.project,
     )
     manifest = _built_manifest(contract.project, built)
     audited = ip_packaging.audit_ip_release_manifest(manifest)
-    assert audited["exports"] == plan["exports"]
+    assert audited["exports"] == plan.record["exports"]
 
     def copy_manifest(name: str) -> tuple[Path, dict]:
         tampered_root = tmp_path / "tampered" / name
@@ -1163,14 +1245,14 @@ source = "ip/rtl_fixture/rtl/top.sv"
     assert exported.interface.variant == "alternate"
 
     plan = ip_packaging.plan_ip_release_contract(contract)
-    assert plan["exports"][0]["interface"]["variant"] == "alternate"
-    built = ip_packaging.build_ip_release(
+    assert plan.record["exports"][0]["interface"]["variant"] == "alternate"
+    built = _publish_release(
         contract_path,
         project=contract.project,
     )
     manifest = _built_manifest(contract.project, built)
     assert ip_packaging.audit_ip_release_manifest(manifest)["exports"] == (
-        plan["exports"]
+        plan.record["exports"]
     )
 
 
