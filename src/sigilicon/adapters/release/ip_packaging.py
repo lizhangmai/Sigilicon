@@ -45,7 +45,7 @@ from sigilicon.release_store import (
     audit_release_package,
 )
 from sigilicon.adapters.release.source_control import inspect_checkout
-from sigilicon.adapters.release.ip_release_planning import (
+from sigilicon.adapters.release.release_contract_checks import (
     _IMPLEMENTATION_ROLE_FORMATS,
     _SIGNOFF_RECEIPT_BINDINGS,
     _identity_module,
