@@ -209,6 +209,15 @@ def test_layout_spec_preserves_and_resolves_its_source_document(
     with pytest.raises(TypeError):
         spec.source_documents[resolved]["schema"] = 2
 
+    original = layout.read_text(encoding="utf-8")
+    layout.write_text(
+        original.replace('generator = "test_generator"', 'generator = "drift_generator"'),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="layout snapshot source document drift"):
+        resolve_layout_spec(layout, project=project, snapshot=spec)
+    layout.write_text(original, encoding="utf-8")
+
     drifted = dict(spec.source_documents[resolved])
     drifted["layout"] = {
         **drifted["layout"],

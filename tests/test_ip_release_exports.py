@@ -17,6 +17,7 @@ from sigilicon.domain.ip_release import (
     OaNativeIpInterface,
     RtlIpInterface,
     load_ip_contract,
+    resolve_ip_contract,
 )
 from sigilicon.project import Project
 from sigilicon.adapters.release.ip_packaging import release_role_view
@@ -366,6 +367,22 @@ def test_release_publication_runs_as_one_managed_adapter_step(
     summary = json.loads(step.artifacts[0].read_text())
     assert summary["release_id"] == f"development-{'a' * 40}"
     assert summary["store"] == "rtl-fixture"
+
+
+def test_ip_release_snapshot_rejects_current_contract_drift(tmp_path: Path) -> None:
+    contract_path = _rtl_contract_fixture(tmp_path)
+    project = Project.open(tmp_path)
+    snapshot = load_ip_contract(contract_path, project=project)
+    contract_path.write_text(
+        contract_path.read_text(encoding="utf-8").replace(
+            'default_maturity = "development"',
+            'default_maturity = "implementation"',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="IP release snapshot source document drift"):
+        resolve_ip_contract(contract_path, project=project, snapshot=snapshot)
 
 
 def _native_oa_contract_fixture(root: Path) -> Path:

@@ -8,6 +8,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
 
 from sigilicon.contracts import (
+    DocumentStore,
     ContractReader,
     contract_schema,
     freeze_toml_document,
@@ -337,6 +338,9 @@ def resolve_component_contract(
         or not snapshot.document
     ):
         raise ValueError("component snapshot identity drift")
+    DocumentStore(root, {contract_path: snapshot.document}).verify_current(
+        "component snapshot"
+    )
     validated = _parse_component_contract(
         contract_path,
         project_root=root,

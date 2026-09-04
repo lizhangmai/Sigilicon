@@ -8,6 +8,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, Mapping
 
 from sigilicon.contracts import (
+    DocumentStore,
     contract_schema,
     freeze_toml_document,
     is_frozen_toml_document,
@@ -622,6 +623,10 @@ def resolve_ip_contract(
                 path_scope="owner",
                 owner=snapshot.owner,
             )
+    DocumentStore(
+        root,
+        {snapshot.path: snapshot.document, **documents},
+    ).verify_current("IP release snapshot")
     parsed = _parse_ip_contract(
         contract_path,
         repository=project,

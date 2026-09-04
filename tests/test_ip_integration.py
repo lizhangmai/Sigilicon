@@ -14,6 +14,7 @@ from sigilicon.domain.ip_integration import (
     LockedIpRelease,
     OaNativePhysicalBinding,
     load_ip_integration_contract,
+    resolve_ip_integration_contract,
 )
 from sigilicon.project import Project
 from sigilicon.adapters.release.ip_integration import (
@@ -722,6 +723,48 @@ root = "ip/composite"
         encoding="utf-8",
     )
     return contract
+
+
+def test_owner_identity_and_integration_snapshot_include_dependency_closure(
+    tmp_path: Path,
+) -> None:
+    contract = _write_source_component_fixture(tmp_path)
+    project = Project.open(tmp_path)
+    identity = project.operation_identity("composite")
+    integration = load_ip_integration_contract(contract, project=project)
+    leaf = tmp_path / "ip/leaf/configs/ip.toml"
+    leaf.write_text(
+        leaf.read_text(encoding="utf-8").replace(
+            'kind = "rtl-ip"',
+            'kind = "source-library"',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="component snapshot source document drift"):
+        project.operation_identity("composite")
+    with pytest.raises(ValueError, match="component snapshot source document drift"):
+        resolve_ip_integration_contract(contract, project=project, snapshot=integration)
+    assert Project.open(tmp_path).operation_identity("composite") != identity
+
+
+def test_ip_integration_snapshot_rejects_current_variant_drift(
+    tmp_path: Path,
+) -> None:
+    contract = _write_source_component_fixture(tmp_path)
+    project = Project.open(tmp_path)
+    snapshot = load_ip_integration_contract(contract, project=project)
+    variant = tmp_path / "ip/composite/configs/variants/default.toml"
+    variant.write_text(
+        variant.read_text(encoding="utf-8").replace(
+            'required_capability = "simulation"',
+            'required_capability = "synthesis"',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="IP integration snapshot source document drift"):
+        resolve_ip_integration_contract(contract, project=project, snapshot=snapshot)
 
 
 def test_ip_integration_check_keeps_paths_public_and_resolves_only_for_execution(

@@ -23,7 +23,11 @@ from sigilicon.contracts import (
     require_text,
     thaw_toml_document,
 )
-from sigilicon.domain.component import ComponentContract, _parse_component_contract
+from sigilicon.domain.component import (
+    ComponentContract,
+    _parse_component_contract,
+    load_component_graph,
+)
 from sigilicon.paths import (
     ProjectContext,
     validate_artifact_component,
@@ -689,10 +693,10 @@ class Project:
         """Identify only the static project closure that selects one owner."""
 
         selected = self.owner(owner)
-        self._require_owner_snapshot(selected)
+        graph = self._require_owner_snapshot(selected)
         paths = [
             path
-            for path in self._operation_composition_paths(selected)
+            for path in self._operation_composition_paths(selected, graph=graph)
             if path != self.manifest_path
         ]
         return canonical_digest(
@@ -716,23 +720,43 @@ class Project:
             }
         )
 
-    def _require_owner_snapshot(self, owner: RepositoryOwner) -> None:
+    def _require_owner_snapshot(
+        self,
+        owner: RepositoryOwner,
+    ) -> Mapping[str, ComponentContract]:
         """Fail when cached catalog/component facts no longer match source."""
 
         catalog = self.ip_catalog_snapshot()
         documents = self._composition_snapshot()
-        documents.verify(
-            "component snapshot", {owner.component.path: owner.component.document}
+        graph = load_component_graph(
+            owner.component.path,
+            project=self,
+            root_contract=owner.component,
+            contract_inventory=self.component_inventory,
         )
-        documents.verify_current("component snapshot", (owner.component.path,))
+        graph_documents = {
+            component.path: component.document for component in graph.values()
+        }
+        documents.verify("component snapshot", graph_documents)
+        documents.verify_current("component snapshot", graph_documents)
         if owner.name not in catalog.document.get("components", {}):
             raise ValueError("IP catalog snapshot owner mapping drift")
+        return graph
 
     def _operation_composition_paths(
         self,
         owner: RepositoryOwner,
+        *,
+        graph: Mapping[str, ComponentContract] | None = None,
     ) -> tuple[Path, ...]:
-        paths = [self.manifest_path, self.catalog("ip"), owner.component.path]
+        selected_graph = (
+            self._require_owner_snapshot(owner) if graph is None else graph
+        )
+        paths = [
+            self.manifest_path,
+            self.catalog("ip"),
+            *(component.path for component in selected_graph.values()),
+        ]
         if owner.component.operation_catalog is not None:
             paths.append(
                 self.project_root.joinpath(*owner.component.operation_catalog.parts)

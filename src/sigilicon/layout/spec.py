@@ -9,7 +9,13 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
 
 from sigilicon.domain.component import ComponentContract, load_component_graph
-from sigilicon.contracts import freeze_toml_document, read_toml, require_config_header
+from sigilicon.contracts import (
+    DocumentStore,
+    freeze_toml_document,
+    is_frozen_toml_document,
+    read_toml,
+    require_config_header,
+)
 from sigilicon.domain.design import IDENTIFIER_RE
 from sigilicon.domain.context import RepositoryIdentity
 from sigilicon.domain.netlist import (
@@ -36,6 +42,7 @@ if TYPE_CHECKING:
 
 
 _DIRECTIONS = {"input", "output", "inputOutput"}
+_MAPPING_PROXY_TYPE = type(MappingProxyType({}))
 _PACKAGE_SOURCE_ROOT = Path(__file__).resolve().parents[2]
 _STDLIB_SOURCE_ROOT = Path(sysconfig.get_path("stdlib")).resolve()
 
@@ -578,6 +585,12 @@ def resolve_layout_spec(
     ):
         raise ValueError("layout snapshot source document identity drift")
     raw = snapshot.source_documents[spec_path]
+    if (
+        not isinstance(snapshot.source_documents, _MAPPING_PROXY_TYPE)
+        or not is_frozen_toml_document(raw)
+    ):
+        raise ValueError("layout snapshot source document drift: mutable snapshot")
+    DocumentStore(root, snapshot.source_documents).verify_current("layout snapshot")
     if owner is not None:
         require_config_header(
             raw,

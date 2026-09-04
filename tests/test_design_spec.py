@@ -119,6 +119,13 @@ def test_design_spec_preserves_and_resolves_its_source_document(
             ),
         )
     source_text = spec.source_netlist.read_text(encoding="utf-8")
+    spec.source_netlist.write_text(
+        source_text.replace("subckt inv", "subckt drift"),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="source document drift"):
+        resolve_design_spec(path, project=project, snapshot=spec)
+    spec.source_netlist.write_text(source_text, encoding="utf-8")
     spec.source_netlist.unlink()
     with pytest.raises(ValueError, match="source document drift"):
         resolve_design_spec(path, project=project, snapshot=spec)

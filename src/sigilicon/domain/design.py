@@ -9,6 +9,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
 
 from sigilicon.contracts import (
+    DocumentStore,
     freeze_toml_document,
     is_frozen_toml_document,
     read_toml,
@@ -262,7 +263,6 @@ def resolve_design_spec(
         or not spec_path.is_file()
     ):
         raise ValueError("design snapshot identity drift")
-    snapshot.repository.validate(project)
     owner = project.owner_for(spec_path)
     if (
         not isinstance(snapshot.source_documents, Mapping)
@@ -283,6 +283,7 @@ def resolve_design_spec(
         or not is_frozen_toml_document(raw)
     ):
         raise ValueError("design snapshot source document drift: mutable snapshot")
+    DocumentStore(root, snapshot.source_documents).verify_current("design snapshot")
     if owner is not None:
         require_config_header(
             raw,
@@ -320,6 +321,7 @@ def resolve_design_spec(
         or snapshot.source_netlist != snapshot.source_netlist.resolve()
         or not snapshot.source_netlist.is_file()
         or snapshot.netlist_snapshot.source_path != snapshot.source_netlist
+        or load_netlist_snapshot(snapshot.source_netlist) != snapshot.netlist_snapshot
         or not snapshot.source_netlist.is_relative_to(root)
         or (
             owner is not None
@@ -335,4 +337,5 @@ def resolve_design_spec(
         or ports.get("directions") != snapshot.directions
     ):
         raise ValueError("design snapshot source document drift")
+    snapshot.repository.validate(project)
     return snapshot

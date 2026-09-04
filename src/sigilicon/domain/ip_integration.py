@@ -16,6 +16,7 @@ from sigilicon.domain.component import (
     resolve_component_graph,
 )
 from sigilicon.contracts import (
+    DocumentStore,
     freeze_toml_document,
     is_frozen_toml_document,
     read_toml,
@@ -657,6 +658,9 @@ def resolve_ip_integration_contract(
         for source, document in snapshot.source_documents.items()
     ):
         raise ValueError("IP integration source snapshot identity drift")
+    DocumentStore(root, snapshot.source_documents).verify_current(
+        "IP integration snapshot"
+    )
 
     dependencies = _integration_dependencies(component)
     by_name = {item.name: item for item in dependencies}

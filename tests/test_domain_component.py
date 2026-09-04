@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from sigilicon.domain.component import resolve_component_contract
 from sigilicon.project import Project
 
 
@@ -161,3 +162,39 @@ operations = "ip/shared/operations.toml"
     )
     with pytest.raises(ValueError, match="references unknown source"):
         Project.open(tmp_path)
+
+
+def test_component_snapshot_rejects_current_document_drift(tmp_path: Path) -> None:
+    source = tmp_path / "ip/shared/library.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    contract = tmp_path / "ip/shared/ip.toml"
+    contract.write_text(
+        '''schema = 3
+contract_kind = "ip-component"
+path_scope = "owner"
+owner = "shared"
+name = "shared"
+kind = "source-library"
+
+[sources]
+library = "ip/shared/library.py"
+
+[filesets]
+python = ["library"]
+''',
+        encoding="utf-8",
+    )
+    _catalog_component(tmp_path, "shared", contract)
+    project = Project.open(tmp_path)
+    snapshot = project.owner("shared").component
+    contract.write_text(
+        contract.read_text(encoding="utf-8").replace(
+            'kind = "source-library"',
+            'kind = "rtl-ip"',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="component snapshot source document drift"):
+        resolve_component_contract(contract, project=project, snapshot=snapshot)
