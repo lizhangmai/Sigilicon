@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import re
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from sigilicon.contracts import (
     freeze_toml_document,
@@ -18,7 +18,10 @@ from sigilicon.domain.physical_verification import (
     PhysicalVerificationPolicy,
     parse_physical_verification_policy,
 )
-from sigilicon.domain.context import RepositoryContext, RepositoryIdentity
+from sigilicon.domain.context import RepositoryIdentity
+
+if TYPE_CHECKING:
+    from sigilicon.project import Project
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
 _VIEW_KINDS = {
@@ -65,7 +68,7 @@ _ASSEMBLY_FIELDS = {
 _MAPPING_PROXY_TYPE = type(MappingProxyType({}))
 
 
-def find_oa_assembly(project: RepositoryContext, path: Path | str) -> Path | None:
+def find_oa_assembly(project: Project, path: Path | str) -> Path | None:
     """Return the one OA assembly selected by the path's component owner."""
 
     owner = project.require_owner(path)
@@ -370,7 +373,7 @@ def _load_cell(
 def _load_source_root(
     path: Path,
     *,
-    context: RepositoryContext,
+    context: Project,
     allow_assembly_fields: bool = False,
     raw: dict[str, Any] | None = None,
 ) -> OASourceRoot:
@@ -473,7 +476,7 @@ def _load_source_root(
 def load_oa_library_source(
     path: Path,
     *,
-    project: RepositoryContext,
+    project: Project,
     snapshot: OALibrarySource | None = None,
 ) -> OALibrarySource:
     """Load one OA assembly or validate its exact operation snapshot."""

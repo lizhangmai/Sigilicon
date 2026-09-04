@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Any, Literal, Mapping
+from typing import TYPE_CHECKING, Any, Literal, Mapping
 
 from sigilicon.domain.component import (
     ComponentContract,
@@ -24,7 +24,10 @@ from sigilicon.contracts import (
 )
 from sigilicon.domain.ip_release import RELEASE_MATURITY_LEVELS
 from sigilicon.release_store import ReleaseRef
-from sigilicon.domain.context import RepositoryContext, RepositoryIdentity
+from sigilicon.domain.context import RepositoryIdentity
+
+if TYPE_CHECKING:
+    from sigilicon.project import Project
 
 
 _CAPABILITIES = frozenset({"simulation", "synthesis", "physical_implementation"})
@@ -237,7 +240,7 @@ def parse_locked_ip_release(value: object, label: str) -> LockedIpRelease:
 def _implementation_profiles(
     component: ComponentContract,
     *,
-    project: RepositoryContext,
+    project: Project,
     source_documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> tuple[Mapping[str, PurePosixPath], Mapping[Path, Mapping[str, Any]]]:
     result: dict[str, PurePosixPath] = {}
@@ -513,7 +516,7 @@ def _integration_dependencies(
 def load_ip_integration_contract(
     path: Path,
     *,
-    project: RepositoryContext,
+    project: Project,
     variant_source_documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> IpIntegrationContract:
     """Load composite-IP integration intent from its canonical component manifest."""
@@ -525,7 +528,7 @@ def load_ip_integration_contract(
     component = (
         cataloged_owner.component
         if cataloged_owner.component.path == contract_path
-        else load_component_contract(contract_path, project_root=root)
+        else load_component_contract(contract_path, project=repository)
     )
     if component.owner != cataloged_owner.name:
         raise ValueError("IP integration owner disagrees with the project catalog")
@@ -533,7 +536,7 @@ def load_ip_integration_contract(
         raise ValueError("IP integration requires a composite-ip component")
     graph = load_component_graph(
         component.path,
-        project_root=root,
+        project=repository,
         root_contract=component,
         contract_inventory=repository.component_inventory,
     )
@@ -598,7 +601,7 @@ def load_ip_integration_contract(
 def resolve_ip_integration_contract(
     path: Path,
     *,
-    project: RepositoryContext,
+    project: Project,
     snapshot: IpIntegrationContract | None = None,
 ) -> IpIntegrationContract:
     """Load an integration contract or validate one operation-owned snapshot."""
@@ -617,14 +620,14 @@ def resolve_ip_integration_contract(
     owner = project.require_owner(contract_path)
     component = resolve_component_contract(
         contract_path,
-        project_root=root,
+        project=project,
         snapshot=snapshot.component,
     )
     if component.owner != owner.name or component.kind != "composite-ip":
         raise ValueError("IP integration snapshot owner drift")
     graph = resolve_component_graph(
         contract_path,
-        project_root=root,
+        project=project,
         snapshot=snapshot.component_graph,
     )
     if (
@@ -706,7 +709,7 @@ def resolve_ip_integration_contract(
 def load_ip_dependency_lock(
     *,
     contract: IpIntegrationContract,
-    project: RepositoryContext,
+    project: Project,
 ) -> IpDependencyLock:
     """Load the sole dependency lock selected by the component contract."""
 

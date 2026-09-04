@@ -7,7 +7,7 @@ import math
 from pathlib import Path
 import re
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from sigilicon.contracts import (
     contract_schema,
@@ -15,7 +15,10 @@ from sigilicon.contracts import (
     read_toml,
     require_config_header,
 )
-from sigilicon.domain.context import RepositoryContext, RepositoryIdentity
+from sigilicon.domain.context import RepositoryIdentity
+
+if TYPE_CHECKING:
+    from sigilicon.project import Project
 
 
 _FIELDS = frozenset(
@@ -258,7 +261,7 @@ def _parse_xcelium_ams_circuit(
     cell_root: Path,
     project_root: Path,
     owner: str,
-    repository: RepositoryContext,
+    repository: Project,
 ) -> XceliumAmsCircuit:
     if not isinstance(value, Mapping):
         raise ValueError(f"{field} must be a table")
@@ -325,7 +328,7 @@ def _parse_xcelium_ams_configuration(
     cell_root: Path,
     project_root: Path,
     owner: str,
-    repository: RepositoryContext,
+    repository: Project,
 ) -> XceliumAmsConfiguration:
     field = f"{contract}: ams"
     if not isinstance(value, Mapping):
@@ -368,7 +371,7 @@ def _parse_xcelium_ams_configuration(
     )
 
 
-def _verification_cell_path(path: Path, repository: RepositoryContext) -> Path:
+def _verification_cell_path(path: Path, repository: Project) -> Path:
     contract = path.resolve()
     if (
         not contract.is_relative_to(repository.project_root)
@@ -382,7 +385,7 @@ def _parse_verification_cell(
     contract: Path,
     raw: Mapping[str, Any],
     *,
-    repository: RepositoryContext,
+    repository: Project,
     contract_documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> VerificationCellSpec:
     root = repository.project_root
@@ -560,7 +563,7 @@ def parse_verification_cell(
     path: Path,
     document: Mapping[str, Any],
     *,
-    project: RepositoryContext,
+    project: Project,
     contract_documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> VerificationCellSpec:
     """Validate one already read ``verification-cell`` document."""
@@ -578,7 +581,7 @@ def parse_verification_cell(
 def load_verification_cell(
     path: Path,
     *,
-    project: RepositoryContext,
+    project: Project,
 ) -> VerificationCellSpec:
     """Load and validate one ``contract_kind = verification-cell`` document."""
 

@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import tomllib
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from sigilicon.contracts import (
     freeze_toml_document,
@@ -23,8 +23,11 @@ from sigilicon.domain.native_diagnostics import (
     NativeDiagnosticReport,
     load_native_diagnostic_program,
 )
-from sigilicon.domain.context import RepositoryContext, RepositoryIdentity
+from sigilicon.domain.context import RepositoryIdentity
 from sigilicon.domain.source import TextSourceSnapshot, load_text_source_snapshot
+
+if TYPE_CHECKING:
+    from sigilicon.project import Project
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
@@ -511,7 +514,7 @@ def _load_native_oa_simulation_spec(
     spec_path: Path,
     project_root: Path,
     *,
-    context: RepositoryContext,
+    context: Project,
     owner_root: Path,
     raw: Mapping[str, Any],
     source_snapshot: TextSourceSnapshot,
@@ -624,7 +627,7 @@ def _load_native_oa_simulation_spec(
 def load_oa_simulation_spec(
     path: Path,
     *,
-    project: RepositoryContext,
+    project: Project,
     platform: PlatformSnapshot | None = None,
     architecture_source_documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> OASimulationSpec:

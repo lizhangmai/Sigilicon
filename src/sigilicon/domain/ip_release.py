@@ -16,10 +16,11 @@ from sigilicon.contracts import (
     require_relative_path,
 )
 from sigilicon.domain.oa_library import find_oa_assembly
-from sigilicon.domain.context import RepositoryContext, RepositoryIdentity
+from sigilicon.domain.context import RepositoryIdentity
 
 if TYPE_CHECKING:
     from sigilicon.domain.component import ComponentContract
+    from sigilicon.project import Project
 
 RELEASE_MATURITY_LEVELS = ("development", "implementation", "signoff")
 _MAPPING_PROXY_TYPE = type(MappingProxyType({}))
@@ -159,7 +160,7 @@ class IpContract:
 def _parse_ip_contract(
     contract_path: Path,
     *,
-    repository: RepositoryContext,
+    repository: Project,
     raw: Mapping[str, Any],
     source_component_graph: Mapping[str, ComponentContract] | None,
     source_interface_documents: Mapping[Path, Mapping[str, Any]] | None,
@@ -199,7 +200,7 @@ def _parse_ip_contract(
     if source_component_graph is None:
         component_graph = load_component_graph(
             component_path,
-            project_root=root,
+            project=repository,
             root_contract=(
                 cataloged_owner.component
                 if cataloged_owner.component.path == component_path
@@ -210,7 +211,7 @@ def _parse_ip_contract(
     else:
         component_graph = resolve_component_graph(
             component_path,
-            project_root=root,
+            project=repository,
             snapshot=source_component_graph,
         )
     ip_name = _string(raw.get("name"), "name")
@@ -555,7 +556,7 @@ def _parse_ip_contract(
 def load_ip_contract(
     path: Path,
     *,
-    project: RepositoryContext,
+    project: Project,
 ) -> IpContract:
     repository = project
     contract_path = path.resolve()
@@ -574,7 +575,7 @@ def load_ip_contract(
 def resolve_ip_contract(
     path: Path,
     *,
-    project: RepositoryContext,
+    project: Project,
     snapshot: IpContract | None = None,
 ) -> IpContract:
     """Load an IP contract or validate one operation-owned snapshot."""

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from sigilicon.contracts import (
     ContractReader,
@@ -19,6 +19,9 @@ from sigilicon.contracts import (
     require_table,
     require_text,
 )
+
+if TYPE_CHECKING:
+    from sigilicon.project import Project
 
 
 COMPONENT_KINDS = {
@@ -134,7 +137,7 @@ def _component_release(value: object, label: str) -> ComponentRelease | None:
     )
 
 
-def parse_component_contract(
+def _parse_component_contract(
     path: Path,
     *,
     project_root: Path,
@@ -294,8 +297,10 @@ def parse_component_contract(
     return result
 
 
-def load_component_contract(path: Path, *, project_root: Path) -> ComponentContract:
-    root = project_root.resolve()
+def load_component_contract(path: Path, *, project: Project) -> ComponentContract:
+    """Load a component through the canonical project composition seam."""
+
+    root = project.project_root.resolve()
     contract_path = path.absolute()
     if (
         contract_path.resolve() != contract_path
@@ -303,7 +308,7 @@ def load_component_contract(path: Path, *, project_root: Path) -> ComponentContr
         or not contract_path.is_file()
     ):
         raise FileNotFoundError("component contract is missing or outside the project root")
-    return parse_component_contract(
+    return _parse_component_contract(
         contract_path,
         project_root=root,
         document=read_toml(contract_path),
@@ -313,15 +318,15 @@ def load_component_contract(path: Path, *, project_root: Path) -> ComponentContr
 def resolve_component_contract(
     path: Path,
     *,
-    project_root: Path,
+    project: Project,
     snapshot: ComponentContract | None = None,
 ) -> ComponentContract:
     """Load a component or validate one caller-owned source snapshot."""
 
     if snapshot is None:
-        return load_component_contract(path, project_root=project_root)
+        return load_component_contract(path, project=project)
     contract_path = path.resolve()
-    root = project_root.resolve()
+    root = project.project_root.resolve()
     if (
         snapshot.path != contract_path
         or snapshot.project_root != root
@@ -332,7 +337,7 @@ def resolve_component_contract(
         or not snapshot.document
     ):
         raise ValueError("component snapshot identity drift")
-    validated = parse_component_contract(
+    validated = _parse_component_contract(
         contract_path,
         project_root=root,
         document=snapshot.document,
@@ -345,13 +350,13 @@ def resolve_component_contract(
 def load_component_graph(
     path: Path,
     *,
-    project_root: Path,
+    project: Project,
     root_contract: ComponentContract | None = None,
     contract_inventory: Mapping[Path, ComponentContract] | None = None,
 ) -> Mapping[str, ComponentContract]:
     """Load and validate the complete component ownership graph rooted at *path*."""
 
-    root = project_root.resolve()
+    root = project.project_root.resolve()
     graph_root = path.resolve()
     if root_contract is not None and (
         root_contract.path != graph_root
@@ -392,7 +397,7 @@ def load_component_graph(
                 inventory_snapshot = root_contract
             contract = resolve_component_contract(
                 resolved,
-                project_root=root,
+                project=project,
                 snapshot=inventory_snapshot,
             )
             previous = owners.get(contract.name)
@@ -422,14 +427,14 @@ def load_component_graph(
 def resolve_component_graph(
     path: Path,
     *,
-    project_root: Path,
+    project: Project,
     snapshot: Mapping[str, ComponentContract] | None = None,
 ) -> Mapping[str, ComponentContract]:
     """Load a component graph or validate one caller-owned graph snapshot."""
 
     if snapshot is None:
-        return load_component_graph(path, project_root=project_root)
-    root = project_root.resolve()
+        return load_component_graph(path, project=project)
+    root = project.project_root.resolve()
     graph_root = path.resolve()
     if (
         not isinstance(snapshot, _MAPPING_PROXY_TYPE)
@@ -443,7 +448,7 @@ def resolve_component_graph(
             raise ValueError("component graph snapshot identity drift")
         resolved = resolve_component_contract(
             contract.path,
-            project_root=root,
+            project=project,
             snapshot=contract,
         )
         if resolved.path in by_path:

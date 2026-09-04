@@ -8,7 +8,7 @@ that makes ownership, scope, and migration boundaries explicit.
 from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from sigilicon.contracts import (
     DocumentStore,
@@ -16,7 +16,8 @@ from sigilicon.contracts import (
     require_config_header as _require_config_header,
 )
 
-from sigilicon.domain.context import RepositoryContext
+if TYPE_CHECKING:
+    from sigilicon.project import Project
 
 
 def _text(value: object, field: str) -> str:
@@ -26,7 +27,7 @@ def _text(value: object, field: str) -> str:
 
 
 def inspect_project_configuration_sources(
-    context: RepositoryContext,
+    context: Project,
     *,
     operation_catalog_inventory: Mapping[str, Path],
     sources: DocumentStore,

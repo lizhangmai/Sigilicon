@@ -6,12 +6,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import sysconfig
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from sigilicon.domain.component import ComponentContract, load_component_graph
 from sigilicon.contracts import freeze_toml_document, read_toml, require_config_header
 from sigilicon.domain.design import IDENTIFIER_RE
-from sigilicon.domain.context import RepositoryContext, RepositoryIdentity
+from sigilicon.domain.context import RepositoryIdentity
 from sigilicon.domain.netlist import (
     NetlistSnapshot,
     load_netlist_snapshot,
@@ -30,6 +30,9 @@ from sigilicon.domain.platform import (
     PlatformSnapshot,
     resolve_platform_snapshot,
 )
+
+if TYPE_CHECKING:
+    from sigilicon.project import Project
 
 
 _DIRECTIONS = {"input", "output", "inputOutput"}
@@ -121,7 +124,7 @@ def _module_source(project_root: Path, module: str) -> Path | None:
 
 
 def _owner_oa_assembly(
-    repository: RepositoryContext,
+    repository: Project,
     spec_path: Path,
     *,
     oa_source: OALibrarySource | None = None,
@@ -175,7 +178,7 @@ def _component_source_files(
 
 
 def _validate_generator_ownership(
-    repository: RepositoryContext,
+    repository: Project,
     *,
     owner: Any,
     component_graph: Mapping[str, ComponentContract],
@@ -278,7 +281,7 @@ def _validate_generator_ownership(
 def load_layout_spec(
     path: Path,
     *,
-    project: RepositoryContext,
+    project: Project,
     oa_source: OALibrarySource | None = None,
     platform: PlatformSnapshot | None = None,
     netlist_inventory: Mapping[Path, NetlistSnapshot] | None = None,
@@ -484,7 +487,7 @@ def load_layout_spec(
     if owner is not None:
         component_graph = load_component_graph(
             owner.component.path,
-            project_root=root,
+            project=repository,
             root_contract=owner.component,
             contract_inventory=repository.component_inventory,
         )
@@ -534,7 +537,7 @@ def load_layout_spec(
 def resolve_layout_spec(
     path: Path,
     *,
-    project: RepositoryContext,
+    project: Project,
     snapshot: LayoutSpec | None = None,
     platform: PlatformSnapshot | None = None,
 ) -> LayoutSpec:
@@ -679,7 +682,7 @@ def resolve_layout_spec(
     if owner is not None:
         component_graph = load_component_graph(
             owner.component.path,
-            project_root=root,
+            project=project,
             root_contract=owner.component,
             contract_inventory=project.component_inventory,
         )

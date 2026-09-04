@@ -46,13 +46,28 @@ FLOW_ROOT = Path(__file__).parents[1] / "src" / "sigilicon"
 
 def _imports(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    names: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            names.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            names.add(node.module)
-    return names
+
+    class RuntimeImportVisitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.names: set[str] = set()
+
+        def visit_Import(self, node: ast.Import) -> None:
+            self.names.update(alias.name for alias in node.names)
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            if node.module:
+                self.names.add(node.module)
+
+        def visit_If(self, node: ast.If) -> None:
+            if isinstance(node.test, ast.Name) and node.test.id == "TYPE_CHECKING":
+                for statement in node.orelse:
+                    self.visit(statement)
+                return
+            self.generic_visit(node)
+
+    visitor = RuntimeImportVisitor()
+    visitor.visit(tree)
+    return visitor.names
 
 
 def _dependency_layer(module: str) -> str | None:

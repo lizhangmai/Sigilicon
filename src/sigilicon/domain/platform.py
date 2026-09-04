@@ -6,7 +6,7 @@ from dataclasses import InitVar, dataclass, field
 from pathlib import Path, PurePosixPath
 import re
 from types import MappingProxyType
-from typing import Any, Iterator, Mapping, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Iterator, Mapping, Protocol, runtime_checkable
 
 from sigilicon.contracts import (
     freeze_toml_document,
@@ -15,7 +15,10 @@ from sigilicon.contracts import (
     require_config_header,
 )
 from sigilicon.domain.layout_technology import LayoutTechnology, parse_layout_technology
-from sigilicon.domain.context import RepositoryContext, RepositoryIdentity
+from sigilicon.domain.context import RepositoryIdentity
+
+if TYPE_CHECKING:
+    from sigilicon.project import Project
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
@@ -301,7 +304,7 @@ class PlatformSet(Mapping[str, Platform]):
         self,
         *,
         _authority: object,
-        project: RepositoryContext,
+        project: Project,
         catalog: PlatformCatalogSnapshot,
         platforms: Mapping[str, Platform],
     ) -> None:
@@ -357,7 +360,7 @@ class PlatformSet(Mapping[str, Platform]):
     def __len__(self) -> int:
         return len(self.platforms)
 
-    def resolve(self, context: RepositoryContext, key: str) -> Platform:
+    def resolve(self, context: Project, key: str) -> Platform:
         context.manifest_source_document()
         self.repository.validate(context)
         if (
@@ -423,7 +426,7 @@ def _validate_immutable_platform_snapshot(snapshot: Platform) -> None:
 
 
 def _validate_platform_snapshot(
-    context: RepositoryContext,
+    context: Project,
     key: str,
     snapshot: Platform,
     *,
@@ -458,7 +461,7 @@ def _validate_platform_snapshot(
     return snapshot
 
 def resolve_platform_snapshot(
-    context: RepositoryContext,
+    context: Project,
     key: str,
     *,
     snapshot: PlatformSnapshot | None = None,
@@ -473,7 +476,7 @@ def resolve_platform_snapshot(
 
 
 def resolve_platform_catalog(
-    context: RepositoryContext,
+    context: Project,
     *,
     snapshot: PlatformCatalogSnapshot | None = None,
 ) -> PlatformCatalogSnapshot:
@@ -867,7 +870,7 @@ def _load_layout(
 
 
 def _platform_catalog_document(
-    context: RepositoryContext,
+    context: Project,
     document: Mapping[str, Any],
 ) -> tuple[Path, Path, str, Mapping[str, Any]]:
     context.manifest_source_document()
@@ -892,7 +895,7 @@ def _platform_catalog_document(
 
 
 def parse_platform_catalog(
-    context: RepositoryContext,
+    context: Project,
     document: Mapping[str, Any],
 ) -> PlatformCatalogSnapshot:
     """Validate an already read canonical platform catalog document."""
@@ -921,7 +924,7 @@ def parse_platform_catalog(
     )
 
 
-def load_platform_catalog(context: RepositoryContext) -> PlatformCatalogSnapshot:
+def load_platform_catalog(context: Project) -> PlatformCatalogSnapshot:
     """Read and validate the project's canonical platform catalog once."""
 
     catalog_path = context.catalog("platform")
@@ -929,7 +932,7 @@ def load_platform_catalog(context: RepositoryContext) -> PlatformCatalogSnapshot
 
 
 def _load_platform(
-    context: RepositoryContext,
+    context: Project,
     key: str,
     *,
     resources: PlatformResources | None,
@@ -1066,7 +1069,7 @@ def _load_platform(
 
 
 def load_platform(
-    context: RepositoryContext,
+    context: Project,
     key: str,
     *,
     resources: PlatformResources | None = None,
@@ -1085,7 +1088,7 @@ def load_platform(
 
 
 def _load_platforms(
-    context: RepositoryContext,
+    context: Project,
     *,
     resources: PlatformResources | None = None,
     catalog: PlatformCatalogSnapshot | None = None,
@@ -1117,7 +1120,7 @@ def _load_platforms(
 
 
 def load_platforms(
-    context: RepositoryContext,
+    context: Project,
     *,
     resources: PlatformResources | None = None,
     catalog: PlatformCatalogSnapshot | None = None,

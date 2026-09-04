@@ -259,7 +259,7 @@ def inspect_repository_designs(
         owner = context.require_owner(path)
         graph = load_component_graph(
             path,
-            project_root=root,
+            project=context,
             root_contract=(owner.component if owner.component.path == path else None),
             contract_inventory=context.component_inventory,
         )

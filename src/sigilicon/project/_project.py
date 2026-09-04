@@ -23,7 +23,7 @@ from sigilicon.contracts import (
     require_text,
     thaw_toml_document,
 )
-from sigilicon.domain.component import ComponentContract, load_component_contract
+from sigilicon.domain.component import ComponentContract, _parse_component_contract
 from sigilicon.paths import (
     ProjectContext,
     validate_artifact_component,
@@ -501,9 +501,10 @@ class Project:
                 raise ValueError(
                     f"{ip_catalog}: components.{name}.contract must stay inside its root"
                 )
-            component = load_component_contract(
+            component = _parse_component_contract(
                 component_path,
                 project_root=project.project_root,
+                document=read_toml(component_path),
             )
             if component.name != owner or component.owner != owner:
                 raise ValueError(

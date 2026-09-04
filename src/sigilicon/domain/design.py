@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from sigilicon.contracts import (
     freeze_toml_document,
@@ -20,7 +20,10 @@ from sigilicon.domain.platform import (
     PlatformSnapshot,
     resolve_platform_snapshot,
 )
-from sigilicon.domain.context import RepositoryContext, RepositoryIdentity
+from sigilicon.domain.context import RepositoryIdentity
+
+if TYPE_CHECKING:
+    from sigilicon.project import Project
 
 
 IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
@@ -107,7 +110,7 @@ def _optional_names(value: Any, field: str) -> tuple[str, ...]:
 def load_design_spec(
     path: Path,
     *,
-    project: RepositoryContext,
+    project: Project,
     platform: PlatformSnapshot | None = None,
     netlist_snapshot: NetlistSnapshot | None = None,
 ) -> DesignSpec:
@@ -244,7 +247,7 @@ def load_design_spec(
 def resolve_design_spec(
     path: Path,
     *,
-    project: RepositoryContext,
+    project: Project,
     snapshot: DesignSpec | None = None,
 ) -> DesignSpec:
     """Load a design spec or validate one operation-owned snapshot."""
