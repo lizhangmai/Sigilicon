@@ -9,7 +9,16 @@ from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 import re
 from types import MappingProxyType
-from typing import Any, Mapping, Protocol
+from typing import TYPE_CHECKING, Any, Mapping, Protocol
+
+if TYPE_CHECKING:
+    from sigilicon.adapters.cadence.layout_generation import LayoutPlanningResult
+    from sigilicon.adapters.cadence.oa_library import OALibraryRebuildPlan
+    from sigilicon.adapters.cadence.xcelium_ams import XceliumAmsCellPlan
+
+    type CadenceDomainPlan = (
+        LayoutPlanningResult | OALibraryRebuildPlan | XceliumAmsCellPlan
+    )
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.canonical import canonical_digest
@@ -27,6 +36,7 @@ from sigilicon.execution._model import (
     Step,
     ExecutionIO,
     StepResult,
+    adapter_identity,
 )
 from sigilicon.external_tools import (
     CADENCE_SPECTRE_TOOL,
@@ -406,37 +416,52 @@ def _captured_project_sources(
 class _CadenceAction:
     """Adapter-private domain plan plus its sealed-path correspondence."""
 
-    plan: object
-    prepared: Mapping[str, Any]
+    kind: str
+    plan: CadenceDomainPlan
+    plan_identity: str
+    runtime_identities: tuple[str, ...]
     sources: Mapping[Path, tuple[str, str]]
     resources: tuple[tuple[Path, str, str], ...]
     workspace_root: Path
 
     def __post_init__(self) -> None:
-        if not isinstance(self.prepared, Mapping):
-            raise ContractError("prepared Cadence identity must be a mapping")
+        adapter_identity(self.kind)
+        if (
+            not isinstance(self.plan_identity, str)
+            or not self.plan_identity.startswith("sha256-")
+            or len(self.plan_identity) != 71
+        ):
+            raise ContractError("Cadence action plan identity is invalid")
+        if not isinstance(self.runtime_identities, tuple) or any(
+            not isinstance(name, str) or not name
+            for name in self.runtime_identities
+        ):
+            raise ContractError("Cadence action runtime identities are invalid")
         if not isinstance(self.sources, Mapping):
             raise ContractError("prepared Cadence sources must be a mapping")
         if len({identity for _path, identity, _digest in self.resources}) != len(
             self.resources
         ):
             raise ContractError("prepared Cadence resources contain duplicate identities")
-        object.__setattr__(self, "prepared", MappingProxyType(dict(self.prepared)))
         object.__setattr__(self, "sources", MappingProxyType(dict(self.sources)))
         object.__setattr__(self, "workspace_root", self.workspace_root.resolve())
 
     @classmethod
     def create(
         cls,
-        plan: object,
-        prepared: Mapping[str, Any],
+        kind: str,
+        plan: CadenceDomainPlan,
+        plan_identity: str,
+        runtime_identities: tuple[str, ...],
         sources: Mapping[Path, tuple[str, str]],
         resources: tuple[ResourceBinding, ...],
         workspace_root: Path,
     ) -> "_CadenceAction":
         return cls(
+            kind,
             plan,
-            prepared,
+            plan_identity,
+            runtime_identities,
             sources,
             tuple(
                 (resource.location, resource.identity, resource.sha256)
@@ -454,7 +479,11 @@ class _CadenceAction:
     @property
     def record(self) -> Mapping[str, Any]:
         return {
-            "domain": self.prepared,
+            "domain": {
+                "kind": self.kind,
+                "plan_identity": self.plan_identity,
+                "runtime_identities": self.runtime_identities,
+            },
             "sources": tuple(
                 sorted((name, digest) for name, digest in self.sources.values())
             ),
@@ -513,8 +542,9 @@ class _CadenceDomainAdapter:
         resources: Resources,
         *,
         owner: str,
-        plan: object,
-        prepared: Mapping[str, Any],
+        action_kind: str,
+        plan: CadenceDomainPlan,
+        plan_identity: str,
         source_records: Mapping[Path, str | Source],
         resource_identities: Mapping[Path, str],
         extra_resources: tuple[Path, ...] = (),
@@ -531,7 +561,8 @@ class _CadenceDomainAdapter:
         )
         preparation = self._bind_domain_plan(
             plan=plan,
-            prepared=prepared,
+            plan_identity=plan_identity,
+            action_kind=action_kind,
             sources=sources,
             captured=_captured_project_sources(
                 project,
@@ -548,8 +579,9 @@ class _CadenceDomainAdapter:
     def _bind_domain_plan(
         self,
         *,
-        plan: object,
-        prepared: Mapping[str, Any],
+        action_kind: str,
+        plan: CadenceDomainPlan,
+        plan_identity: str,
         sources: Mapping[Path, tuple[str, str]],
         captured: tuple[Source, ...],
         resources: tuple[ResourceBinding, ...],
@@ -557,8 +589,10 @@ class _CadenceDomainAdapter:
         workspace_root: Path,
     ) -> AdapterPreparation:
         domain_plan = _CadenceAction.create(
+            action_kind,
             plan,
-            prepared,
+            plan_identity,
+            tuple(binding.identity for binding in runtime_bindings),
             sources,
             resources,
             workspace_root,
@@ -576,11 +610,15 @@ class _CadenceDomainAdapter:
             resources=combined_bindings,
         )
 
-    def _domain_action(self, context: ExecutionIO) -> _CadenceAction:
+    def _domain_action(self, context: ExecutionIO, kind: str) -> _CadenceAction:
         context.step.validate_action()
         domain_plan = context.step.action
         if not isinstance(domain_plan, _CadenceAction):
             raise ExecutionError("Cadence Step has no planned Domain value")
+        if domain_plan.kind != kind:
+            raise ExecutionError(
+                f"Cadence Step action kind is {domain_plan.kind!r}, expected {kind!r}"
+            )
         domain_plan.validate(context)
         return domain_plan
 
@@ -893,14 +931,14 @@ class XceliumAmsAdapter(_CadenceDomainAdapter):
         )
         if required != frozenset(planning.source_records):
             raise ContractError("Xcelium AMS plan source snapshot is incomplete")
-        prepared_identity = {"identity": canonical_digest(planning.as_dict())}
         return self._prepare_domain_step(
             project,
             step,
             resources,
             owner=owner,
+            action_kind="xcelium-ams",
             plan=planning,
-            prepared=prepared_identity,
+            plan_identity=canonical_digest(planning.as_dict()),
             source_records=planning.source_records,
             resource_identities=planning.resource_identities,
             runtime_identities=(_XRUN, CADENCE_SPECTRE_TOOL),
@@ -912,7 +950,7 @@ class XceliumAmsAdapter(_CadenceDomainAdapter):
 
         config = _strict_config(step, self._fields)
         owner = _text(config, "owner")
-        prepared = self._domain_action(context)
+        prepared = self._domain_action(context, "xcelium-ams")
         planning = prepared.plan
         with owned_scratch_directory(
             prefix=f"sigilicon-xcelium-ams-{context.run_id}-",
@@ -1038,18 +1076,14 @@ class NativeOaAdapter(_CadenceDomainAdapter):
             planning,
             oa_plan_source_paths(planning),
         )
-        prepared_identity = {
-            "assembly_identity": canonical_digest(planning.as_dict()),
-            "library": planning.library,
-            "testbench": matches[0].cell,
-        }
         return self._prepare_domain_step(
             project,
             step,
             resources,
             owner=owner,
+            action_kind="native-oa",
             plan=planning,
-            prepared=prepared_identity,
+            plan_identity=canonical_digest(planning.as_dict()),
             source_records=required,
             resource_identities=_oa_resource_identities(
                 project,
@@ -1073,7 +1107,7 @@ class NativeOaAdapter(_CadenceDomainAdapter):
         config = _strict_config(step, self._fields)
         owner = _text(config, "owner")
         testbench = _text(config, "testbench")
-        prepared = self._domain_action(context)
+        prepared = self._domain_action(context, "native-oa")
         plan = build_oa_layout_ir(
             prepared.plan,
             source_paths=prepared.source_paths(context),
@@ -1139,42 +1173,23 @@ class NativeOaAdapter(_CadenceDomainAdapter):
         )
 
 
-@dataclass(frozen=True)
-class _OaOperationSpec:
-    name: str
-    requires_testbench: bool = False
-    materializes_layout_ir: bool = False
-
-
-_OA_OPERATIONS = MappingProxyType(
-    {
-        "check": _OaOperationSpec("check", materializes_layout_ir=True),
-        "rebuild": _OaOperationSpec("rebuild", materializes_layout_ir=True),
-        "attest": _OaOperationSpec("attest", requires_testbench=True),
-    }
-)
-
-
 class _OaAdapter(_CadenceDomainAdapter):
-    """Execute one fixed native-OA operation against a plan-bound assembly."""
+    """Common planning and publication for one fixed native-OA operation."""
 
     _base_fields = frozenset({"owner", "timeout_seconds"})
-
-    def __init__(self, operation: str) -> None:
-        try:
-            self.spec = _OA_OPERATIONS[operation]
-        except KeyError as exc:
-            raise ValueError(f"unsupported OA operation: {operation}") from exc
-        self.name = f"cadence.oa-{self.spec.name}"
+    name: str
+    operation: str
+    requires_testbench = False
+    materializes_layout_ir = False
 
     def _config(self, step: Step) -> Mapping[str, Any]:
         fields = self._base_fields | (
-            {"testbench"} if self.spec.requires_testbench else set()
+            {"testbench"} if self.requires_testbench else set()
         )
         config = _strict_config(step, frozenset(fields))
         _text(config, "owner")
         _positive_integer(config, "timeout_seconds")
-        if self.spec.requires_testbench:
+        if self.requires_testbench:
             _text(config, "testbench")
         if "configs/oa.toml" not in step.sources:
             raise ContractError("OA management step must close over configs/oa.toml")
@@ -1183,25 +1198,23 @@ class _OaAdapter(_CadenceDomainAdapter):
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         self._config(step)
         action = step.action
-        if action is not None and not isinstance(action, _CadenceAction):
+        if action is not None and (
+            not isinstance(action, _CadenceAction)
+            or action.kind != f"oa-{self.operation}"
+        ):
             raise ContractError("OA Step has an invalid planned action")
         step.validate_action()
-        prepared = {} if action is None else action.prepared
         runtime_executables: tuple[str, ...] = ()
-        if prepared:
-            selected = prepared.get("runtime_executables")
-            if not isinstance(selected, tuple) or any(
-                item not in {
+        if action is not None:
+            runtime_executables = tuple(
+                item
+                for item in action.runtime_identities
+                if item in {
                     CADENCE_SPICEIN_TOOL,
                     CADENCE_TEXT_IMPORT_TOOL,
                     _PYTHON,
                 }
-                for item in selected
-            ):
-                raise ContractError(
-                    "prepared OA runtime executables disagree with their contract"
-                )
-            runtime_executables = selected
+            )
         return (
             _bridge_check(resources),
             *(
@@ -1210,6 +1223,18 @@ class _OaAdapter(_CadenceDomainAdapter):
             ),
             *_capability_checks(resources, _OA_CAPABILITIES),
         )
+
+    def _execute_operation(
+        self,
+        context: ExecutionIO,
+        *,
+        planning: OALibraryRebuildPlan,
+        prepared: _CadenceAction,
+        selected: Any,
+        client: Any,
+        timeout: int,
+    ) -> Mapping[str, Any]:
+        raise NotImplementedError
 
     def prepare(
         self,
@@ -1236,7 +1261,7 @@ class _OaAdapter(_CadenceDomainAdapter):
             platform_inventory=platforms,
         )
         selected = None
-        if self.spec.requires_testbench:
+        if self.requires_testbench:
             testbench = _text(config, "testbench")
             matches = tuple(
                 item for item in planning.testbenches if item.cell == testbench
@@ -1250,23 +1275,14 @@ class _OaAdapter(_CadenceDomainAdapter):
             planning,
             oa_plan_source_paths(planning),
         )
-        prepared_identity = {
-            "assembly_identity": canonical_digest(planning.as_dict()),
-            "library": planning.library,
-            "operation": self.spec.name,
-            "testbench": None if selected is None else selected.cell,
-            "runtime_executables": _oa_runtime_executables(
-                planning,
-                self.spec.name,
-            ),
-        }
         return self._prepare_domain_step(
             project,
             step,
             resources,
             owner=owner,
+            action_kind=f"oa-{self.operation}",
             plan=planning,
-            prepared=prepared_identity,
+            plan_identity=canonical_digest(planning.as_dict()),
             source_records=required,
             resource_identities=_oa_resource_identities(
                 project,
@@ -1276,25 +1292,22 @@ class _OaAdapter(_CadenceDomainAdapter):
             ),
             runtime_identities=(
                 *_BRIDGE_RESOURCES,
-                *_oa_runtime_executables(planning, self.spec.name),
+                *_oa_runtime_executables(planning, self.operation),
             ),
         )
 
     def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
         from sigilicon.adapters.cadence.oa_client import get_client
-        from sigilicon.adapters.cadence.oa_check import check_oa_library
         from sigilicon.adapters.cadence.oa_library import (
-            attest_oa_testbench,
             build_oa_layout_ir,
-            rebuild_oa_library,
         )
 
         config = self._config(step)
         owner = _text(config, "owner")
-        prepared = self._domain_action(context)
+        prepared = self._domain_action(context, f"oa-{self.operation}")
         planning = prepared.plan
-        if self.spec.materializes_layout_ir:
+        if self.materializes_layout_ir:
             planning = build_oa_layout_ir(
                 planning,
                 source_paths=prepared.source_paths(context),
@@ -1302,7 +1315,7 @@ class _OaAdapter(_CadenceDomainAdapter):
                 python_executable=context.runtime.require_tool(_PYTHON),
             )
         selected = None
-        if self.spec.requires_testbench:
+        if self.requires_testbench:
             testbench = _text(config, "testbench")
             matches = tuple(item for item in planning.testbenches if item.cell == testbench)
             if len(matches) != 1:
@@ -1310,60 +1323,24 @@ class _OaAdapter(_CadenceDomainAdapter):
             selected = matches[0]
         timeout = _positive_integer(config, "timeout_seconds")
         client = get_client(context.runtime)
-        if self.spec.name == "check":
-            from sigilicon.virtuoso.workspace import (
-                OperationPolicy,
-                workspace_operation,
-            )
-
-            with workspace_operation(
-                client,
-                prepared.workspace_root,
-                "check-oa-library",
-                policy=OperationPolicy.READ_ONLY,
-                acquire_flow_lock=False,
-                record_incident=False,
-                operation_id=context.operation_id,
-            ) as operation:
-                context.register_mutation(operation)
-                payload = check_oa_library(
-                    planning,
-                    client=client,
-                    timeout=timeout,
-                    operation=operation,
-                )
-        elif self.spec.name == "rebuild":
-            payload = rebuild_oa_library(
-                planning,
-                client,
-                source_paths=prepared.source_paths(context),
-                resource_paths=prepared.resource_paths(context),
-                resources=context.runtime,
-                timeout=timeout,
-                operation_id=context.operation_id,
-                bind_operation=context.register_mutation,
-            )
-        else:
-            if selected is None:
-                raise ExecutionError("OA attest preparation lost its testbench")
-            payload = attest_oa_testbench(
-                planning,
-                selected,
-                client,
-                timeout=timeout,
-                operation_id=context.operation_id,
-                bind_operation=context.register_mutation,
-            )
+        payload = self._execute_operation(
+            context,
+            planning=planning,
+            prepared=prepared,
+            selected=selected,
+            client=client,
+            timeout=timeout,
+        )
         passed = payload.get("passed")
         if type(passed) is not bool:
             raise ExecutionError("OA evidence must contain a boolean 'passed' field")
         output = context.write_text(
             "oa",
-            f"{self.spec.name}.json",
+            f"{self.operation}.json",
             json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
         )
         artifacts = (Artifact("oa", "evidence.cadence-oa", output),)
-        facts = {"passed": passed, "operation": self.spec.name}
+        facts = {"passed": passed, "operation": self.operation}
         return (
             StepResult.succeeded(artifacts=artifacts, facts=facts)
             if passed
@@ -1371,8 +1348,108 @@ class _OaAdapter(_CadenceDomainAdapter):
                 "failed",
                 artifacts,
                 facts,
-                f"OA {self.spec.name} did not pass",
+                f"OA {self.operation} did not pass",
             )
+        )
+
+
+class OaCheckAdapter(_OaAdapter):
+    """Validate one planned OA library without mutating its workspace."""
+
+    name = "cadence.oa-check"
+    operation = "check"
+    materializes_layout_ir = True
+
+    def _execute_operation(
+        self,
+        context: ExecutionIO,
+        *,
+        planning: OALibraryRebuildPlan,
+        prepared: _CadenceAction,
+        selected: Any,
+        client: Any,
+        timeout: int,
+    ) -> Mapping[str, Any]:
+        from sigilicon.adapters.cadence.oa_check import check_oa_library
+        from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
+
+        with workspace_operation(
+            client,
+            prepared.workspace_root,
+            "check-oa-library",
+            policy=OperationPolicy.READ_ONLY,
+            acquire_flow_lock=False,
+            record_incident=False,
+            operation_id=context.operation_id,
+        ) as operation:
+            context.register_mutation(operation)
+            return check_oa_library(
+                planning,
+                client=client,
+                timeout=timeout,
+                operation=operation,
+            )
+
+
+class OaRebuildAdapter(_OaAdapter):
+    """Rebuild one planned OA assembly through a bound mutation lease."""
+
+    name = "cadence.oa-rebuild"
+    operation = "rebuild"
+    materializes_layout_ir = True
+
+    def _execute_operation(
+        self,
+        context: ExecutionIO,
+        *,
+        planning: OALibraryRebuildPlan,
+        prepared: _CadenceAction,
+        selected: Any,
+        client: Any,
+        timeout: int,
+    ) -> Mapping[str, Any]:
+        from sigilicon.adapters.cadence.oa_library import rebuild_oa_library
+
+        return rebuild_oa_library(
+            planning,
+            client,
+            source_paths=prepared.source_paths(context),
+            resource_paths=prepared.resource_paths(context),
+            resources=context.runtime,
+            timeout=timeout,
+            operation_id=context.operation_id,
+            bind_operation=context.register_mutation,
+        )
+
+
+class OaAttestAdapter(_OaAdapter):
+    """Attest one native OA testbench against its planned assembly."""
+
+    name = "cadence.oa-attest"
+    operation = "attest"
+    requires_testbench = True
+
+    def _execute_operation(
+        self,
+        context: ExecutionIO,
+        *,
+        planning: OALibraryRebuildPlan,
+        prepared: _CadenceAction,
+        selected: Any,
+        client: Any,
+        timeout: int,
+    ) -> Mapping[str, Any]:
+        from sigilicon.adapters.cadence.oa_library import attest_oa_testbench
+
+        if selected is None:
+            raise ExecutionError("OA attest preparation lost its testbench")
+        return attest_oa_testbench(
+            planning,
+            selected,
+            client,
+            timeout=timeout,
+            operation_id=context.operation_id,
+            bind_operation=context.register_mutation,
         )
 
 
@@ -1419,20 +1496,22 @@ class LayoutAdapter(_CadenceDomainAdapter):
             project=project,
             platform=platforms,
         )
-        prepared_identity = {
-            "library": planning.spec.library,
-            "cell": planning.spec.cell,
-            "view": planning.spec.view,
-            "generator": planning.spec.generator,
-            "stage": planning.spec.stage,
-        }
         return self._prepare_domain_step(
             project,
             step,
             resources,
             owner=owner,
+            action_kind="layout",
             plan=planning,
-            prepared=prepared_identity,
+            plan_identity=canonical_digest(
+                {
+                    "library": planning.spec.library,
+                    "cell": planning.spec.cell,
+                    "view": planning.spec.view,
+                    "generator": planning.spec.generator,
+                    "stage": planning.spec.stage,
+                }
+            ),
             source_records=planning.source_records,
             resource_identities=platform_resource_identities(planning.spec.pdk),
             runtime_identities=(*_BRIDGE_RESOURCES, _PYTHON),
@@ -1442,7 +1521,7 @@ class LayoutAdapter(_CadenceDomainAdapter):
         step = context.step
         from sigilicon.adapters.cadence.layout_generation import build_managed_layout_ir
 
-        prepared = self._domain_action(context)
+        prepared = self._domain_action(context, "layout")
         planning = build_managed_layout_ir(
             prepared.plan,
             source_paths=prepared.source_paths(context),
@@ -1569,21 +1648,23 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
             else planning.spec.layout_pdk.lvs_deck.require_path()
         )
         check = _text(config, "check")
-        prepared_identity = {
-            "library": planning.spec.library,
-            "cell": planning.spec.cell,
-            "view": planning.spec.view,
-            "generator": planning.spec.generator,
-            "stage": planning.spec.stage,
-            "check": check,
-        }
         return self._prepare_domain_step(
             project,
             step,
             resources,
             owner=owner,
+            action_kind="layout-verify",
             plan=planning,
-            prepared=prepared_identity,
+            plan_identity=canonical_digest(
+                {
+                    "library": planning.spec.library,
+                    "cell": planning.spec.cell,
+                    "view": planning.spec.view,
+                    "generator": planning.spec.generator,
+                    "stage": planning.spec.stage,
+                    "check": check,
+                }
+            ),
             source_records=planning.source_records,
             resource_identities=platform_resource_identities(planning.spec.pdk),
             extra_resources=(planning.spec.layout_pdk.layermap.require_path(), deck),
@@ -1596,7 +1677,7 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
 
         config = _strict_config(step, self._fields)
         check = _text(config, "check")
-        prepared = self._domain_action(context)
+        prepared = self._domain_action(context, "layout-verify")
         planning = build_managed_layout_ir(
             prepared.plan,
             source_paths=prepared.source_paths(context),
@@ -1722,9 +1803,9 @@ def cadence_adapters() -> tuple[
     XceliumAdapter,
     XceliumAmsAdapter,
     NativeOaAdapter,
-    _OaAdapter,
-    _OaAdapter,
-    _OaAdapter,
+    OaCheckAdapter,
+    OaRebuildAdapter,
+    OaAttestAdapter,
     LayoutAdapter,
     LayoutVerificationAdapter,
 ]:
@@ -1733,9 +1814,9 @@ def cadence_adapters() -> tuple[
         XceliumAdapter(),
         XceliumAmsAdapter(),
         NativeOaAdapter(),
-        _OaAdapter("check"),
-        _OaAdapter("rebuild"),
-        _OaAdapter("attest"),
+        OaCheckAdapter(),
+        OaRebuildAdapter(),
+        OaAttestAdapter(),
         LayoutAdapter(),
         LayoutVerificationAdapter(),
     )
@@ -1745,6 +1826,9 @@ __all__ = [
     "LayoutAdapter",
     "LayoutVerificationAdapter",
     "NativeOaAdapter",
+    "OaAttestAdapter",
+    "OaCheckAdapter",
+    "OaRebuildAdapter",
     "SpectreAdapter",
     "XceliumAdapter",
     "XceliumAmsAdapter",

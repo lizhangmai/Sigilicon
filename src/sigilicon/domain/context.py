@@ -49,7 +49,6 @@ class RepositoryIdentity:
 
     project_root: Path
     workspace_root: Path
-    artifact_root: Path
     identity: str
 
     @classmethod
@@ -57,7 +56,6 @@ class RepositoryIdentity:
         return cls(
             project_root=context.project_root,
             workspace_root=context.workspace_root,
-            artifact_root=context.artifact_root,
             identity=context.identity,
         )
 

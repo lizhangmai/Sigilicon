@@ -7,6 +7,7 @@ import pytest
 
 from conftest import write_component_owner
 from sigilicon.cli.main import main as sigilicon_main
+from sigilicon.domain.context import RepositoryIdentity
 from sigilicon.project import Project
 import sigilicon.project.checks as repository_checks
 
@@ -116,6 +117,7 @@ def test_project_manifest_source_document_is_frozen_and_resolved(
 
     run_scoped = project.with_artifact_root(tmp_path / "run-artifacts")
     assert run_scoped.manifest_source_document() == project.manifest_document
+    RepositoryIdentity.capture(project).validate(run_scoped)
     manifest = tmp_path / "sigilicon.toml"
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(

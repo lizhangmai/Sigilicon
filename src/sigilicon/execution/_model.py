@@ -1488,7 +1488,7 @@ class Artifact:
     role: str
     kind: str
     path: Path
-    qualifiers: Mapping[str, Any] = field(default_factory=dict)
+    qualifiers: Mapping[str, JsonValue] = field(default_factory=dict)
     size: int | None = None
     sha256: str | None = None
 
@@ -1531,7 +1531,7 @@ class Artifact:
 class StepResult:
     status: str
     artifacts: tuple[Artifact, ...] = ()
-    facts: Mapping[str, Any] = field(default_factory=dict)
+    facts: Mapping[str, JsonValue] = field(default_factory=dict)
     message: str = ""
 
     def __post_init__(self) -> None:
@@ -1556,7 +1556,7 @@ class StepResult:
         cls,
         *,
         artifacts: tuple[Artifact, ...] = (),
-        facts: Mapping[str, Any] | None = None,
+        facts: Mapping[str, JsonValue] | None = None,
     ) -> "StepResult":
         return cls("succeeded", artifacts, {} if facts is None else facts)
 
@@ -1565,7 +1565,12 @@ class StepResult:
         return cls("failed", message=message)
 
     @classmethod
-    def partial(cls, message: str, *, facts: Mapping[str, Any] | None = None) -> "StepResult":
+    def partial(
+        cls,
+        message: str,
+        *,
+        facts: Mapping[str, JsonValue] | None = None,
+    ) -> "StepResult":
         return cls("partial", facts={} if facts is None else facts, message=message)
 
     @classmethod
@@ -1573,7 +1578,7 @@ class StepResult:
         cls,
         message: str,
         *,
-        facts: Mapping[str, Any] | None = None,
+        facts: Mapping[str, JsonValue] | None = None,
     ) -> "StepResult":
         return cls("uncertain", facts={} if facts is None else facts, message=message)
 
