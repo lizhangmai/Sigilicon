@@ -18,10 +18,7 @@ import re
 import shlex
 from typing import Any
 
-from sigilicon.artifacts import (
-    copy_immutable_file,
-    ensure_nofollow_directory,
-)
+from sigilicon.artifacts import ensure_nofollow_directory
 from sigilicon.canonical import canonical_digest
 from sigilicon.execution.adapter import DirectAdapter, PlanningProject
 from sigilicon.execution._model import (
@@ -33,7 +30,7 @@ from sigilicon.execution._model import (
     Resources,
     Source,
     Step,
-    StepContext,
+    ExecutionIO,
     StepResult,
     _bind_step,
 )
@@ -238,13 +235,13 @@ def _base_checks(step: Step) -> list[PreflightCheck]:
     return [PreflightCheck("owner-runner", runner, "ready", "sealed plan source")]
 
 
-def _write_filelist(context: StepContext, name: str, sources: tuple[str, ...]) -> Path:
+def _write_filelist(context: ExecutionIO, name: str, sources: tuple[str, ...]) -> Path:
     if not sources:
         raise ExecutionError(f"managed {name} source set is empty")
     return context.workspace(
         "synopsys",
         {},
-        tool_work_root=context.work_root,
+        tool_work_root=context.work_directory,
     ).write_text(
         "work",
         (f"{name}.f",),
@@ -252,7 +249,7 @@ def _write_filelist(context: StepContext, name: str, sources: tuple[str, ...]) -
     )
 
 
-def _logs(context: StepContext, stdout: str, stderr: str) -> tuple[Artifact, ...]:
+def _logs(context: ExecutionIO, stdout: str, stderr: str) -> tuple[Artifact, ...]:
     values = (("stdout.log", stdout), ("stderr.log", stderr))
     return tuple(
         Artifact("log", "log.synopsys", context.write_text("log", name, value))
@@ -260,35 +257,7 @@ def _logs(context: StepContext, stdout: str, stderr: str) -> tuple[Artifact, ...
     )
 
 
-def _copied(
-    context: StepContext,
-    *,
-    role: str,
-    kind: str,
-    source: Path,
-    filename: str,
-) -> Artifact:
-    if not source.is_file() or source.is_symlink():
-        raise ExecutionError(f"Synopsys tool omitted required {role!r} output")
-    destination = context.output_path(role, _safe_relative(filename, f"{role} output"))
-    copy_immutable_file(source, destination)
-    return Artifact(role, kind, destination)
-
-
-def _tree_artifacts(root: Path, role: str, kind: str) -> tuple[Artifact, ...]:
-    if not root.is_dir() or root.is_symlink():
-        raise ExecutionError(f"Synopsys tool omitted required {role!r} directory")
-    paths = tuple(
-        path.absolute()
-        for path in sorted(root.rglob("*"))
-        if path.is_file() and not path.is_symlink()
-    )
-    if not paths:
-        raise ExecutionError(f"Synopsys tool produced an empty {role!r} directory")
-    return tuple(Artifact(role, kind, path) for path in paths)
-
-
-def _artifact(context: StepContext, dependency: str, role: str) -> Artifact:
+def _artifact(context: ExecutionIO, dependency: str, role: str) -> Artifact:
     artifacts = context.artifacts(dependency, role)
     if len(artifacts) != 1:
         raise ExecutionError(
@@ -298,7 +267,7 @@ def _artifact(context: StepContext, dependency: str, role: str) -> Artifact:
 
 
 def _run_script(
-    context: StepContext,
+    context: ExecutionIO,
     environment: dict[str, str],
     *,
     argument: str,
@@ -310,11 +279,11 @@ def _run_script(
 
     runner = _runner(context.step)
     with ExitStack() as stack:
-        source_root = stack.enter_context(owned_directory(context.source_root))
-        work_root = stack.enter_context(owned_directory(context.work_root))
+        source_root = stack.enter_context(owned_directory(context.source_directory))
+        work_root = stack.enter_context(owned_directory(context.work_directory))
         source_closure = stack.enter_context(
             owned_input_closure(
-                context.source_root,
+                context.source_directory,
                 files=tuple(
                     context.source_path(source)
                     for source in context.step.sources
@@ -323,13 +292,13 @@ def _run_script(
         )
         resource_root = (
             None
-            if context.resource_root is None
-            else stack.enter_context(owned_directory(context.resource_root))
+            if context.resource_directory is None
+            else stack.enter_context(owned_directory(context.resource_directory))
         )
 
         def child_input(path: Path) -> str | None:
-            if path.is_relative_to(context.source_root):
-                relative = path.relative_to(context.source_root)
+            if path.is_relative_to(context.source_directory):
+                relative = path.relative_to(context.source_directory)
                 return (
                     source_root.child_path
                     if relative == Path(".")
@@ -337,10 +306,10 @@ def _run_script(
                 )
             if (
                 resource_root is not None
-                and context.resource_root is not None
-                and path.is_relative_to(context.resource_root)
+                and context.resource_directory is not None
+                and path.is_relative_to(context.resource_directory)
             ):
-                relative = path.relative_to(context.resource_root)
+                relative = path.relative_to(context.resource_directory)
                 return (
                     resource_root.child_path
                     if relative == Path(".")
@@ -352,7 +321,7 @@ def _run_script(
             path = Path(value)
             if (
                 path.is_absolute()
-                and path.is_relative_to(context.source_root)
+                and path.is_relative_to(context.source_directory)
                 and (selected := child_input(path)) is not None
             ):
                 environment[name] = selected
@@ -368,7 +337,7 @@ def _run_script(
                 raise ExecutionError(
                     f"runtime executable {name} is outside the Step tool bindings"
                 )
-            owned = stack.enter_context(context.resources.owned_tool(identity))
+            owned = stack.enter_context(context.runtime.owned_tool(identity))
             executable_by_name[name] = owned
             executables.append(owned)
         runner_shell = executable_by_name.get(_RUNNER_SHELL)
@@ -380,7 +349,7 @@ def _run_script(
                 environment[name] = owned.target.child_named_path
             else:
                 launcher_name = f".{name.lower()}.launcher"
-                launcher_path = context.work_root / launcher_name
+                launcher_path = context.work_directory / launcher_name
                 payload = (
                     f"#!{shell_path}\nexec "
                     + shlex.join(owned.command)
@@ -487,11 +456,11 @@ class VcsAdapter(DirectAdapter):
         checks.extend(preflight_environment(step.runtime, resources))
         return tuple(checks)
 
-    def run(self, context: StepContext) -> StepResult:
+    def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
         config = _strict_config(context.step, self._fields)
         target = _target(config)
-        runtime = _runtime_environment(context.resources, context.step)
+        runtime = _runtime_environment(context.runtime, context.step)
         environment = runtime.values
         environment["SIGILICON_DESIGN_VARIANT"] = _text(config, "variant")
         rtl = _source_members(context.step, "rtl_root", suffix=".sv")
@@ -563,10 +532,10 @@ class DcAdapter(DirectAdapter):
         checks.extend(preflight_environment(step.runtime, resources))
         return tuple(checks)
 
-    def run(self, context: StepContext) -> StepResult:
+    def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
         config = _strict_config(context.step, self._fields)
-        runtime = _runtime_environment(context.resources, context.step)
+        runtime = _runtime_environment(context.runtime, context.step)
         environment = runtime.values
         environment.update(
             {
@@ -603,22 +572,19 @@ class DcAdapter(DirectAdapter):
                     "failed", logs, message=f"DC runner exited {completed.returncode}"
                 )
             outputs = (
-                _copied(
-                    context,
+                context.copy_output(
                     role="mapped-netlist",
                     kind="netlist.verilog",
                     source=scratch.path / "mapped.v",
                     filename="mapped.v",
                 ),
-                _copied(
-                    context,
+                context.copy_output(
                     role="mapped-constraints",
                     kind="constraints.sdc",
                     source=scratch.path / "mapped.sdc",
                     filename="mapped.sdc",
                 ),
-                _copied(
-                    context,
+                context.copy_output(
                     role="checkpoint",
                     kind="checkpoint.synopsys-ddc",
                     source=scratch.path / "mapped.ddc",
@@ -626,8 +592,7 @@ class DcAdapter(DirectAdapter):
                 ),
             )
             reports = tuple(
-                _copied(
-                    context,
+                context.copy_output(
                     role="report",
                     kind="report.synopsys",
                     source=scratch.path / relative,
@@ -665,11 +630,11 @@ class FcAdapter(DirectAdapter):
         checks.extend(preflight_environment(step.runtime, resources))
         return tuple(checks)
 
-    def run(self, context: StepContext) -> StepResult:
+    def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
         config = _strict_config(context.step, self._fields)
         target = _target(config)
-        runtime = _runtime_environment(context.resources, context.step)
+        runtime = _runtime_environment(context.runtime, context.step)
         environment = runtime.values
         environment.update(
             {
@@ -686,7 +651,7 @@ class FcAdapter(DirectAdapter):
                 "reference library output",
             )
             reference_root = ensure_nofollow_directory(
-                context.output_root / "reference-library"
+                context.output_directory / "reference-library"
             ) / name
             report = context.output_path("library-check-report", "check_workspace.rpt")
             environment.update(
@@ -750,7 +715,7 @@ class FcAdapter(DirectAdapter):
                 "tie-off-check-report": "SIGILICON_FC_TIE_OFF_CHECK_REPORT",
             }
             for role, environment_name in role_environment.items():
-                path = context.output_root / role / output_names[role]
+                path = context.output_directory / role / output_names[role]
                 ensure_nofollow_directory(path.parent)
                 environment[environment_name] = str(path)
             environment.update(
@@ -785,10 +750,10 @@ class FcAdapter(DirectAdapter):
                 )
             if target == "library":
                 artifacts = (
-                    *_tree_artifacts(
-                        reference_root,
+                    *context.output_artifacts(
                         "reference-library",
                         "library.synopsys-ndm",
+                        required=True,
                     ),
                     Artifact("library-check-report", "report.synopsys", report),
                 )
@@ -803,9 +768,9 @@ class FcAdapter(DirectAdapter):
                     )
                     for role in sorted(required)
                     for path in (
-                        sorted((context.output_root / role).rglob("*"))
+                        sorted((context.output_directory / role).rglob("*"))
                         if role == "checkpoint"
-                        else [context.output_root / role / output_names[role]]
+                        else [context.output_directory / role / output_names[role]]
                     )
                     if path.is_file() and not path.is_symlink()
                 )
@@ -883,17 +848,17 @@ class HspiceAdapter(DirectAdapter):
             )
         return tuple(checks)
 
-    def run(self, context: StepContext) -> StepResult:
+    def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
         config = _strict_config(context.step, self._fields)
         target = _target(config)
-        runtime = _runtime_environment(context.resources, context.step)
+        runtime = _runtime_environment(context.runtime, context.step)
         environment = runtime.values
         environment.update(
             {
                 "SIGILICON_DESIGN_VARIANT": _text(config, "variant"),
-                "SIGILICON_HSPICE_SOURCE_ROOT": str(context.source_root),
-                "SIGILICON_HSPICE_DECK_ROOT": str(context.source_root),
+                "SIGILICON_HSPICE_SOURCE_ROOT": str(context.source_directory),
+                "SIGILICON_HSPICE_DECK_ROOT": str(context.source_directory),
                 "SIGILICON_HSPICE_MODEL_SECTION": _text(config, "model_section"),
             }
         )
@@ -941,8 +906,7 @@ class HspiceAdapter(DirectAdapter):
                         f"HSPICE omitted collected output {relative!r}"
                     )
                 artifacts.append(
-                    _copied(
-                        context,
+                    context.copy_output(
                         role=str(role),
                         kind="evidence.hspice",
                         source=source,
@@ -999,13 +963,13 @@ class _StructuralLinkAction:
     def identity(self) -> str:
         return canonical_digest(self.record)
 
-    def validate(self, context: StepContext) -> None:
+    def validate(self, context: ExecutionIO) -> None:
         for source in (*self.rtl_sources, self.compile_script, self.link_script):
             context.owner_source_path(source)
         context.resource_path(self.release_manifest_resource)
         context.resource_path(self.release_liberty_resource)
 
-    def runtime(self, context: StepContext) -> StructuralLinkPlan:
+    def runtime(self, context: ExecutionIO) -> StructuralLinkPlan:
         self.validate(context)
         return replace(
             self.plan,
@@ -1229,11 +1193,11 @@ class StructuralLinkAdapter(DirectAdapter):
 
     def _execute(
         self,
-        context: StepContext,
+        context: ExecutionIO,
         planning: StructuralLinkPlan,
     ) -> StepResult:
         config = self._config(context.step)
-        runtime = _runtime_environment(context.resources, context.step)
+        runtime = _runtime_environment(context.runtime, context.step)
         try:
             library_compiler = context.step.runtime.tools[
                 "SIGILICON_SYNOPSYS_LIBRARY_COMPILER"
@@ -1258,7 +1222,7 @@ class StructuralLinkAdapter(DirectAdapter):
             result = execute_structural_link(
                 planning,
                 artifacts=artifacts,
-                resources=context.resources,
+                resources=context.runtime,
                 library_compiler=library_compiler,
                 design_compiler=design_compiler,
                 environment=runtime.values,
@@ -1287,10 +1251,10 @@ class StructuralLinkAdapter(DirectAdapter):
             )
             + "\n",
         )
-        published = _tree_artifacts(
-            context.output_root / "structural-link",
+        published = context.output_artifacts(
             "structural-link",
             "evidence.structural-link",
+            required=True,
         )
         facts = {
             **result.facts,
@@ -1310,7 +1274,7 @@ class StructuralLinkAdapter(DirectAdapter):
         )
 
 
-    def run(self, context: StepContext) -> StepResult:
+    def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
         step.validate_action()
         action = step.action

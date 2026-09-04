@@ -31,7 +31,7 @@ from sigilicon.domain.verification_cell import (
 )
 from sigilicon.external_tools import ProcessPort, managed_process
 from sigilicon.execution._model import Resources
-from sigilicon.execution._workspace import StepWorkspace
+from sigilicon.execution._workspace import ExecutionWorkspace
 from sigilicon.workflows.ip_packaging import validate_ip_release_package
 from sigilicon.workflows.ip_integration import check_ip_integration
 from sigilicon.workflows.xcelium import (
@@ -421,7 +421,7 @@ def plan_xcelium_ams_cell(
 def execute_xcelium_ams_cell(
     plan: XceliumAmsCellPlan,
     *,
-    artifacts: StepWorkspace,
+    artifacts: ExecutionWorkspace,
     source_paths: Mapping[Path, Path] | None = None,
     resources: Resources,
     before_spawn: Callable[[], None] | None = None,

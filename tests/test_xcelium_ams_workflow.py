@@ -11,7 +11,7 @@ from sigilicon.project import Project
 from sigilicon.execution._model import Resources
 from sigilicon.external_tools import ProcessResult
 from sigilicon.workflows import xcelium_ams
-from sigilicon.execution._workspace import StepWorkspace
+from sigilicon.execution._workspace import ExecutionWorkspace
 from sigilicon.workflows.xcelium_ams import (
     execute_xcelium_ams_cell,
     plan_xcelium_ams_cell,
@@ -26,9 +26,9 @@ def _write(path: Path, text: str) -> Path:
     return path
 
 
-def _run_artifacts(root: Path) -> StepWorkspace:
+def _run_artifacts(root: Path) -> ExecutionWorkspace:
     run = root / "run"
-    return StepWorkspace(
+    return ExecutionWorkspace(
         run_id="managed-run",
         root=run,
         input_root=run / "work/action/inputs",

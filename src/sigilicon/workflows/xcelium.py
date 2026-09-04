@@ -21,7 +21,7 @@ from sigilicon.external_tools import (
     owned_directory,
     xrun_env,
 )
-from sigilicon.execution._workspace import StepWorkspace
+from sigilicon.execution._workspace import ExecutionWorkspace
 from sigilicon.execution._model import Resources, json_value
 
 
@@ -193,7 +193,7 @@ def plan_xcelium_cell(
 def execute_xcelium_cell(
     plan: XceliumCellPlan,
     *,
-    artifacts: StepWorkspace,
+    artifacts: ExecutionWorkspace,
     resources: Resources,
     before_spawn: Callable[[], None] | None = None,
     environment_values: Mapping[str, str] | None = None,
@@ -239,7 +239,7 @@ def _require_xcelium_sources(plan: XceliumCellPlan) -> None:
 
 def execute_xcelium_invocation(
     *,
-    artifacts: StepWorkspace,
+    artifacts: ExecutionWorkspace,
     plan_record: Mapping[str, object],
     cell: str,
     dut: str,

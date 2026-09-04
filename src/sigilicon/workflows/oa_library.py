@@ -12,7 +12,7 @@ import tomllib
 from types import MappingProxyType
 from typing import Any, TypeVar
 
-from sigilicon.execution._workspace import StepWorkspace
+from sigilicon.execution._workspace import ExecutionWorkspace
 
 from sigilicon.domain.netlist import (
     NetlistSnapshot,
@@ -940,7 +940,7 @@ def build_oa_layout_ir(
     plan: OALibraryRebuildPlan,
     *,
     source_paths: Mapping[Path, Path],
-    workspace: StepWorkspace,
+    workspace: ExecutionWorkspace,
 ) -> OALibraryRebuildPlan:
     """Generate every owner layout from sealed sources during managed execution."""
 

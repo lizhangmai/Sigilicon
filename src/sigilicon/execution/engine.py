@@ -22,7 +22,7 @@ from sigilicon.execution._model import (
     Resources,
     RunResult,
     Step,
-    StepContext,
+    ExecutionIO,
     StepOutcome,
     StepResult,
     json_value,
@@ -436,21 +436,21 @@ def _run(
                 record.directory("work", step.id)
                 output_root = record.directory("outputs", step.id)
                 record.add_file("outputs", output_root)
-                context = StepContext(
+                context = ExecutionIO(
                     plan_identity=plan_identity,
                     step=step,
                     run_id=identity,
                     operation_id=operation_id,
-                    run_root=paths.root,
-                    resources=execution_resources,
-                    dependencies=dependencies,
-                    source_scopes={
+                    _run_root=paths.root,
+                    _resources=execution_resources,
+                    _dependencies=dependencies,
+                    _source_scopes={
                         name: sources[name].scope for name in step.sources
                     },
-                    resource_digests={
+                    _resource_digests={
                         name: bindings[name].sha256 for name in step.resources
                     },
-                    resource_kinds={
+                    _resource_kinds={
                         name: bindings[name].kind for name in step.resources
                     },
                     _register_mutation=(

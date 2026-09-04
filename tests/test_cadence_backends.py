@@ -22,7 +22,7 @@ from sigilicon.execution._model import (
     Evidence,
     ExecutionError,
     Step,
-    StepContext,
+    ExecutionIO,
 )
 from sigilicon.execution._model import Resources
 from sigilicon.workflows.oa_library import oa_plan_source_paths
@@ -127,7 +127,7 @@ def _context(
     workspace_root: Path | None = None,
     scopes: dict[str, str] | None = None,
     register_operation=None,
-) -> StepContext:
+) -> ExecutionIO:
     runtime_step = step
     run_root = tmp_path / "run"
     work = run_root / "work" / runtime_step.id
@@ -135,7 +135,7 @@ def _context(
     sources = run_root / "inputs/sources"
     for root in (work, output, sources):
         root.mkdir(parents=True, exist_ok=True)
-    return StepContext(
+    return ExecutionIO(
         "1" * 64,
         runtime_step,
         "2" * 32,
@@ -143,13 +143,13 @@ def _context(
         run_root,
         resources,
         {},
-        source_scopes={} if scopes is None else scopes,
+        _source_scopes={} if scopes is None else scopes,
         _register_mutation=register_operation,
     )
 
 
-def _bind_plan(context: StepContext, step: Step) -> StepContext:
-    root = context.source_root.parent / "resources"
+def _bind_plan(context: ExecutionIO, step: Step) -> ExecutionIO:
+    root = context.source_directory.parent / "resources"
     sealed = tuple(
         resource
         for resource in step.resource_closure
@@ -172,12 +172,12 @@ def _bind_plan(context: StepContext, step: Step) -> StepContext:
     return replace(
         context,
         step=step,
-        source_scopes={source: "owner" for source in step.sources},
-        resource_digests={
+        _source_scopes={source: "owner" for source in step.sources},
+        _resource_digests={
             resource.identity: resource.sha256
             for resource in step.resource_closure
         },
-        resource_kinds={
+        _resource_kinds={
             resource.identity: resource.kind
             for resource in step.resource_closure
         },
@@ -260,8 +260,8 @@ def test_xcelium_backend_requires_explicit_sources_and_completion_marker(
         workspace_root=workspace,
         scopes={source: "owner" for source in step.sources},
     )
-    _file(context.source_root / "rtl/design.sv", "module design; endmodule\n")
-    _file(context.source_root / "dv/testbench.sv", "module testbench; endmodule\n")
+    _file(context.source_directory / "rtl/design.sv", "module design; endmodule\n")
+    _file(context.source_directory / "dv/testbench.sv", "module testbench; endmodule\n")
     backend = XceliumAdapter()
 
     assert all(check.status == "ready" for check in backend.preflight(step, resources))
@@ -270,7 +270,7 @@ def test_xcelium_backend_requires_explicit_sources_and_completion_marker(
     assert result.status == "succeeded"
     assert len(result.artifacts) == 4
     assert result.facts == {"passed": True}
-    assert not (context.work_root / "xcelium.d").exists()
+    assert not (context.work_directory / "xcelium.d").exists()
     assert tuple(inspect.signature(backend.run).parameters) == ("context",)
 
 
@@ -314,7 +314,7 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
         workspace_root=workspace,
         scopes={"dv/tb_ams/cell.toml": "owner"},
     )
-    _file(context.source_root / "dv/tb_ams/cell.toml")
+    _file(context.source_directory / "dv/tb_ams/cell.toml")
     selected_project = SimpleNamespace(
         project_root=project,
         artifact_root=project / "artifacts",
@@ -406,7 +406,7 @@ def _oa_context(
     step: Step,
     *,
     registered: list[object],
-) -> StepContext:
+) -> ExecutionIO:
     project = tmp_path / "source-project"
     owner = project / "ip/example"
     workspace = tmp_path / "oa-workspace"
@@ -434,7 +434,7 @@ def _oa_context(
         register_operation=registered.append,
     )
     for source in runtime_step.sources:
-        _file(context.source_root / source)
+        _file(context.source_directory / source)
         _file(owner / source)
     return context
 
@@ -593,7 +593,7 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
     )
 
     def execute(_plan, _selected, _client, *, artifacts, bind_operation, **_kwargs):
-        assert _kwargs["resources"] is context.resources
+        assert _kwargs["resources"] is context.runtime
         operation = SimpleNamespace(operation_id=context.operation_id)
         bind_operation(operation)
         artifacts.write_json("outputs", ("evidence.json",), {"passed": True})
@@ -607,7 +607,7 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
         execute,
     )
     backend = NativeOaAdapter()
-    prepared = backend.plan(project, step, context.resources)
+    prepared = backend.plan(project, step, context.runtime)
     context = _bind_plan(context, prepared)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
 
@@ -697,8 +697,8 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         bind_operation,
         **_kwargs,
     ):
-        assert _kwargs["resources"] is context.resources
-        assert source_paths[manifest] == context.source_root / "configs/oa.toml"
+        assert _kwargs["resources"] is context.runtime
+        assert source_paths[manifest] == context.source_directory / "configs/oa.toml"
         assert source_paths[manifest] != manifest
         assert resource_paths[model].read_text(encoding="utf-8") == "sealed model\n"
         assert resource_paths[model] != model
@@ -714,7 +714,7 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         backend for backend in cadence_adapters()
         if backend.name == "cadence.oa-rebuild"
     )
-    prepared = backend.plan(project, step, context.resources)
+    prepared = backend.plan(project, step, context.runtime)
     context = _bind_plan(context, prepared)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
 
@@ -798,7 +798,7 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
     )
 
     backend = LayoutAdapter()
-    prepared = backend.plan(project, step, context.resources)
+    prepared = backend.plan(project, step, context.runtime)
     context = _bind_plan(context, prepared)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
     result = backend.run(context)
@@ -873,7 +873,7 @@ def test_layout_backend_rejects_typed_source_snapshot_drift(
     )
 
     with pytest.raises(ContractError, match="typed adapter source snapshot drift"):
-        LayoutAdapter().plan(project, step, context.resources)
+        LayoutAdapter().plan(project, step, context.runtime)
 
 
 def test_layout_verification_backend_publishes_classified_evidence(
@@ -927,7 +927,7 @@ def test_layout_verification_backend_publishes_classified_evidence(
         scopes={"design/CELL/layout.toml": "owner"},
         register_operation=registered.append,
     )
-    _file(context.source_root / "design/CELL/layout.toml")
+    _file(context.source_directory / "design/CELL/layout.toml")
     source = _file(owner_root / "design/CELL/layout.toml")
     project = SimpleNamespace(
         project_root=project_root,
@@ -1023,7 +1023,7 @@ def test_layout_verification_backend_publishes_classified_evidence(
         "product_qualification_conclusion": False,
     }
     flow_evidence = (
-        context.output_root / "verification/flow-evidence.json"
+        context.output_directory / "verification/flow-evidence.json"
     ).read_text(encoding="utf-8")
     assert '"physical_verification":{"status":"clean"}' in flow_evidence
     assert registered[0].operation_id == context.operation_id

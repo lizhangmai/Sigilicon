@@ -41,7 +41,7 @@ from sigilicon.virtuoso.xstream import (
     run_xstream_export,
 )
 from sigilicon.workflows.layout_generation import LayoutPlanningResult
-from sigilicon.execution._workspace import StepWorkspace
+from sigilicon.execution._workspace import ExecutionWorkspace
 
 
 _DRC_RESULT = re.compile(
@@ -403,7 +403,7 @@ def calibre_environment(
 
 
 def _copy_regular_outputs(
-    record: StepWorkspace,
+    record: ExecutionWorkspace,
     work: Path,
     entries: Sequence[tuple[str, str]],
 ) -> dict[str, Path]:
@@ -417,7 +417,7 @@ def _copy_regular_outputs(
 
 
 def _run_xstream(
-    record: StepWorkspace,
+    record: ExecutionWorkspace,
     spec: LayoutSpec,
     *,
     layermap_source: str,
@@ -465,7 +465,7 @@ def _run_xstream(
 
 
 def _run_calibre(
-    record: StepWorkspace,
+    record: ExecutionWorkspace,
     spec: LayoutSpec,
     plan: LayoutPlan,
     *,
@@ -657,7 +657,7 @@ def run_layout_verification(
     client: Any,
     *,
     check: str,
-    artifacts: StepWorkspace,
+    artifacts: ExecutionWorkspace,
     resources: Resources,
     external_sources: Mapping[Path, str],
     operation_id: str,

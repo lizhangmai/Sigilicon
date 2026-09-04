@@ -8,7 +8,7 @@ import pytest
 
 from sigilicon.domain.physical_verification import PhysicalVerificationPolicy
 from sigilicon.workflows import layout_verification
-from sigilicon.execution._workspace import StepWorkspace
+from sigilicon.execution._workspace import ExecutionWorkspace
 from sigilicon.execution._model import Resources
 
 
@@ -74,7 +74,7 @@ def test_calibre_reaches_the_managed_process_seam(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "run"
-    record = StepWorkspace(
+    record = ExecutionWorkspace(
         run_id="calibre-managed-process",
         root=root,
         input_root=root / "inputs",
@@ -140,7 +140,7 @@ def test_xstream_artifacts_preserve_separate_output_streams(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "run"
-    artifacts = StepWorkspace(
+    artifacts = ExecutionWorkspace(
         run_id="xstream-streams",
         root=root,
         input_root=root / "inputs",
@@ -202,7 +202,7 @@ def test_layout_verification_binds_before_lease_and_commits_typed_evidence(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "run"
-    artifacts = StepWorkspace(
+    artifacts = ExecutionWorkspace(
         run_id="1" * 32,
         root=root,
         input_root=root / "work/verify/inputs",

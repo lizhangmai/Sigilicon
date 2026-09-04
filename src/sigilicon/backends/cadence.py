@@ -24,7 +24,7 @@ from sigilicon.execution._model import (
     Resources,
     Source,
     Step,
-    StepContext,
+    ExecutionIO,
     StepResult,
     _bind_step,
 )
@@ -181,17 +181,6 @@ def _oa_runtime_executables(planning: Any, operation: str) -> tuple[str, ...]:
     return tuple(required)
 
 
-def _publish_tree(context: StepContext, role: str, kind: str) -> tuple[Artifact, ...]:
-    root = context.output_root / role
-    if not root.is_dir() or root.is_symlink():
-        return ()
-    return tuple(
-        Artifact(role, kind, path.absolute())
-        for path in sorted(root.rglob("*"))
-        if path.is_file() and not path.is_symlink()
-    )
-
-
 def _bind_source_paths(
     project: PlanningProject,
     owner_name: str,
@@ -270,7 +259,7 @@ def _validate_oa_plan_sources(
 
 
 def _require_bound_sources(
-    context: StepContext,
+    context: ExecutionIO,
     sources: Mapping[Path, tuple[str, str]],
 ) -> None:
     for name, digest in sources.values():
@@ -477,7 +466,7 @@ class _CadenceAction:
             ),
         }
 
-    def validate(self, context: StepContext) -> None:
+    def validate(self, context: ExecutionIO) -> None:
         external_identities = tuple(
             identity for _path, identity, _digest in self.resources
         )
@@ -487,7 +476,7 @@ class _CadenceAction:
         for _path, identity, _digest in self.resources:
             context.resource_path(identity)
 
-    def source_paths(self, context: StepContext) -> Mapping[Path, Path]:
+    def source_paths(self, context: ExecutionIO) -> Mapping[Path, Path]:
         self.validate(context)
         return MappingProxyType(
             {
@@ -496,7 +485,7 @@ class _CadenceAction:
             }
         )
 
-    def resource_paths(self, context: StepContext) -> Mapping[Path, Path]:
+    def resource_paths(self, context: ExecutionIO) -> Mapping[Path, Path]:
         self.validate(context)
         return MappingProxyType(
             {
@@ -505,7 +494,7 @@ class _CadenceAction:
             }
         )
 
-    def resource_text(self, context: StepContext) -> Mapping[Path, str]:
+    def resource_text(self, context: ExecutionIO) -> Mapping[Path, str]:
         self.validate(context)
         return MappingProxyType(
             {
@@ -598,7 +587,7 @@ class _CadenceDomainAdapter:
             resource_closure=combined_bindings,
         )
 
-    def _domain_action(self, context: StepContext) -> _CadenceAction:
+    def _domain_action(self, context: ExecutionIO) -> _CadenceAction:
         context.step.validate_action()
         domain_plan = context.step.action
         if not isinstance(domain_plan, _CadenceAction):
@@ -644,7 +633,7 @@ class XceliumAdapter(DirectAdapter):
             resource_closure=_runtime_bindings(resources, _XRUN),
         )
 
-    def run(self, context: StepContext) -> StepResult:
+    def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
         from sigilicon.workflows.xcelium import execute_xcelium_invocation
 
@@ -688,8 +677,8 @@ class XceliumAdapter(DirectAdapter):
                     f"{work}/xrun.log",
                     *(str(source) for source in sources),
                 ],
-                resources=context.resources,
-                environment_values=context.resources.environment,
+                resources=context.runtime,
+                environment_values=context.runtime.environment,
                 timeout=timeout,
             )
         artifacts = (
@@ -790,7 +779,7 @@ class XceliumAmsAdapter(_CadenceDomainAdapter):
             runtime_identities=(_XRUN, CADENCE_SPECTRE_TOOL),
         )
 
-    def run(self, context: StepContext) -> StepResult:
+    def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
         from sigilicon.workflows.xcelium_ams import execute_xcelium_ams_cell
 
@@ -816,9 +805,9 @@ class XceliumAmsAdapter(_CadenceDomainAdapter):
             result = execute_xcelium_ams_cell(
                 planning,
                 artifacts=artifacts,
-                resources=context.resources,
+                resources=context.runtime,
                 source_paths=bound_sources,
-                environment_values=context.resources.environment,
+                environment_values=context.runtime.environment,
                 timeout=_positive_integer(config, "timeout_seconds"),
             )
         envelope = context.step.evidence
@@ -845,7 +834,9 @@ class XceliumAmsAdapter(_CadenceDomainAdapter):
             )
             + "\n",
         )
-        published = _publish_tree(context, "xcelium-ams", "evidence.xcelium-ams")
+        published = context.output_artifacts(
+            "xcelium-ams", "evidence.xcelium-ams"
+        )
         facts = {
             "passed": result.passed,
             "evidence_role": envelope.role,
@@ -942,7 +933,7 @@ class NativeOaAdapter(_CadenceDomainAdapter):
             runtime_identities=(*_BRIDGE_RESOURCES, CADENCE_VIRTUOSO_TOOL),
         )
 
-    def run(self, context: StepContext) -> StepResult:
+    def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
         from sigilicon.workflows.oa_client import get_client
         from sigilicon.workflows.oa_library import build_oa_layout_ir
@@ -976,16 +967,18 @@ class NativeOaAdapter(_CadenceDomainAdapter):
                 result = execute_oa_maestro_testbench(
                     plan,
                     selected,
-                    get_client(context.resources),
+                    get_client(context.runtime),
                     artifacts=artifacts,
                     operation_id=context.operation_id,
                     bind_operation=context.register_mutation,
-                    resources=context.resources,
+                    resources=context.runtime,
                     record_uncertainty=uncertainty.append,
                     timeout=_positive_integer(config, "timeout_seconds"),
                 )
         except Exception:
-            published = _publish_tree(context, "maestro", "evidence.cadence-maestro")
+            published = context.output_artifacts(
+                "maestro", "evidence.cadence-maestro"
+            )
             if uncertainty:
                 return StepResult(
                     "uncertain",
@@ -994,7 +987,9 @@ class NativeOaAdapter(_CadenceDomainAdapter):
                     " | ".join(uncertainty),
                 )
             raise
-        published = _publish_tree(context, "maestro", "evidence.cadence-maestro")
+        published = context.output_artifacts(
+            "maestro", "evidence.cadence-maestro"
+        )
         if not published:
             raise ExecutionError("native Maestro produced no managed evidence")
         return (
@@ -1150,7 +1145,7 @@ class _OaAdapter(_CadenceDomainAdapter):
             ),
         )
 
-    def run(self, context: StepContext) -> StepResult:
+    def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
         from sigilicon.workflows.oa_client import get_client
         from sigilicon.workflows.oa_check import check_oa_library
@@ -1178,7 +1173,7 @@ class _OaAdapter(_CadenceDomainAdapter):
                 raise ExecutionError(f"prepared OA testbench is invalid: {testbench}")
             selected = matches[0]
         timeout = _positive_integer(config, "timeout_seconds")
-        client = get_client(context.resources)
+        client = get_client(context.runtime)
         if self.spec.name == "check":
             from sigilicon.virtuoso.workspace import (
                 OperationPolicy,
@@ -1207,7 +1202,7 @@ class _OaAdapter(_CadenceDomainAdapter):
                 client,
                 source_paths=prepared.source_paths(context),
                 resource_paths=prepared.resource_paths(context),
-                resources=context.resources,
+                resources=context.runtime,
                 timeout=timeout,
                 operation_id=context.operation_id,
                 bind_operation=context.register_mutation,
@@ -1307,7 +1302,7 @@ class LayoutAdapter(_CadenceDomainAdapter):
             runtime_identities=_BRIDGE_RESOURCES,
         )
 
-    def run(self, context: StepContext) -> StepResult:
+    def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
         from sigilicon.workflows.layout_generation import build_managed_layout_ir
 
@@ -1319,7 +1314,7 @@ class LayoutAdapter(_CadenceDomainAdapter):
         )
         return self._execute(context, planning)
 
-    def _execute(self, context: StepContext, planning: Any) -> StepResult:
+    def _execute(self, context: ExecutionIO, planning: Any) -> StepResult:
         from sigilicon.workflows.oa_client import get_client
         from sigilicon.workflows.layout_generation import generate_layout
 
@@ -1339,7 +1334,7 @@ class LayoutAdapter(_CadenceDomainAdapter):
                 )
                 result = generate_layout(
                     planning,
-                    get_client(context.resources),
+                    get_client(context.runtime),
                     artifacts=artifacts,
                     operation_id=context.operation_id,
                     bind_operation=context.register_mutation,
@@ -1347,7 +1342,9 @@ class LayoutAdapter(_CadenceDomainAdapter):
                     timeout=_positive_integer(config, "timeout_seconds"),
                 )
         except Exception:
-            published = _publish_tree(context, "layout", "evidence.cadence-layout")
+            published = context.output_artifacts(
+                "layout", "evidence.cadence-layout"
+            )
             if uncertainty:
                 return StepResult(
                     "uncertain",
@@ -1356,7 +1353,9 @@ class LayoutAdapter(_CadenceDomainAdapter):
                     " | ".join(uncertainty),
                 )
             raise
-        published = _publish_tree(context, "layout", "evidence.cadence-layout")
+        published = context.output_artifacts(
+            "layout", "evidence.cadence-layout"
+        )
         if not published:
             raise ExecutionError("layout generation produced no managed evidence")
         return StepResult.succeeded(
@@ -1454,7 +1453,7 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
             runtime_identities=(*_BRIDGE_RESOURCES, _XSTREAM, _CALIBRE),
         )
 
-    def run(self, context: StepContext) -> StepResult:
+    def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
         from sigilicon.workflows.layout_generation import build_managed_layout_ir
 
@@ -1474,7 +1473,7 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
 
     def _execute(
         self,
-        context: StepContext,
+        context: ExecutionIO,
         planning: Any,
         external_sources: Mapping[Path, str],
     ) -> StepResult:
@@ -1501,10 +1500,10 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
                 )
                 result = run_layout_verification(
                     planning,
-                    get_client(context.resources),
+                    get_client(context.runtime),
                     check=_text(config, "check"),
                     artifacts=artifacts,
-                    resources=context.resources,
+                    resources=context.runtime,
                     external_sources=external_sources,
                     operation_id=context.operation_id,
                     bind_operation=context.register_mutation,
@@ -1517,8 +1516,8 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
                     ),
                 )
         except Exception:
-            published = _publish_tree(
-                context, "verification", "evidence.physical-verification"
+            published = context.output_artifacts(
+                "verification", "evidence.physical-verification"
             )
             if uncertainty:
                 return StepResult(
@@ -1554,8 +1553,8 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
             )
             + "\n",
         )
-        published = _publish_tree(
-            context, "verification", "evidence.physical-verification"
+        published = context.output_artifacts(
+            "verification", "evidence.physical-verification"
         )
         if not published:
             raise ExecutionError("layout verification produced no managed evidence")

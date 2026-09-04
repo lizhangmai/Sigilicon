@@ -22,7 +22,7 @@ from sigilicon.execution._model import (
     Resources,
     RuntimeEnvironment,
     Step,
-    StepContext,
+    ExecutionIO,
     StepResult,
 )
 from sigilicon.execution._model import resource_materialization_key
@@ -41,7 +41,7 @@ def _context(
     tmp_path: Path,
     step: Step,
     resources: Resources,
-) -> StepContext:
+) -> ExecutionIO:
     run_root = tmp_path / "run"
     roots = (
         run_root / "work" / step.id,
@@ -50,7 +50,7 @@ def _context(
     )
     for root in roots:
         root.mkdir(parents=True, exist_ok=True)
-    return StepContext(
+    return ExecutionIO(
         "1" * 64,
         step,
         "2" * 32,
@@ -160,23 +160,23 @@ printf 'managed vcs\n'
 
     assert all(
         check.status == "ready"
-        for check in backend.preflight(step, context.resources)
+        for check in backend.preflight(step, context.runtime)
     )
     result = backend.run(context)
 
     assert result.status == "succeeded"
     assert {artifact.role for artifact in result.artifacts} == {"log"}
     assert "managed vcs" in result.artifacts[0].path.read_text()
-    assert not (context.work_root / "tool").exists()
+    assert not (context.work_directory / "tool").exists()
 
     missing = _context(tmp_path / "missing-marker", step, resources)
     _file(
-        missing.source_root / "dv/run_vcs.sh",
+        missing.source_directory / "dv/run_vcs.sh",
         "#!/usr/bin/env bash\nprintf 'incomplete vcs run\\n'\n",
         executable=True,
     )
-    _file(missing.source_root / "rtl/design.sv")
-    _file(missing.source_root / "dv/testbench.sv")
+    _file(missing.source_directory / "rtl/design.sv")
+    _file(missing.source_directory / "dv/testbench.sv")
 
     failed = backend.run(missing)
 
@@ -306,7 +306,7 @@ def test_structural_link_run_consumes_its_typed_plan_without_replanning(
         resources=(manifest_resource, liberty_resource),
         action=structural_link,
     )
-    context = StepContext(
+    context = ExecutionIO(
         "1" * 64,
         step,
         "2" * 32,
@@ -314,12 +314,12 @@ def test_structural_link_run_consumes_its_typed_plan_without_replanning(
         tmp_path / "run",
         Resources(),
         {},
-        source_scopes={name: "owner" for name in owner_sources},
-        resource_digests={
+        _source_scopes={name: "owner" for name in owner_sources},
+        _resource_digests={
             manifest_resource: manifest_digest,
             liberty_resource: liberty_digest,
         },
-        resource_kinds={
+        _resource_kinds={
             manifest_resource: "file",
             liberty_resource: "file",
         },
@@ -431,7 +431,7 @@ ln -s ../mapped.ddc "$SIGILICON_DC_OUTPUT_ROOT/cache/current.ddc"
 
     assert all(
         check.status == "ready"
-        for check in backend.preflight(step, context.resources)
+        for check in backend.preflight(step, context.runtime)
     )
     result = backend.run(context)
 
@@ -444,7 +444,7 @@ ln -s ../mapped.ddc "$SIGILICON_DC_OUTPUT_ROOT/cache/current.ddc"
         "report",
     }
     assert len(result.artifacts) == 7
-    assert not (context.work_root / "tool").exists()
+    assert not (context.work_directory / "tool").exists()
 
 
 def test_hspice_failure_preserves_campaign_and_qualification_evidence(
@@ -547,7 +547,7 @@ raise SystemExit(1)
 
     assert all(
         check.status == "ready"
-        for check in backend.preflight(step, context.resources)
+        for check in backend.preflight(step, context.runtime)
     )
     with pytest.raises(ContractError, match="unknown config fields: requires_mismatch"):
         backend.preflight(
@@ -555,7 +555,7 @@ raise SystemExit(1)
                 step,
                 config={**step.config, "requires_mismatch": True},
             ),
-            context.resources,
+            context.runtime,
         )
     result = backend.run(context)
 
@@ -565,7 +565,7 @@ raise SystemExit(1)
         "campaign-summary",
         "qualification-evidence",
     }
-    assert not (context.work_root / "tool").exists()
+    assert not (context.work_directory / "tool").exists()
 
 
 def test_fc_backend_keeps_tool_scratch_outside_the_managed_run(
@@ -646,7 +646,7 @@ printf 'clean\n' >"$SIGILICON_FC_LIBRARY_CHECK_REPORT"
 
     assert all(
         check.status == "ready"
-        for check in backend.preflight(step, context.resources)
+        for check in backend.preflight(step, context.runtime)
     )
     result = backend.run(context)
 
@@ -656,4 +656,4 @@ printf 'clean\n' >"$SIGILICON_FC_LIBRARY_CHECK_REPORT"
         "reference-library",
         "library-check-report",
     }
-    assert not (context.work_root / "tool").exists()
+    assert not (context.work_directory / "tool").exists()

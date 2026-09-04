@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping, Protocol, ru
 from sigilicon.artifacts import (
     _inspect_nofollow_file,
     _open_nofollow_directory,
+    copy_immutable_file,
     read_nofollow_bytes,
     read_nofollow_text,
 )
@@ -24,7 +25,7 @@ from sigilicon.canonical import canonical_digest, canonical_json
 from sigilicon.paths import validate_artifact_component, validate_artifact_id
 
 if TYPE_CHECKING:
-    from sigilicon.execution._workspace import StepWorkspace
+    from sigilicon.execution._workspace import ExecutionWorkspace
     from sigilicon.external_tools import OwnedExecutable
 
 
@@ -1622,27 +1623,27 @@ class StepResult:
 
 
 @dataclass(frozen=True)
-class StepContext:
-    """Managed filesystem and dependency view supplied to one adapter."""
+class ExecutionIO:
+    """Deep managed-I/O interface supplied to one trusted Adapter."""
 
     plan_identity: str
     step: Step
     run_id: str
     operation_id: str
-    run_root: Path
-    resources: Resources
-    dependencies: Mapping[str, StepResult]
-    source_scopes: Mapping[str, str] = field(
+    _run_root: Path
+    _resources: Resources
+    _dependencies: Mapping[str, StepResult]
+    _source_scopes: Mapping[str, str] = field(
         default_factory=dict,
         repr=False,
         compare=False,
     )
-    resource_digests: Mapping[str, str] = field(
+    _resource_digests: Mapping[str, str] = field(
         default_factory=dict,
         repr=False,
         compare=False,
     )
-    resource_kinds: Mapping[str, str] = field(
+    _resource_kinds: Mapping[str, str] = field(
         default_factory=dict,
         repr=False,
         compare=False,
@@ -1670,67 +1671,69 @@ class StepContext:
 
     def __post_init__(self) -> None:
         if not isinstance(self.step, Step):
-            raise ContractError("step context requires a Step")
+            raise ContractError("execution I/O requires a Step")
         validate_artifact_id(self.run_id, "run id")
         validate_artifact_id(self.operation_id, "operation id")
         validate_artifact_id(self.plan_identity, "plan identity")
-        object.__setattr__(self, "run_root", Path(self.run_root).absolute())
-        if not isinstance(self.source_scopes, Mapping) or any(
+        object.__setattr__(self, "_run_root", Path(self._run_root).absolute())
+        if not isinstance(self._source_scopes, Mapping) or any(
             name not in self.step.sources or scope not in {"owner", "project"}
-            for name, scope in self.source_scopes.items()
+            for name, scope in self._source_scopes.items()
         ):
-            raise ContractError("step context source scopes disagree with its step")
-        if not isinstance(self.dependencies, Mapping) or any(
+            raise ContractError("execution I/O source scopes disagree with its Step")
+        if not isinstance(self._dependencies, Mapping) or any(
             not isinstance(name, str) or not isinstance(result, StepResult)
-            for name, result in self.dependencies.items()
+            for name, result in self._dependencies.items()
         ):
             raise ContractError("step dependencies must map names to StepResult values")
-        if set(self.dependencies) != set(self.step.needs):
-            raise ContractError("step context dependency closure disagrees with the plan")
-        run_root = self.run_root
+        if set(self._dependencies) != set(self.step.needs):
+            raise ContractError("execution I/O dependency closure disagrees with the plan")
+        run_root = self._run_root
         if run_root == Path(run_root.anchor):
-            raise ContractError("step context run root cannot be a filesystem root")
+            raise ContractError("execution I/O run root cannot be a filesystem root")
         if (
-            not isinstance(self.resource_digests, Mapping)
-            or set(self.resource_digests) != set(self.step.resources)
+            not isinstance(self._resource_digests, Mapping)
+            or set(self._resource_digests) != set(self.step.resources)
             or any(
                 not isinstance(digest, str)
                 or re.fullmatch(r"[0-9a-f]{64}", digest) is None
-                for digest in self.resource_digests.values()
+                for digest in self._resource_digests.values()
             )
         ):
             raise ContractError(
-                "step context resource digests disagree with its resource closure"
+                "execution I/O resource digests disagree with its resource closure"
             )
         if (
-            not isinstance(self.resource_kinds, Mapping)
-            or set(self.resource_kinds) != set(self.step.resources)
+            not isinstance(self._resource_kinds, Mapping)
+            or set(self._resource_kinds) != set(self.step.resources)
             or any(
                 kind not in {"tool", "file", "directory", "value"}
-                for kind in self.resource_kinds.values()
+                for kind in self._resource_kinds.values()
             )
         ):
             raise ContractError(
-                "step context resource kinds disagree with its resource closure"
+                "execution I/O resource kinds disagree with its resource closure"
             )
-        object.__setattr__(self, "dependencies", MappingProxyType(dict(self.dependencies)))
         object.__setattr__(
-            self,
-            "source_scopes",
-            MappingProxyType(dict(self.source_scopes)),
+            self, "_dependencies", MappingProxyType(dict(self._dependencies))
         )
         object.__setattr__(
             self,
-            "resource_digests",
-            MappingProxyType(dict(self.resource_digests)),
+            "_source_scopes",
+            MappingProxyType(dict(self._source_scopes)),
         )
         object.__setattr__(
             self,
-            "resource_kinds",
-            MappingProxyType(dict(self.resource_kinds)),
+            "_resource_digests",
+            MappingProxyType(dict(self._resource_digests)),
+        )
+        object.__setattr__(
+            self,
+            "_resource_kinds",
+            MappingProxyType(dict(self._resource_kinds)),
         )
         source_paths = {
-            name: self.source_root.joinpath(*PurePosixPath(name).parts)
+            name: self.source_directory.joinpath(*PurePosixPath(name).parts)
             for name in self.step.sources
         }
         object.__setattr__(self, "_source_paths", MappingProxyType(source_paths))
@@ -1740,18 +1743,18 @@ class StepContext:
             MappingProxyType(
                 {
                     (scope, name): source_paths[name]
-                    for name, scope in self.source_scopes.items()
+                    for name, scope in self._source_scopes.items()
                 }
             ),
         )
-        resource_root = self.resource_root
+        resource_root = self.resource_directory
         object.__setattr__(
             self,
             "_resource_paths",
             MappingProxyType(
                 {
                     name: resource_root / resource_materialization_key(name)
-                    for name, kind in self.resource_kinds.items()
+                    for name, kind in self._resource_kinds.items()
                     if kind in {"file", "directory"}
                     and resource_root is not None
                 }
@@ -1759,25 +1762,39 @@ class StepContext:
         )
 
     @property
-    def work_root(self) -> Path:
-        return self.run_root / "work" / self.step.id
+    def work_directory(self) -> Path:
+        """Return the Adapter's managed scratch directory."""
+
+        return self._run_root / "work" / self.step.id
 
     @property
-    def output_root(self) -> Path:
-        return self.run_root / "outputs" / self.step.id
+    def output_directory(self) -> Path:
+        """Return the root below which the Adapter may publish artifacts."""
+
+        return self._run_root / "outputs" / self.step.id
 
     @property
-    def source_root(self) -> Path:
-        return self.run_root / "inputs" / "sources"
+    def source_directory(self) -> Path:
+        """Return the immutable source closure root."""
+
+        return self._run_root / "inputs" / "sources"
 
     @property
-    def resource_root(self) -> Path | None:
+    def resource_directory(self) -> Path | None:
+        """Return the immutable data-resource root when the Step has one."""
+
         if any(
             kind in {"file", "directory"}
-            for kind in self.resource_kinds.values()
+            for kind in self._resource_kinds.values()
         ):
-            return self.run_root / "inputs" / "resources"
+            return self._run_root / "inputs" / "resources"
         return None
+
+    @property
+    def runtime(self) -> Resources:
+        """Return the plan-filtered runtime deployment."""
+
+        return self._resources
 
     def source_path(self, source: str) -> Path:
         """Return a run-local tool path for trusted package adapter code."""
@@ -1813,12 +1830,12 @@ class StepContext:
         """Return one sealed external resource selected by this Step."""
 
         name = resource_identity(resource)
-        if self.resource_kinds.get(name) in {"tool", "value"}:
+        if self._resource_kinds.get(name) in {"tool", "value"}:
             raise ExecutionError(f"external resource is not sealed data: {name!r}")
         result = self._resource_paths.get(name)
         if result is None:
             raise ExecutionError(f"external resource is outside this step: {name!r}")
-        expected_kind = self.resource_kinds[name]
+        expected_kind = self._resource_kinds[name]
         try:
             metadata = result.stat(follow_symlinks=False)
         except OSError as exc:
@@ -1853,10 +1870,10 @@ class StepContext:
 
     def resource_bytes(self, resource: str) -> bytes:
         name = resource_identity(resource)
-        if self.resource_kinds.get(name) != "file":
+        if self._resource_kinds.get(name) != "file":
             raise ExecutionError(f"sealed external resource is not a file: {name!r}")
         data = read_nofollow_bytes(self.resource_path(name))
-        if hashlib.sha256(data).hexdigest() != self.resource_digests[name]:
+        if hashlib.sha256(data).hexdigest() != self._resource_digests[name]:
             raise ExecutionError(
                 f"sealed external resource identity drift: {name!r}"
             )
@@ -1879,7 +1896,7 @@ class StepContext:
         """Attach one trusted mutation journal to this managed run."""
 
         if self._register_mutation is None:
-            raise ExecutionError("step context cannot register a mutation")
+            raise ExecutionError("execution I/O cannot register a mutation")
         if getattr(operation, "operation_id", None) != self.operation_id:
             raise ExecutionError("mutation identity disagrees with this run")
         self._register_mutation(operation)
@@ -1904,35 +1921,75 @@ class StepContext:
         self.output_path(role, filename)
         return self.workspace(role, {}).write_text("outputs", relative.parts, value)
 
+    def copy_output(
+        self,
+        role: str,
+        kind: str,
+        source: Path,
+        filename: str,
+    ) -> Artifact:
+        """Publish one immutable regular file from tool scratch space."""
+
+        if not source.is_file() or source.is_symlink():
+            raise ExecutionError(f"tool omitted required {role!r} output")
+        destination = self.output_path(role, filename)
+        copy_immutable_file(source, destination)
+        return Artifact(role, kind, destination)
+
+    def output_artifacts(
+        self,
+        role: str,
+        kind: str,
+        *,
+        required: bool = False,
+    ) -> tuple[Artifact, ...]:
+        """Publish the complete regular-file closure below one output role."""
+
+        root = self.output_directory / validate_artifact_component(
+            role, "output role"
+        )
+        if not root.is_dir() or root.is_symlink():
+            if required:
+                raise ExecutionError(f"tool omitted required {role!r} directory")
+            return ()
+        artifacts = tuple(
+            Artifact(role, kind, path.absolute())
+            for path in sorted(root.rglob("*"))
+            if path.is_file() and not path.is_symlink()
+        )
+        if required and not artifacts:
+            raise ExecutionError(f"tool produced an empty {role!r} directory")
+        return artifacts
+
     def workspace(
         self,
         output_role: str,
         source: Mapping[str, Any],
         *,
         tool_work_root: Path | None = None,
-    ) -> "StepWorkspace":
+    ) -> "ExecutionWorkspace":
         """Create the file view owned by this Step."""
 
-        from sigilicon.execution._workspace import StepWorkspace
+        from sigilicon.execution._workspace import ExecutionWorkspace
 
         role = validate_artifact_component(output_role, "output role")
-        return StepWorkspace(
+        return ExecutionWorkspace(
             run_id=self.run_id,
-            root=self.run_root,
-            input_root=self.work_root / "inputs",
+            root=self._run_root,
+            input_root=self.work_directory / "inputs",
             work_root=(
-                self.work_root / "tool"
+                self.work_directory / "tool"
                 if tool_work_root is None
                 else Path(tool_work_root).absolute()
             ),
-            output_root=self.output_root / role,
-            log_root=self.work_root / "logs",
+            output_root=self.output_directory / role,
+            log_root=self.work_directory / "logs",
             source=source,
         )
 
     def artifacts(self, dependency: str, role: str | None = None) -> tuple[Artifact, ...]:
         try:
-            result = self.dependencies[dependency]
+            result = self._dependencies[dependency]
         except KeyError as exc:
             raise ExecutionError(f"step {self.step.id!r} has no dependency {dependency!r}") from exc
         return tuple(

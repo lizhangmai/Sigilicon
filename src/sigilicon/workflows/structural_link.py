@@ -20,7 +20,7 @@ from sigilicon.external_tools import (
     owned_input_file,
 )
 from sigilicon.execution._model import Resources
-from sigilicon.execution._workspace import StepWorkspace
+from sigilicon.execution._workspace import ExecutionWorkspace
 from sigilicon.release_store import (
     ReleaseRef,
     ReleaseStore,
@@ -279,7 +279,7 @@ def plan_structural_link(
 def execute_structural_link(
     plan: StructuralLinkPlan,
     *,
-    artifacts: StepWorkspace,
+    artifacts: ExecutionWorkspace,
     resources: Resources,
     library_compiler: str,
     design_compiler: str,

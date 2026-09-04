@@ -16,7 +16,7 @@ from sigilicon.execution._model import (
     Resources,
     Source,
     Step,
-    StepContext,
+    ExecutionIO,
     StepResult,
     _bind_step,
     _bind_execution_plan,
@@ -58,7 +58,7 @@ class Adapter(Protocol):
         resources: Resources,
     ) -> tuple[PreflightCheck, ...]: ...
 
-    def run(self, context: StepContext) -> StepResult: ...
+    def run(self, context: ExecutionIO) -> StepResult: ...
 
 
 class DirectAdapter:

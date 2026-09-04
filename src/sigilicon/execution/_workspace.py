@@ -18,7 +18,7 @@ from sigilicon.artifacts import (
 from sigilicon.paths import validate_artifact_component
 
 @dataclass(frozen=True)
-class StepWorkspace:
+class ExecutionWorkspace:
     """Single filesystem interface for one managed workflow invocation."""
 
     run_id: str
@@ -45,9 +45,9 @@ class StepWorkspace:
             raise ValueError("step workspace source metadata must be a mapping")
         object.__setattr__(self, "source", MappingProxyType(dict(self.source)))
 
-    def scoped(self, component: str) -> "StepWorkspace":
+    def scoped(self, component: str) -> "ExecutionWorkspace":
         name = validate_artifact_component(component, "step file scope")
-        return StepWorkspace(
+        return ExecutionWorkspace(
             run_id=self.run_id,
             root=self.root,
             input_root=self.input_root / name,

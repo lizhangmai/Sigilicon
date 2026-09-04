@@ -23,7 +23,7 @@ from sigilicon.virtuoso.layout_generation import (
     write_layout_plan,
 )
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
-from sigilicon.execution._workspace import StepWorkspace
+from sigilicon.execution._workspace import ExecutionWorkspace
 
 
 @dataclass(frozen=True)
@@ -121,7 +121,7 @@ def build_managed_layout_ir(
     planning: LayoutPlanningResult,
     *,
     source_paths: Mapping[Path, Path],
-    workspace: StepWorkspace,
+    workspace: ExecutionWorkspace,
 ) -> LayoutPlanningResult:
     """Generate LayoutIR from sealed inputs inside one managed work tree."""
 
@@ -224,7 +224,7 @@ def generate_layout(
     overwrite: bool = False,
     timeout: int = 120,
     disposable: bool = False,
-    artifacts: StepWorkspace | None = None,
+    artifacts: ExecutionWorkspace | None = None,
     operation_id: str | None = None,
     bind_operation: Any | None = None,
     record_uncertainty: Callable[[str], None] | None = None,
@@ -267,7 +267,7 @@ def _generate_layout_impl(
     timeout: int = 120,
     disposable: bool = False,
     _disposable_work: DisposableWork | None = None,
-    artifacts: StepWorkspace | None = None,
+    artifacts: ExecutionWorkspace | None = None,
     operation_id: str | None = None,
     bind_operation: Any | None = None,
     record_uncertainty: Callable[[str], None] | None = None,
