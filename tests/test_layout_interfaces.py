@@ -9,7 +9,10 @@ import pytest
 
 from sigilicon.domain.netlist import NetlistSnapshot
 from sigilicon.execution._workspace import ExecutionWorkspace
-from sigilicon.layout.generator import build_layout_plan_from_sources
+from sigilicon.layout.generator import (
+    LayoutGeneratorInput,
+    build_layout_plan_from_sources,
+)
 from sigilicon.workflows.layout_generation import (
     LayoutPlanningResult,
     build_managed_layout_ir,
@@ -57,6 +60,28 @@ def _technology() -> LayoutTechnology:
     )
 
 
+def _generator_input(root: Path) -> LayoutGeneratorInput:
+    snapshot = NetlistSnapshot(
+        source_path=root / "circuit.scs",
+        text="subckt test_cell A Y\nends test_cell\n",
+        interfaces={"test_cell": ("A", "Y")},
+    )
+    return LayoutGeneratorInput(
+        library="test_lib",
+        cell="test_cell",
+        view="layout",
+        stage="routed",
+        generator="sealed_recipe",
+        source_snapshot=snapshot,
+        source_snapshots=(snapshot,),
+        ports=("A", "Y"),
+        directions={"A": "input", "Y": "output"},
+        primitive_masters=(),
+        technology_library="test_tech",
+        dbu_per_micron=1000,
+    )
+
+
 def test_project_layout_generator_loads_fresh_declared_code(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -86,26 +111,12 @@ def build_layout_plan(spec):
     outside = tmp_path / "outside"
     outside.mkdir()
     monkeypatch.chdir(outside)
-    spec = SimpleNamespace(
-        generator_source=generator,
-        generator_dependencies=(),
-        generator_modules=("project_recipe",),
-        generator_module_sources=(recipe,),
-        project_root=project_root,
-        library="test_lib",
-        cell="test_cell",
-        view="layout",
-        stage="routed",
-        generator="project_recipe",
-    )
+    spec = _generator_input(project_root)
 
     assert build_layout_plan_from_sources(
         spec,
         project_root=project_root,
-        source_project_root=project_root,
         generator_source=generator,
-        dependency_sources=(),
-        project_modules=(("project_recipe", recipe),),
     ).dbu_per_micron == 1007
     assert str(project_root) not in sys.path
     assert Path.cwd() == outside
@@ -114,10 +125,7 @@ def build_layout_plan(spec):
     assert build_layout_plan_from_sources(
         spec,
         project_root=project_root,
-        source_project_root=project_root,
         generator_source=generator,
-        dependency_sources=(),
-        project_modules=(("project_recipe", recipe),),
     ).dbu_per_micron == 1011
 
 
@@ -240,22 +248,13 @@ def test_layout_generator_cannot_import_unsealed_project_module(
     monkeypatch.syspath_prepend(str(source_root))
     monkeypatch.chdir(source_root)
     importlib.import_module("unsealed")
-    spec = SimpleNamespace(
-        library="test_lib",
-        cell="test_cell",
-        view="layout",
-        stage="routed",
-        generator="sealed_recipe",
-    )
+    spec = _generator_input(managed_root)
 
-    with pytest.raises(ModuleNotFoundError, match="unsealed"):
+    with pytest.raises(RuntimeError, match="ModuleNotFoundError.*unsealed"):
         build_layout_plan_from_sources(
             spec,
             project_root=managed_root,
-            source_project_root=source_root,
             generator_source=generator,
-            dependency_sources=(),
-            project_modules=(),
         )
     assert Path.cwd() == source_root
 
@@ -284,22 +283,13 @@ def test_layout_generator_discards_unsealed_namespace_package(
     monkeypatch.delitem(sys.modules, "unsealed_package.payload", raising=False)
     monkeypatch.syspath_prepend(str(source_root))
     importlib.import_module("unsealed_package")
-    spec = SimpleNamespace(
-        library="test_lib",
-        cell="test_cell",
-        view="layout",
-        stage="routed",
-        generator="sealed_recipe",
-    )
+    spec = _generator_input(managed_root)
 
-    with pytest.raises(ModuleNotFoundError, match="unsealed_package"):
+    with pytest.raises(RuntimeError, match="ModuleNotFoundError.*unsealed_package"):
         build_layout_plan_from_sources(
             spec,
             project_root=managed_root,
-            source_project_root=source_root,
             generator_source=generator,
-            dependency_sources=(),
-            project_modules=(),
         )
 
 
@@ -327,22 +317,13 @@ def test_explicit_source_exclusion_wins_inside_runtime_prefix(
     monkeypatch.setattr(sys, "prefix", str(runtime_root))
     monkeypatch.syspath_prepend(str(source_root))
     importlib.import_module("unsealed")
-    spec = SimpleNamespace(
-        library="test_lib",
-        cell="test_cell",
-        view="layout",
-        stage="routed",
-        generator="sealed_recipe",
-    )
+    spec = _generator_input(managed_root)
 
-    with pytest.raises(ModuleNotFoundError, match="unsealed"):
+    with pytest.raises(RuntimeError, match="ModuleNotFoundError.*unsealed"):
         build_layout_plan_from_sources(
             spec,
             project_root=managed_root,
-            source_project_root=source_root,
             generator_source=generator,
-            dependency_sources=(),
-            project_modules=(),
         )
 
 

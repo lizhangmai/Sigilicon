@@ -75,6 +75,219 @@ class LayoutPlan:
             self.payload(), sort_keys=True, indent=2, ensure_ascii=False
         ) + "\n"
 
+    @classmethod
+    def from_payload(cls, value: object) -> "LayoutPlan":
+        """Decode the strict process-boundary representation of a plan."""
+
+        raw = _record(
+            value,
+            "layout plan",
+            {
+                "library",
+                "cell",
+                "view",
+                "stage",
+                "generator",
+                "dbu_per_micron",
+                "instances",
+                "rectangles",
+                "pins",
+                "vias",
+            },
+            optional={"rectangles", "pins", "vias"},
+        )
+        return cls(
+            library=_text(raw["library"], "layout plan library"),
+            cell=_text(raw["cell"], "layout plan cell"),
+            view=_text(raw["view"], "layout plan view"),
+            stage=_text(raw["stage"], "layout plan stage"),
+            generator=_text(raw["generator"], "layout plan generator"),
+            dbu_per_micron=_positive_int(
+                raw["dbu_per_micron"], "layout plan dbu_per_micron"
+            ),
+            instances=tuple(
+                _layout_instance(item, index)
+                for index, item in enumerate(_array(raw["instances"], "instances"))
+            ),
+            rectangles=tuple(
+                _layout_rect(item, index)
+                for index, item in enumerate(
+                    _array(raw.get("rectangles", []), "rectangles")
+                )
+            ),
+            pins=tuple(
+                _layout_pin(item, index)
+                for index, item in enumerate(_array(raw.get("pins", []), "pins"))
+            ),
+            vias=tuple(
+                _layout_via(item, index)
+                for index, item in enumerate(_array(raw.get("vias", []), "vias"))
+            ),
+        )
+
+
+def _record(
+    value: object,
+    label: str,
+    fields: set[str],
+    *,
+    optional: set[str] = frozenset(),
+) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{label} must be an object")
+    unknown = set(value) - fields
+    missing = fields - optional - set(value)
+    if unknown or missing:
+        raise ValueError(
+            f"{label} fields disagree: missing={sorted(missing)}, "
+            f"unknown={sorted(unknown)}"
+        )
+    return value
+
+
+def _array(value: object, label: str) -> list[object]:
+    if not isinstance(value, list):
+        raise ValueError(f"{label} must be an array")
+    return value
+
+
+def _text(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{label} must be non-empty text")
+    return value
+
+
+def _optional_text(value: object, label: str) -> str | None:
+    if value is None:
+        return None
+    return _text(value, label)
+
+
+def _positive_int(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{label} must be a positive integer")
+    return value
+
+
+def _int_pair_payload(value: object, label: str) -> tuple[int, int]:
+    if (
+        not isinstance(value, list)
+        or len(value) != 2
+        or any(isinstance(item, bool) or not isinstance(item, int) for item in value)
+    ):
+        raise ValueError(f"{label} must contain two integers")
+    return value[0], value[1]
+
+
+def _string_tuple(value: object, label: str, size: int) -> tuple[str, ...]:
+    if not isinstance(value, list) or len(value) != size:
+        raise ValueError(f"{label} must contain {size} strings")
+    return tuple(_text(item, label) for item in value)
+
+
+def _layout_instance(value: object, index: int) -> LayoutInstance:
+    label = f"instances[{index}]"
+    raw = _record(
+        value,
+        label,
+        {
+            "name",
+            "library",
+            "cell",
+            "view",
+            "origin_dbu",
+            "transform",
+            "parameters",
+            "terminals",
+            "expected_master_terminals",
+            "callback_parameters",
+        },
+        optional={"expected_master_terminals", "callback_parameters"},
+    )
+    return LayoutInstance(
+        name=_text(raw["name"], f"{label}.name"),
+        library=_text(raw["library"], f"{label}.library"),
+        cell=_text(raw["cell"], f"{label}.cell"),
+        view=_text(raw["view"], f"{label}.view"),
+        origin_dbu=_int_pair_payload(raw["origin_dbu"], f"{label}.origin_dbu"),
+        transform=_text(raw["transform"], f"{label}.transform"),
+        parameters=tuple(
+            _string_tuple(item, f"{label}.parameters", 3)
+            for item in _array(raw["parameters"], f"{label}.parameters")
+        ),
+        terminals=tuple(
+            _string_tuple(item, f"{label}.terminals", 2)
+            for item in _array(raw["terminals"], f"{label}.terminals")
+        ),
+        expected_master_terminals=tuple(
+            _text(item, f"{label}.expected_master_terminals")
+            for item in _array(
+                raw.get("expected_master_terminals", []),
+                f"{label}.expected_master_terminals",
+            )
+        ),
+        callback_parameters=tuple(
+            _text(item, f"{label}.callback_parameters")
+            for item in _array(
+                raw.get("callback_parameters", []),
+                f"{label}.callback_parameters",
+            )
+        ),
+    )
+
+
+def _bbox(value: object, label: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    if not isinstance(value, list) or len(value) != 2:
+        raise ValueError(f"{label} must contain two coordinate pairs")
+    return (
+        _int_pair_payload(value[0], f"{label}[0]"),
+        _int_pair_payload(value[1], f"{label}[1]"),
+    )
+
+
+def _layout_rect(value: object, index: int) -> LayoutRect:
+    label = f"rectangles[{index}]"
+    raw = _record(value, label, {"name", "layer", "purpose", "bbox_dbu", "net"})
+    return LayoutRect(
+        name=_text(raw["name"], f"{label}.name"),
+        layer=_text(raw["layer"], f"{label}.layer"),
+        purpose=_text(raw["purpose"], f"{label}.purpose"),
+        bbox_dbu=_bbox(raw["bbox_dbu"], f"{label}.bbox_dbu"),
+        net=_optional_text(raw["net"], f"{label}.net"),
+    )
+
+
+def _layout_pin(value: object, index: int) -> LayoutPin:
+    label = f"pins[{index}]"
+    raw = _record(
+        value,
+        label,
+        {"name", "direction", "layer", "purpose", "bbox_dbu"},
+    )
+    return LayoutPin(
+        name=_text(raw["name"], f"{label}.name"),
+        direction=_text(raw["direction"], f"{label}.direction"),
+        layer=_text(raw["layer"], f"{label}.layer"),
+        purpose=_text(raw["purpose"], f"{label}.purpose"),
+        bbox_dbu=_bbox(raw["bbox_dbu"], f"{label}.bbox_dbu"),
+    )
+
+
+def _layout_via(value: object, index: int) -> LayoutVia:
+    label = f"vias[{index}]"
+    raw = _record(
+        value,
+        label,
+        {"name", "via_definition", "origin_dbu", "transform", "net"},
+    )
+    return LayoutVia(
+        name=_text(raw["name"], f"{label}.name"),
+        via_definition=_text(raw["via_definition"], f"{label}.via_definition"),
+        origin_dbu=_int_pair_payload(raw["origin_dbu"], f"{label}.origin_dbu"),
+        transform=_text(raw["transform"], f"{label}.transform"),
+        net=_optional_text(raw["net"], f"{label}.net"),
+    )
+
 def _int_pair(value: Any, label: str) -> tuple[int, int]:
     values = getattr(value, "tolist", lambda: value)()
     if not isinstance(values, (list, tuple)) or len(values) != 2:

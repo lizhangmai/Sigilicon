@@ -1,19 +1,19 @@
-"""Generic loader for project-owned layout generator entry points."""
+"""Process-isolated execution of project-owned layout generators."""
 
 from __future__ import annotations
 
-import importlib
-import importlib.util
 from dataclasses import dataclass
+import importlib.util
+import json
 from pathlib import Path
 import sys
-from types import ModuleType
-from typing import Mapping
-import uuid
+import tempfile
+from types import MappingProxyType, ModuleType
+from typing import Any, Mapping
 
 from sigilicon.domain.netlist import NetlistSnapshot
+from sigilicon.external_tools import ProcessRequest, managed_process
 from sigilicon.layout.ir import LayoutPlan
-from sigilicon.project_modules import project_import_path
 
 
 @dataclass(frozen=True)
@@ -33,121 +33,186 @@ class LayoutGeneratorInput:
     technology_library: str
     dbu_per_micron: int
 
+    def payload(self) -> dict[str, object]:
+        return {
+            "library": self.library,
+            "cell": self.cell,
+            "view": self.view,
+            "generator": self.generator,
+            "stage": self.stage,
+            "source_snapshot": _snapshot_payload(self.source_snapshot),
+            "source_snapshots": [
+                _snapshot_payload(snapshot) for snapshot in self.source_snapshots
+            ],
+            "ports": list(self.ports),
+            "directions": dict(self.directions),
+            "primitive_masters": list(self.primitive_masters),
+            "technology_library": self.technology_library,
+            "dbu_per_micron": self.dbu_per_micron,
+        }
 
-def _purge_project_modules(
-    project_root: Path,
-    modules: tuple[tuple[str, Path], ...],
-    dependency_sources: tuple[Path, ...],
-) -> None:
-    """Discard caller modules so one process cannot execute stale recipes."""
+    @classmethod
+    def from_payload(cls, value: object) -> "LayoutGeneratorInput":
+        raw = _record(
+            value,
+            "layout generator input",
+            {
+                "library",
+                "cell",
+                "view",
+                "generator",
+                "stage",
+                "source_snapshot",
+                "source_snapshots",
+                "ports",
+                "directions",
+                "primitive_masters",
+                "technology_library",
+                "dbu_per_micron",
+            },
+        )
+        snapshots = tuple(
+            _snapshot_from_payload(item, f"source_snapshots[{index}]")
+            for index, item in enumerate(
+                _array(raw["source_snapshots"], "source_snapshots")
+            )
+        )
+        source_snapshot = _snapshot_from_payload(
+            raw["source_snapshot"], "source_snapshot"
+        )
+        if source_snapshot not in snapshots:
+            raise ValueError("source_snapshot must belong to source_snapshots")
+        directions_raw = _record_mapping(raw["directions"], "directions")
+        directions = MappingProxyType(
+            {
+                _text(name, "direction name"): _text(direction, f"directions.{name}")
+                for name, direction in directions_raw.items()
+            }
+        )
+        dbu = raw["dbu_per_micron"]
+        if isinstance(dbu, bool) or not isinstance(dbu, int) or dbu <= 0:
+            raise ValueError("dbu_per_micron must be a positive integer")
+        return cls(
+            library=_text(raw["library"], "library"),
+            cell=_text(raw["cell"], "cell"),
+            view=_text(raw["view"], "view"),
+            generator=_text(raw["generator"], "generator"),
+            stage=_text(raw["stage"], "stage"),
+            source_snapshot=source_snapshot,
+            source_snapshots=snapshots,
+            ports=_strings(raw["ports"], "ports"),
+            directions=directions,
+            primitive_masters=_strings(raw["primitive_masters"], "primitive_masters"),
+            technology_library=_text(
+                raw["technology_library"], "technology_library"
+            ),
+            dbu_per_micron=dbu,
+        )
 
-    root = project_root.resolve()
-    declared_names = tuple(
-        name for name, source in modules if source.resolve().is_relative_to(root)
+
+def _snapshot_payload(snapshot: NetlistSnapshot) -> dict[str, object]:
+    return {
+        "source_path": str(snapshot.source_path),
+        "text": snapshot.text,
+        "interfaces": {
+            name: list(ports) for name, ports in snapshot.interfaces.items()
+        },
+    }
+
+
+def _snapshot_from_payload(value: object, label: str) -> NetlistSnapshot:
+    raw = _record(value, label, {"source_path", "text", "interfaces"})
+    interfaces_raw = _record_mapping(raw["interfaces"], f"{label}.interfaces")
+    return NetlistSnapshot(
+        source_path=Path(_text(raw["source_path"], f"{label}.source_path")),
+        text=_text(raw["text"], f"{label}.text", empty=True),
+        interfaces=MappingProxyType(
+            {
+                _text(name, f"{label}.interfaces key"): _strings(
+                    ports, f"{label}.interfaces.{name}"
+                )
+                for name, ports in interfaces_raw.items()
+            }
+        ),
     )
-    owned_names = {
-        ".".join(name.split(".")[:index])
-        for name in declared_names
-        for index in range(1, len(name.split(".")) + 1)
-    }
-    owned_sources = {
-        source.resolve()
-        for source in dependency_sources
-        if source.resolve().is_relative_to(root)
-    }
-    for loaded_name, loaded_module in tuple(sys.modules.items()):
-        module_file = getattr(loaded_module, "__file__", None)
-        loaded_from_dependency = False
-        if module_file is not None:
-            try:
-                loaded_from_dependency = Path(module_file).resolve() in owned_sources
-            except (OSError, RuntimeError):
-                pass
-        if loaded_name in owned_names or any(
-            loaded_name.startswith(f"{name}.") for name in declared_names
-        ) or loaded_from_dependency:
-            sys.modules.pop(loaded_name, None)
-    importlib.invalidate_caches()
 
 
-def _discard_bytecode(sources: tuple[Path, ...], *, project_root: Path) -> None:
-    """Force declared design sources to reload even after same-tick edits."""
+def _record(
+    value: object,
+    label: str,
+    fields: set[str],
+) -> Mapping[str, Any]:
+    raw = _record_mapping(value, label)
+    if set(raw) != fields:
+        raise ValueError(
+            f"{label} fields disagree: missing={sorted(fields - set(raw))}, "
+            f"unknown={sorted(set(raw) - fields)}"
+        )
+    return raw
 
-    root = project_root.resolve()
-    for source in sources:
-        if not source.resolve().is_relative_to(root):
-            continue
-        try:
-            Path(importlib.util.cache_from_source(str(source))).unlink(missing_ok=True)
-        except (NotImplementedError, OSError):
-            pass
+
+def _record_mapping(value: object, label: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping) or any(
+        not isinstance(key, str) for key in value
+    ):
+        raise ValueError(f"{label} must be an object")
+    return value
 
 
-def _load_generator_module(
-    source: Path,
-    *,
-    project_root: Path,
-    dependency_sources: tuple[Path, ...],
-    project_modules: tuple[tuple[str, Path], ...],
-) -> ModuleType:
-    sources = (source, *dependency_sources)
-    _discard_bytecode(sources, project_root=project_root)
-    _purge_project_modules(project_root, project_modules, dependency_sources)
-    module_name = f"_sigilicon_layout_generator_{uuid.uuid4().hex}"
-    module_spec = importlib.util.spec_from_file_location(module_name, source)
+def _array(value: object, label: str) -> list[object]:
+    if not isinstance(value, list):
+        raise ValueError(f"{label} must be an array")
+    return value
+
+
+def _text(value: object, label: str, *, empty: bool = False) -> str:
+    if not isinstance(value, str) or (not value and not empty):
+        raise ValueError(f"{label} must be text")
+    return value
+
+
+def _strings(value: object, label: str) -> tuple[str, ...]:
+    result = tuple(_text(item, f"{label}[]") for item in _array(value, label))
+    if len(set(result)) != len(result):
+        raise ValueError(f"{label} contains duplicates")
+    return result
+
+
+def _load_generator_module(source: Path) -> ModuleType:
+    module_spec = importlib.util.spec_from_file_location(
+        "_sigilicon_layout_generator", source
+    )
     if module_spec is None or module_spec.loader is None:
         raise ValueError(f"cannot load layout generator source: {source}")
     module = importlib.util.module_from_spec(module_spec)
-    sys.modules[module_name] = module
-    try:
-        module_spec.loader.exec_module(module)
-    except Exception:
-        sys.modules.pop(module_name, None)
-        raise
+    sys.modules[module.__name__] = module
+    module_spec.loader.exec_module(module)
     return module
 
 
-def build_layout_plan_from_sources(
+def execute_layout_generator(
     spec: LayoutGeneratorInput,
     *,
     project_root: Path,
-    source_project_root: Path,
     generator_source: Path,
-    dependency_sources: tuple[Path, ...],
-    project_modules: tuple[tuple[str, Path], ...],
 ) -> LayoutPlan:
-    """Execute one generator from an explicitly materialized source closure."""
+    """Worker-side generator execution inside one disposable interpreter."""
 
-    module_sources = tuple(source for _name, source in project_modules)
-    owned_module_names = tuple(
-        name
-        for name, source in project_modules
-        if source.resolve().is_relative_to(project_root.resolve())
-    )
-    with project_import_path(
-        project_root,
-        module_names=owned_module_names,
-        excluded_roots=(source_project_root,),
-        working_directory=project_root,
-    ):
-        module = _load_generator_module(
-            generator_source,
-            project_root=project_root,
-            dependency_sources=(*dependency_sources, *module_sources),
-            project_modules=project_modules,
-        )
-        try:
-            entrypoint = getattr(module, "build_layout_plan", None)
-            if not callable(entrypoint):
-                raise ValueError(
-                    f"layout generator {generator_source} must export build_layout_plan"
-                )
-            plan = entrypoint(spec)
-        finally:
-            sys.modules.pop(module.__name__, None)
+    root = project_root.absolute()
+    source = generator_source.absolute()
+    if root != root.resolve() or source != source.resolve():
+        raise ValueError("layout generator paths must not traverse symlinks")
+    if not source.is_file() or not source.is_relative_to(root):
+        raise ValueError("layout generator must be a file inside the sealed project")
+    sys.path.insert(0, str(root))
+    module = _load_generator_module(source)
+    entrypoint = getattr(module, "build_layout_plan", None)
+    if not callable(entrypoint):
+        raise ValueError(f"layout generator {source} must export build_layout_plan")
+    plan = entrypoint(spec)
     if not isinstance(plan, LayoutPlan):
         raise TypeError(
-            f"layout generator {generator_source} returned {type(plan).__name__}, "
+            f"layout generator {source} returned {type(plan).__name__}, "
             "expected LayoutPlan"
         )
     identity = (plan.library, plan.cell, plan.view, plan.generator, plan.stage)
@@ -157,3 +222,64 @@ def build_layout_plan_from_sources(
             f"layout generator changed spec identity: got={identity}, expected={expected}"
         )
     return plan
+
+
+def build_layout_plan_from_sources(
+    spec: LayoutGeneratorInput,
+    *,
+    project_root: Path,
+    generator_source: Path,
+) -> LayoutPlan:
+    """Run sealed owner code through the JSON subprocess boundary."""
+
+    if not isinstance(spec, LayoutGeneratorInput):
+        raise TypeError("layout generator input must be LayoutGeneratorInput")
+    root = project_root.resolve()
+    source = generator_source.absolute()
+    if source != source.resolve() or not source.is_relative_to(root):
+        raise ValueError("layout generator must be inside the sealed project")
+    request = {
+        "schema": 1,
+        "project_root": str(root),
+        "generator_source": source.relative_to(root).as_posix(),
+        "spec": spec.payload(),
+    }
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        prefix=".sigilicon-layout-generator-",
+        suffix=".json",
+        dir=root,
+        delete=False,
+    ) as stream:
+        json.dump(request, stream, sort_keys=True)
+        request_path = Path(stream.name)
+    try:
+        completed = managed_process.run(
+            ProcessRequest(
+                argv=(
+                    sys.executable,
+                    "-I",
+                    "-B",
+                    "-m",
+                    "sigilicon.layout._generator_worker",
+                    str(request_path),
+                ),
+                cwd=root,
+                environment={},
+                timeout_seconds=120,
+            )
+        )
+    finally:
+        request_path.unlink(missing_ok=True)
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or "worker exited without diagnostics"
+        raise RuntimeError(f"layout generator subprocess failed:\n{detail}")
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("layout generator returned invalid JSON") from exc
+    return LayoutPlan.from_payload(payload)
+
+
+__all__ = ["LayoutGeneratorInput", "build_layout_plan_from_sources"]

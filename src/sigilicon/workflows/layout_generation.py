@@ -185,24 +185,10 @@ def build_managed_layout_ir(
         technology_library=planning.spec.pdk.oa.technology_library,
         dbu_per_micron=planning.spec.layout_pdk.dbu_per_micron,
     )
-    module_sources = tuple(
-        bound(source) for source in planning.spec.generator_module_sources
-    )
     plan = build_layout_plan_from_sources(
         generator_input,
         project_root=root,
-        source_project_root=original_root,
         generator_source=bound(planning.spec.generator_source),
-        dependency_sources=tuple(
-            bound(source) for source in planning.spec.generator_dependencies
-        ),
-        project_modules=tuple(
-            zip(
-                planning.spec.generator_modules,
-                module_sources,
-                strict=True,
-            )
-        ),
     )
     return with_layout_ir(planning, plan)
 
