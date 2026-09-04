@@ -607,8 +607,8 @@ class RunStore:
         operation: str,
         variant: str | None = None,
         run_id: str,
-    ) -> None:
-        """Stream-verify every registered payload in one terminal run."""
+    ) -> RunResult | RunFailure:
+        """Verify and decode every registered payload in one terminal run."""
 
         selected = self._select(
             owner=owner,
@@ -616,7 +616,7 @@ class RunStore:
             variant=variant,
             run_id=run_id,
         )
-        self._manifest(selected, verify_content=True)
+        return self._read_selected(selected)
 
 
 __all__ = ["RunStore", "RunStoreError"]

@@ -171,6 +171,24 @@ printf 'managed vcs\n'
     assert failed.status == "failed"
     assert failed.message == "VCS runner omitted its declared success marker"
 
+    for name, output in (
+        ("duplicate", "managed vcs\nmanaged vcs\n"),
+        ("nonterminal", "managed vcs\nlate failure\n"),
+        ("substring", "prefix managed vcs\n"),
+    ):
+        invalid = _context(tmp_path / name, step, resources)
+        _file(
+            invalid.source_directory / "dv/run_vcs.sh",
+            f"#!/usr/bin/env bash\nprintf '%s' {output!r}\n",
+            executable=True,
+        )
+        _file(invalid.source_directory / "rtl/design.sv")
+        _file(invalid.source_directory / "dv/testbench.sv")
+
+        rejected = adapter.run(invalid)
+
+        assert rejected.status == "failed"
+
 
 def test_owner_runner_cannot_mutate_a_watched_step_source(tmp_path: Path) -> None:
     sources = tmp_path / "run/inputs/sources"

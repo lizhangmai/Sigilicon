@@ -802,7 +802,41 @@ def test_cli_audit_stream_verifies_a_closed_run(
             str(tmp_path),
         )
     ) == 0
-    assert json.loads(capsys.readouterr().out)["status"] == "verified"
+    audit = json.loads(capsys.readouterr().out)
+    assert audit["integrity"] == "verified"
+    assert audit["run_status"] == "succeeded"
+
+
+def test_cli_audit_distinguishes_integrity_from_failed_run_status(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from sigilicon.cli.main import main as sigilicon_main
+
+    _write_project(tmp_path)
+
+    class BrokenAdapter(CopyAdapter):
+        def run(self, context: ExecutionIO) -> StepResult:
+            raise RuntimeError("expected fixture failure")
+
+    project = _project(tmp_path, BrokenAdapter())
+    run_id = "9" * 32
+    with pytest.raises(RuntimeError, match="expected fixture failure"):
+        project.run(project.plan("example:check"), run_id=run_id)
+
+    assert sigilicon_main(
+        (
+            "flow",
+            "audit",
+            "example:check",
+            run_id,
+            "--project-root",
+            str(tmp_path),
+        )
+    ) == 0
+    audit = json.loads(capsys.readouterr().out)
+    assert audit["integrity"] == "verified"
+    assert audit["run_status"] == "failed"
 
 
 def test_adapter_planning_closes_over_discovered_sources_deterministically(

@@ -58,7 +58,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0 if stored.status == "succeeded" else 1
         if args.command == "audit":
             owner, operation, variant = parse_selector(args.selector)
-            runs.audit(
+            audited = runs.audit(
                 owner=owner,
                 operation=operation,
                 variant=variant,
@@ -66,9 +66,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             emit_json(
                 {
-                    "schema": 1,
+                    "schema": 2,
                     "contract_kind": "run-audit-result",
-                    "status": "verified",
+                    "integrity": "verified",
+                    "run_status": audited.status,
                     "owner": owner,
                     "operation": operation,
                     "variant": variant,

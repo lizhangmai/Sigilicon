@@ -78,10 +78,20 @@ class VcsAdapter:
                 "failed", logs, message=f"VCS runner exited {completed.returncode}"
             )
         marker = _text(config, "success_marker")
-        if marker not in completed.stdout:
+        terminal_lines = tuple(
+            line.strip() for line in completed.stdout.splitlines() if line.strip()
+        )
+        marker_count = sum(line == marker for line in terminal_lines)
+        if marker_count == 0:
             return StepResult(
                 "failed",
                 logs,
                 message="VCS runner omitted its declared success marker",
+            )
+        if marker_count != 1 or terminal_lines[-1] != marker:
+            return StepResult(
+                "failed",
+                logs,
+                message="VCS runner success marker is not one unique terminal record",
             )
         return StepResult.succeeded(artifacts=logs)

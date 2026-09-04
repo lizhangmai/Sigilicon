@@ -229,6 +229,37 @@ def test_xcelium_execution_rejects_failure_after_success_marker(
     assert summary["failure_evidence"] == ["stdout:nonzero-failure-count"]
 
 
+def test_xcelium_execution_rejects_owner_failure_marker_after_success(
+    tmp_path: Path,
+) -> None:
+    contract = _verification_project(tmp_path)
+    project = Project.open(tmp_path)
+    xrun = _write(tmp_path / "tools/xcelium/tools/bin/xrun", "#!/bin/sh\nexit 99\n")
+    xrun.chmod(0o755)
+
+    def capture(request):
+        request.before_spawn()
+        return ProcessResult(
+            returncode=0,
+            stdout=(
+                "TB_DEMO_SUMMARY failures=0\n"
+                "LLM_CIM_V2_AMS_FAILURE code=7\n"
+            ),
+            stderr="",
+        )
+
+    result = execute_xcelium_cell(
+        plan_xcelium_cell(contract, project=project),
+        artifacts=_run_artifacts(tmp_path),
+        resources=Resources(tools={"cadence.xrun": str(xrun)}),
+        process=SimpleNamespace(run=capture),
+    )
+
+    assert not result.passed
+    summary = json.loads(result.run_summary.read_text(encoding="utf-8"))
+    assert summary["failure_evidence"] == ["stdout:owner-failure-marker"]
+
+
 def test_xcelium_execution_accepts_success_marker_from_native_log(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

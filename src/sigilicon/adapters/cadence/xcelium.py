@@ -31,6 +31,10 @@ _XCELIUM_FAILURE_PATTERNS = (
     ("xcelium-error", re.compile(r"(?im)^\s*\*[EF],")),
     ("failed-status", re.compile(r"(?i)\bstatus\s*=\s*failed\b")),
     ("failure-text", re.compile(r"(?im)^\s*(?:test\s+)?fail(?:ed|ure)?\b")),
+    (
+        "owner-failure-marker",
+        re.compile(r"(?m)^\s*[A-Z][A-Z0-9_]*_FAILURE\b"),
+    ),
 )
 
 
