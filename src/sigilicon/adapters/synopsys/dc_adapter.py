@@ -86,7 +86,12 @@ class DcAdapter:
             verdict_name = _safe_relative(
                 _text(config, "verdict_report"), "DC verdict report"
             )
-            verdict = _ToolVerdict.load(scratch.path / verdict_name)
+            verdict = _ToolVerdict.load(
+                scratch.path / verdict_name,
+                owner=context.owner,
+                stage="synthesis",
+                variant=_text(config, "variant"),
+            )
             outputs = (
                 context.copy_output(
                     role="mapped-netlist",

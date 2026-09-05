@@ -17,6 +17,7 @@ class HspiceAdapter:
     _fields = frozenset(
         {
             "collect",
+            "diagnostics",
             "corner",
             "environment",
             "environment_prefix",
@@ -48,11 +49,11 @@ class HspiceAdapter:
             raise ContractError(
                 "HSPICE owner environment must use its declared uppercase prefix"
             )
-        collect = _mapping(config, "collect")
-        for role, relative in collect.items():
-            if not isinstance(role, str) or not isinstance(relative, str):
-                raise ContractError("HSPICE collect must map roles to relative paths")
-            _safe_relative(relative, f"HSPICE collect {role}")
+        for field in ("collect", "diagnostics"):
+            for role, relative in _mapping(config, field).items():
+                if not isinstance(role, str) or not isinstance(relative, str):
+                    raise ContractError(f"HSPICE {field} must map roles to relative paths")
+                _safe_relative(relative, f"HSPICE {field} {role}")
         for name, value in _mapping(config, "source_environment").items():
             if (
                 not isinstance(name, str)
@@ -130,15 +131,14 @@ class HspiceAdapter:
             )
             logs = _logs(context, completed.stdout, completed.stderr or "")
             artifacts: list[Artifact] = list(logs)
-            if completed.returncode:
-                simulator_log = scratch.path / f"{target}.lis"
-                if simulator_log.is_file() and not simulator_log.is_symlink():
+            for role, pattern in _mapping(config, "diagnostics").items():
+                for source in sorted(scratch.path.glob(str(pattern))):
                     artifacts.append(
                         context.copy_output(
-                            role="log",
-                            kind="log.hspice",
-                            source=simulator_log,
-                            filename=f"{target}.lis",
+                            role=str(role),
+                            kind="diagnostic.hspice",
+                            source=source,
+                            filename=source.relative_to(scratch.path).as_posix(),
                         )
                     )
             for role, relative in _mapping(config, "collect").items():

@@ -1585,6 +1585,7 @@ class ExecutionIO:
     _run_root: Path
     _resources: Resources
     _dependencies: Mapping[str, StepResult]
+    owner: str
     _source_scopes: Mapping[str, str] = field(
         default_factory=dict,
         repr=False,
@@ -1624,6 +1625,7 @@ class ExecutionIO:
     def __post_init__(self) -> None:
         if not isinstance(self.step, Step):
             raise ContractError("execution I/O requires a Step")
+        object.__setattr__(self, "owner", _identifier(self.owner, "execution owner"))
         validate_artifact_id(self.run_id, "run id")
         validate_artifact_id(self.operation_id, "operation id")
         validate_artifact_id(self.plan_identity, "plan identity")

@@ -442,6 +442,7 @@ def _run(
                     step=step,
                     run_id=identity,
                     operation_id=operation_id,
+                    owner=plan.owner,
                     _run_root=paths.root,
                     _resources=execution_resources,
                     _dependencies=dependencies,

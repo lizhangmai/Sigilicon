@@ -59,6 +59,7 @@ def _context(
         run_root,
         resources,
         {},
+        owner="fixture",
         _source_scopes={} if scopes is None else scopes,
         _register_mutation=register_operation,
     )

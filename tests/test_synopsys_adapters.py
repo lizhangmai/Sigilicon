@@ -15,6 +15,7 @@ from sigilicon.adapters.synopsys.vcs_adapter import VcsAdapter
 from sigilicon.execution import Step
 from sigilicon.execution._model import (
     ContractError,
+    ExecutionError,
     Resources,
     RuntimeEnvironment,
     ExecutionIO,
@@ -44,6 +45,7 @@ def _context(
         run_root,
         resources,
         {},
+        owner="fixture",
     )
 
 
@@ -232,7 +234,10 @@ printf 'tampered\n' >>"$source_file"
     assert rtl.read_text(encoding="utf-8").endswith("tampered\n")
 
 
-def test_dc_backend_collects_only_declared_delivery_files(tmp_path: Path) -> None:
+@pytest.mark.parametrize("mismatch", (None, "owner", "stage", "variant"))
+def test_dc_backend_collects_only_declared_delivery_files(
+    tmp_path: Path, mismatch: str | None
+) -> None:
     sources = tmp_path / "run/inputs/sources"
     runner = _file(
         sources / "impl/syn/run_dc.sh",
@@ -317,6 +322,15 @@ ln -s ../mapped.ddc "$SIGILICON_DC_OUTPUT_ROOT/cache/current.ddc"
         ),
     )
     adapter = DcAdapter()
+
+    if mismatch is not None:
+        expected = {"owner": "fixture", "stage": "synthesis", "variant": "test"}
+        runner.write_text(runner.read_text().replace(
+            f'"{mismatch}":"{expected[mismatch]}"', f'"{mismatch}":"unrelated"'
+        ))
+        with pytest.raises(ExecutionError, match=f"verdict {mismatch} mismatch"):
+            adapter.run(context)
+        return
 
     assert all(
         check.status == "ready"
@@ -426,6 +440,7 @@ raise SystemExit(1)
             "output_environment": {
                 "SIGILICON_FIXTURE_QUALIFICATION_OUTPUT": "qualification.json",
             },
+            "diagnostics": {"log": "**/*.lis"},
             "collect": {
                 "campaign-summary": "common_mode_qualified/statistics.json",
                 "qualification-evidence": "qualification.json",
@@ -487,7 +502,7 @@ raise SystemExit(1)
         "qualification-evidence",
     }
     simulator_log = next(
-        artifact for artifact in result.artifacts if artifact.kind == "log.hspice"
+        artifact for artifact in result.artifacts if artifact.path.name == "formal.lis"
     )
     assert simulator_log.read_text() == "simulator diagnostic\n"
     assert not (context.work_directory / "tool").exists()

@@ -254,7 +254,12 @@ class FcAdapter:
                     / "execution-verdict"
                     / output_names["execution-verdict"]
                 )
-                verdict = _ToolVerdict.load(verdict_path)
+                verdict = _ToolVerdict.load(
+                    verdict_path,
+                    owner=context.owner,
+                    stage="physical-implementation",
+                    variant=_text(config, "variant"),
+                )
                 published = (*logs, *artifacts)
                 if not verdict.passed:
                     return StepResult(

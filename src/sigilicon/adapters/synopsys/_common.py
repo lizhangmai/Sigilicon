@@ -81,9 +81,12 @@ class _ToolVerdict:
     checks: Mapping[str, bool]
 
     @classmethod
-    def load(cls, path: Path) -> _ToolVerdict:
+    def load(
+        cls, path: Path, *, owner: str, stage: str, variant: str
+    ) -> _ToolVerdict:
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            with owned_input_file(path, require_single_link=True) as source:
+                payload = json.loads(os.pread(source.fd, os.fstat(source.fd).st_size, 0))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise ExecutionError(f"invalid tool verdict {path.name}: {exc}") from exc
         fields = {
@@ -106,6 +109,12 @@ class _ToolVerdict:
         }
         if any(not isinstance(value, str) or not value for value in texts.values()):
             raise ExecutionError(f"invalid tool verdict identity in {path.name}")
+        expected = {"owner": owner, "stage": stage, "variant": variant}
+        for name, value in expected.items():
+            if texts[name] != value:
+                raise ExecutionError(
+                    f"tool verdict {name} mismatch: expected {value!r}, got {texts[name]!r}"
+                )
         passed = payload["passed"]
         qualification = payload["product_qualification_conclusion"]
         checks = payload["checks"]
