@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import sys
 import textwrap
 import pytest
 
@@ -11,6 +12,30 @@ from sigilicon.layout.spec import (
     load_layout_spec,
     resolve_layout_spec,
 )
+
+
+@pytest.mark.xfail(strict=True, reason="planner rejects graph-authorized source libraries")
+def test_graph_owned_generator_dependencies_enter_managed_plan(tmp_path: Path) -> None:
+    root, layout = _write_fixture(tmp_path)
+    component = root / "ip/example/component.toml"
+    component.write_text(component.read_text().replace(
+        'kind = "rtl-ip"', 'kind = "rtl-ip"\noperation_catalog = "operations"'
+    ).replace('[sources]', '[sources]\noperations = "ip/example/operations.toml"'))
+    (root / "ip/example/operations.toml").write_text('''schema = 4
+contract_kind = "owner-operations"
+path_scope = "owner"
+owner = "example"
+[operations.layout]
+uses = "cadence.layout"
+filesets = ["layout_generation"]
+config = { owner = "example", spec = "cell/layout.toml", timeout_seconds = 30 }
+''')
+    with (root / "sigilicon.toml").open("a") as stream:
+        stream.write(f'\n[runtime.tools]\n"runtime.python" = "{sys.executable}"\n')
+    project = Project.open(root)
+    assert load_layout_spec(layout, project=project).generator_dependencies
+    plan = project.plan("example:layout")
+    assert root / "ip/shared/recipe.py" in {source.location for source in plan.sources}
 
 
 def _write_component(

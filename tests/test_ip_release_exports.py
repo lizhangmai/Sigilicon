@@ -1435,3 +1435,71 @@ def test_managed_release_rechecks_the_real_git_commit(tmp_path: Path) -> None:
     audited = ip_packaging.audit_ip_release_manifest(_built_manifest(project, built))
     assert audited["source_commit"] == commit
     assert audited["availability"]["simulation"] is True
+
+
+@pytest.mark.xfail(strict=True, reason="RTL receipt contents are not validated")
+def test_rtl_signoff_rejects_failed_receipts(tmp_path: Path) -> None:
+    contract = _rtl_contract_fixture(tmp_path)
+    component = contract.parent / "ip.toml"
+    for role in ("synthesis_receipt", "physical_implementation_receipt"):
+        source = contract.parent.parent / f"{role}.json"
+        source.write_text('{"status":"failed","source_identity":"wrong"}\n')
+        component.write_text(component.read_text().replace(
+            "[sources]", f'[sources]\n{role} = "{source.relative_to(tmp_path)}"'
+        ))
+        with contract.open("a") as stream:
+            stream.write(f'''\n[[collateral]]
+export = "rtl-top"
+role = "{role}"
+component = "rtl-fixture"
+source = "{role}"
+package_path = "exports/rtl-top/{role}.json"
+format = "json"
+''')
+    operations = contract.parent / "operations.toml"
+    operations.write_text(operations.read_text().replace(
+        'maturity = "development"', 'maturity = "signoff"'
+    ))
+    _commit_release_source(tmp_path, "RTL source and failed evidence")
+    project = Project.open(tmp_path)
+    assert not project.preflight(project.plan("rtl-fixture:release")).ready
+
+
+@pytest.mark.xfail(strict=True, reason="publication destination is captured as input")
+def test_release_publication_does_not_change_its_input_identity(tmp_path: Path) -> None:
+    contract = _rtl_contract_fixture(tmp_path)
+    _commit_release_source(tmp_path, "RTL release source")
+    project = Project.open(tmp_path)
+    before = project.plan("rtl-fixture:release")
+    built = _publish_release(contract, project=project)
+    assert ip_packaging.audit_ip_release_manifest(_built_manifest(project, built))["source_commit"]
+    after = Project.open(tmp_path).plan("rtl-fixture:release")
+    assert after.identity == before.identity
+
+
+@pytest.mark.xfail(strict=True, reason="release roles cannot select multiple corners")
+def test_native_release_preserves_multiple_timing_corners(tmp_path: Path) -> None:
+    contract = _native_oa_contract_fixture(tmp_path)
+    component = contract.parent / "ip.toml"
+    for corner in ("ss", "ff"):
+        source = contract.parent.parent / "sources" / f"{corner}.lib"
+        source.write_text(f"library ({corner}) {{ cell (NATIVE_TOP) {{}} }}\n")
+        component.write_text(component.read_text().replace(
+            "[sources]", f'[sources]\n{corner} = "{source.relative_to(tmp_path)}"'
+        ))
+        with contract.open("a") as stream:
+            stream.write(f'''\n[[collateral]]
+export = "native-top"
+role = "raw_macro_liberty_or_db"
+component = "native-fixture"
+source = "{corner}"
+package_path = "exports/native-top/{corner}.lib"
+format = "liberty"
+library = "native_lib"
+cell = "NATIVE_TOP"
+view = "liberty"
+corner = "{corner}"
+capabilities = ["synthesis", "physical_implementation"]
+''')
+    loaded = load_ip_contract(contract, project=Project.open(tmp_path))
+    assert {view.corner for view in loaded.collateral if view.role == "raw_macro_liberty_or_db"} == {"ss", "ff"}
