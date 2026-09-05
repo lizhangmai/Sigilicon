@@ -28,38 +28,11 @@ from sigilicon.domain.systemverilog import (
 from sigilicon.project import Project
 from sigilicon.adapters.release.release_plan_record import (
     InterfaceConsistencyCheck,
-    QualifiedViewSemanticsCheck,
     ReleaseAvailability,
-    ReleaseCheck,
 )
 
 if TYPE_CHECKING:
     from sigilicon.domain.design import DesignSpec
-
-
-_IMPLEMENTATION_ROLE_FORMATS = {
-    "raw_macro_lef": {"lef"},
-    "raw_macro_liberty_or_db": {"liberty", "db"},
-    "raw_macro_gds_or_oasis": {"gds", "oasis"},
-    "raw_macro_cdl_or_lvs_netlist": {"cdl", "spice", "spectre"},
-}
-_SIGNOFF_RECEIPT_BINDINGS = {
-    "schematic_layout_parity_receipt": {
-        "circuit_netlist",
-        "raw_macro_gds_or_oasis",
-        "raw_macro_cdl_or_lvs_netlist",
-    },
-    "drc_receipt": {"raw_macro_gds_or_oasis"},
-    "lvs_receipt": {
-        "circuit_netlist",
-        "raw_macro_gds_or_oasis",
-        "raw_macro_cdl_or_lvs_netlist",
-    },
-    "characterization_receipt": {
-        "raw_macro_liberty_or_db",
-        "pex_netlist",
-    },
-}
 
 
 def _project_path(root: Path, relative: Path, label: str) -> Path:
@@ -532,197 +505,18 @@ def _missing_roles(contract: IpContract, level: str) -> list[str]:
     return missing
 
 
-def _receipt_problems(
-    *,
-    contract: IpContract,
-    exported: IpExport,
-    role: str,
-    source_commit: str,
-    by_role: Mapping[str, Any],
-) -> list[str]:
-    interface = exported.interface
-    if not isinstance(interface, (OaMixedSignalIpInterface, OaNativeIpInterface)):
-        raise TypeError("OA signoff receipts require an OA export")
-    item = by_role[role]
-    source = _project_path(
-        contract.project_root, Path(item.source), f"{role} source"
-    )
-    try:
-        receipt = read_json_object(source, f"{role} receipt")
-    except (OSError, ValueError) as exc:
-        return [f"{exported.name}:{role}:invalid-json:{exc}"]
-    problems: list[str] = []
-    prefix = f"{exported.name}:{role}"
-    if receipt.get("status") != "passed":
-        problems.append(f"{prefix}:status")
-    if receipt.get("source_commit") != source_commit:
-        problems.append(f"{prefix}:source-commit")
-    expected_oa = {
-        "library": interface.library,
-        "cell": interface.cell,
-        "schematic_view": interface.schematic_view,
-        "layout_view": interface.layout_view,
-    }
-    if receipt.get("oa") != expected_oa:
-        problems.append(f"{prefix}:oa-identity")
-    tool = receipt.get("tool")
-    if not isinstance(tool, Mapping) or any(
-        not isinstance(tool.get(field), str) or not tool.get(field)
-        for field in ("name", "version")
-    ):
-        problems.append(f"{prefix}:tool-version")
-    receipt_roles: set[str] = set()
-    for field in ("inputs", "outputs"):
-        values = receipt.get(field)
-        if not isinstance(values, list):
-            problems.append(f"{prefix}:{field}")
-            continue
-        for row in values:
-            if (
-                not isinstance(row, Mapping)
-                or not isinstance(row.get("role"), str)
-                or not row.get("role")
-            ):
-                problems.append(f"{prefix}:{field}-entry")
-                continue
-            receipt_roles.add(str(row["role"]))
-    for bound_role in _SIGNOFF_RECEIPT_BINDINGS[role]:
-        if by_role.get(bound_role) is None:
-            problems.append(f"{prefix}:missing-bound-role:{bound_role}")
-            continue
-        if bound_role not in receipt_roles:
-            problems.append(f"{prefix}:missing-receipt-role:{bound_role}")
-    return problems
+def _release_semantics(
+    contract: IpContract, level: str, *, source_commit: str,
+) -> dict[str, tuple[ReleaseAvailability, tuple[str, ...]]]:
+    from sigilicon.adapters.release.release_semantics import ExportSemantics
 
-
-def _qualification_semantics(
-    contract: IpContract,
-    level: str,
-    *,
-    source_commit: str,
-) -> tuple[ReleaseCheck, list[str]]:
-    problems: list[str] = []
+    assessments = {}
     for exported in contract.exports:
-        interface = exported.interface
-        if not isinstance(
-            interface, (OaMixedSignalIpInterface, OaNativeIpInterface)
-        ):
-            continue
         by_role = {item.role: item for item in exported.collateral}
-        if level in {"implementation", "signoff"}:
-            for role, formats in _IMPLEMENTATION_ROLE_FORMATS.items():
-                item = by_role.get(role)
-                if item is None:
-                    continue
-                prefix = f"{exported.name}:{role}"
-                if item.format not in formats:
-                    problems.append(f"{prefix}:format")
-                if (
-                    item.library != interface.library
-                    or item.cell != interface.cell
-                ):
-                    problems.append(f"{prefix}:oa-identity")
-                if not item.view:
-                    problems.append(f"{prefix}:view")
-                if role == "raw_macro_liberty_or_db" and not item.corner:
-                    problems.append(f"{prefix}:corner")
-        if level == "signoff":
-            pex = by_role.get("pex_netlist")
-            if pex is not None:
-                if pex.format not in {"dspf", "spice", "spectre"}:
-                    problems.append(f"{exported.name}:pex_netlist:format")
-                if (
-                    pex.library != interface.library
-                    or pex.cell != interface.cell
-                    or not pex.view
-                    or not pex.corner
-                ):
-                    problems.append(
-                        f"{exported.name}:pex_netlist:identity-or-corner"
-                    )
-            for role in _SIGNOFF_RECEIPT_BINDINGS:
-                if role in by_role:
-                    problems.extend(
-                        _receipt_problems(
-                            contract=contract,
-                            exported=exported,
-                            role=role,
-                            source_commit=source_commit,
-                            by_role=by_role,
-                        )
-                    )
-    return (
-        QualifiedViewSemanticsCheck(
-            passed=not problems,
-            problems=tuple(sorted(problems)),
-        ),
-        sorted(problems),
-    )
-
-
-def _availability(
-    exported: IpExport,
-    level: str,
-    roles: set[str],
-    *,
-    collateral_passed: bool,
-) -> ReleaseAvailability:
-    if isinstance(exported.interface, RtlIpInterface):
-        sources = [
-            item
-            for item in exported.collateral
-            if item.role == exported.interface.source_role
-        ]
-        capabilities = set(sources[0].capabilities) if len(sources) == 1 else set()
-        return ReleaseAvailability(
-            simulation=collateral_passed and "simulation" in capabilities,
-            synthesis=(
-                collateral_passed
-                and "synthesis" in capabilities
-                and level in {"implementation", "signoff"}
-            ),
-            physical_implementation=(
-                collateral_passed
-                and "physical_implementation" in capabilities
-                and level in {"implementation", "signoff"}
-            ),
+        def read_receipt(role: str):
+            source = _project_path(contract.project_root, Path(by_role[role].source), f"{role} source")
+            return read_json_object(source, f"{role} receipt")
+        assessments[exported.name] = ExportSemantics.from_source(exported, level).assess(
+            level, source_commit, read_receipt,
         )
-    if isinstance(exported.interface, OaNativeIpInterface):
-        circuit = next(
-            (
-                item
-                for item in exported.collateral
-                if item.role == "circuit_netlist"
-            ),
-            None,
-        )
-        circuit_capabilities = set(circuit.capabilities) if circuit else set()
-        return ReleaseAvailability(
-            simulation=collateral_passed
-            and bool({"simulation", "circuit_simulation"} & circuit_capabilities),
-            # A native OA macro is linkable by synthesis only when its release
-            # carries the typed Liberty/DB role.  This may be an explicitly
-            # uncharacterized structural model in a development release; the
-            # role's corner and release metadata preserve that distinction.
-            synthesis=collateral_passed
-            and "raw_macro_liberty_or_db" in roles,
-            physical_implementation=collateral_passed
-            and level in {"implementation", "signoff"}
-            and set(_IMPLEMENTATION_ROLE_FORMATS).issubset(roles),
-        )
-    return ReleaseAvailability(
-        simulation="transaction_model" in roles,
-        synthesis=collateral_passed
-        and level in {"implementation", "signoff"}
-        and "integration_adapter" in roles
-        and "physical_blackbox" in roles
-        and "raw_macro_liberty_or_db" in roles,
-        physical_implementation=collateral_passed
-        and level in {"implementation", "signoff"}
-        and "integration_adapter" in roles
-        and "physical_blackbox" in roles
-        and "raw_macro_lef" in roles
-        and "raw_macro_liberty_or_db" in roles
-        and "raw_macro_gds_or_oasis" in roles
-        and "raw_macro_cdl_or_lvs_netlist" in roles,
-    )
+    return assessments

@@ -46,8 +46,6 @@ from sigilicon.release_store import (
 )
 from sigilicon.adapters.release.source_control import inspect_checkout
 from sigilicon.adapters.release.release_contract_checks import (
-    _IMPLEMENTATION_ROLE_FORMATS,
-    _SIGNOFF_RECEIPT_BINDINGS,
     _identity_module,
     _interface_ports,
     _native_oa_interface_contract,
@@ -657,147 +655,40 @@ def _packaged_interface_check(
             )
 
 
-def _packaged_maturity_check(
-    manifest: Mapping[str, Any], manifest_path: Path
-) -> None:
+def _packaged_maturity_check(manifest: Mapping[str, Any], manifest_path: Path) -> None:
+    from sigilicon.adapters.release.release_semantics import ExportSemantics
+
     maturity = manifest.get("maturity")
-    if not isinstance(maturity, Mapping):
-        raise RuntimeError("IP release maturity identity is missing")
-    level = maturity.get("level")
-    if level not in RELEASE_MATURITY_LEVELS:
+    if not isinstance(maturity, Mapping) or maturity.get("level") not in RELEASE_MATURITY_LEVELS:
         raise RuntimeError("IP release maturity level is invalid")
-    problems: list[str] = []
     views = manifest.get("views")
     if not isinstance(views, list):
         raise RuntimeError("IP release views must be a list")
-    for export_name, exported in _manifest_exports(manifest).items():
-        interface = exported.get("interface")
-        export_maturity = exported.get("maturity")
-        if not isinstance(interface, Mapping) or not isinstance(
-            export_maturity, Mapping
-        ):
-            problems.append(f"{export_name}:maturity-identity")
-            continue
-        by_role = {
-            str(view.get("role")): view
-            for view in views
-            if isinstance(view, Mapping)
-            and view.get("export") == export_name
-            and isinstance(view.get("role"), str)
-        }
-        required = export_maturity.get("required_roles")
-        if not isinstance(required, list) or any(
-            not isinstance(role, str) or not role for role in required
-        ):
-            problems.append(f"{export_name}:required-roles")
-            required = []
-        for role in required:
-            if role not in by_role:
-                problems.append(f"{export_name}:{role}:missing")
-        interface_kind = interface.get("kind")
-        if interface_kind == "rtl":
-            if "oa" in exported:
-                problems.append(f"{export_name}:unexpected-oa-identity")
-            continue
-        if interface_kind not in {"oa-mixed-signal", "oa-native"}:
-            problems.append(f"{export_name}:interface-kind")
-            continue
-        oa = exported.get("oa")
-        if not isinstance(oa, Mapping):
-            problems.append(f"{export_name}:oa-identity")
-            continue
-        if level in {"implementation", "signoff"}:
-            for role, formats in _IMPLEMENTATION_ROLE_FORMATS.items():
-                view = by_role.get(role)
-                if view is None:
-                    problems.append(f"{export_name}:{role}:missing")
-                    continue
-                if view.get("format") not in formats:
-                    problems.append(f"{export_name}:{role}:format")
-                if view.get("library") != oa.get("library") or view.get(
-                    "cell"
-                ) != oa.get("cell"):
-                    problems.append(f"{export_name}:{role}:oa-identity")
-                if not isinstance(view.get("view"), str) or not view.get("view"):
-                    problems.append(f"{export_name}:{role}:view")
-                if role == "raw_macro_liberty_or_db" and not view.get("corner"):
-                    problems.append(f"{export_name}:{role}:corner")
-        if level != "signoff":
-            continue
-        pex = by_role.get("pex_netlist")
-        if pex is None:
-            problems.append(f"{export_name}:pex_netlist:missing")
-        elif (
-            pex.get("format") not in {"dspf", "spice", "spectre"}
-            or pex.get("library") != oa.get("library")
-            or pex.get("cell") != oa.get("cell")
-            or not pex.get("view")
-            or not pex.get("corner")
-        ):
-            problems.append(f"{export_name}:pex_netlist:identity-or-corner")
-        source_commit = manifest.get("source_commit")
-        for role, bindings in _SIGNOFF_RECEIPT_BINDINGS.items():
-            if role not in by_role:
-                problems.append(f"{export_name}:{role}:missing")
-                continue
-            receipt_path = resolve_release_role(
-                manifest, manifest_path, role, export=export_name
-            )
-            try:
-                receipt = read_json_object(
-                    receipt_path, f"{export_name}/{role} receipt"
-                )
-            except (OSError, ValueError) as exc:
-                problems.append(f"{export_name}:{role}:invalid-json:{exc}")
-                continue
-            if receipt.get("status") != "passed":
-                problems.append(f"{export_name}:{role}:status")
-            if receipt.get("source_commit") != source_commit:
-                problems.append(f"{export_name}:{role}:source-commit")
-            expected_oa = {
-                "library": oa.get("library"),
-                "cell": oa.get("cell"),
-                "schematic_view": oa.get("schematic_view"),
-                "layout_view": oa.get("layout_view"),
-            }
-            if receipt.get("oa") != expected_oa:
-                problems.append(f"{export_name}:{role}:oa-identity")
-            tool = receipt.get("tool")
-            if not isinstance(tool, Mapping) or any(
-                not isinstance(tool.get(field), str) or not tool.get(field)
-                for field in ("name", "version")
-            ):
-                problems.append(f"{export_name}:{role}:tool-version")
-            receipt_roles: set[str] = set()
-            for field in ("inputs", "outputs"):
-                values = receipt.get(field)
-                if not isinstance(values, list):
-                    problems.append(f"{export_name}:{role}:{field}")
-                    continue
-                for row in values:
-                    if (
-                        isinstance(row, Mapping)
-                        and isinstance(row.get("role"), str)
-                        and row.get("role")
-                    ):
-                        receipt_roles.add(str(row["role"]))
-                    else:
-                        problems.append(f"{export_name}:{role}:{field}-entry")
-            for bound_role in bindings:
-                bound = by_role.get(bound_role)
-                if bound is None:
-                    problems.append(
-                        f"{export_name}:{role}:missing-bound-role:{bound_role}"
-                    )
-                elif bound_role not in receipt_roles:
-                    problems.append(
-                        f"{export_name}:{role}:missing-receipt-role:{bound_role}"
-                    )
+    problems = []
+    availability = []
+    for name, exported in _manifest_exports(manifest).items():
+        def read_receipt(role: str):
+            path = resolve_release_role(manifest, manifest_path, role, export=name)
+            return read_json_object(path, f"{name}/{role} receipt")
+        try:
+            semantics = ExportSemantics.from_record(exported, views)
+            available, issues = semantics.assess(maturity["level"], manifest.get("source_commit"), read_receipt)
+        except (KeyError, ValueError) as exc:
+            raise RuntimeError(f"IP release qualified view semantics are invalid: {exc}") from exc
+        problems.extend(issues)
+        availability.append(available.record)
+        claimed = exported.get("availability")
+        if (claimed != available.record or not isinstance(claimed, Mapping)
+                or any(type(value) is not bool for value in claimed.values())):
+            problems.append(f"{name}:availability")
+    expected = {key: all(row[key] for row in availability)
+                for key in ("simulation", "synthesis", "physical_implementation")}
+    claimed = manifest.get("availability")
+    if (claimed != expected or not isinstance(claimed, Mapping)
+            or any(type(value) is not bool for value in claimed.values())):
+        problems.append("release:availability")
     if problems:
-        raise RuntimeError(
-            "IP release qualified view semantics are invalid: "
-            + ", ".join(sorted(problems))
-        )
+        raise RuntimeError("IP release qualified view semantics are invalid: " + ", ".join(sorted(problems)))
 
 
 def validate_ip_release_package(package: ReleasePackage) -> None:

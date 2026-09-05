@@ -134,7 +134,7 @@ class IpReleaseAdapter:
         return AdapterPreparation(
             action=action,
             sources=tuple(captured),
-            resources=(_resources.capture(store_identity),),
+            resources=(_resources.capture(store_identity), _resources.capture("vcs.git")),
         )
 
     def preflight(

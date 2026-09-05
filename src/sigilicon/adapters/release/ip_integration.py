@@ -32,6 +32,8 @@ from sigilicon.release_store import (
     ReleaseStore,
     release_store_resource,
 )
+from sigilicon.adapters.release.release_semantics import ReleaseView
+from sigilicon.adapters.release.ip_packaging import release_role_view
 from sigilicon.adapters.release.ip_packaging import validate_ip_release_package
 from sigilicon.adapters.release.ip_release_planning import plan_ip_release_contract
 
@@ -484,27 +486,15 @@ def check_ip_integration(
                 f"{release.required_maturity!r}"
             )
         roles = fileset.dependency_roles.get(dependency.name, ())
-        if roles:
-            exported = _release_export(manifest, release.export)
-            availability = exported.get("availability")
-            if not isinstance(availability, Mapping) or availability.get(
-                fileset.required_capability
-            ) is not True:
-                raise RuntimeError(
-                    "IP dependency release is unavailable for "
-                    f"{fileset.required_capability}"
-                )
+        exported = _release_export(manifest, release.export)
+        availability = exported.get("availability")
+        if roles and (not isinstance(availability, Mapping) or availability.get(fileset.required_capability) is not True):
+            raise RuntimeError(f"IP dependency release is unavailable for {fileset.required_capability}")
         relative_paths: list[str] = []
         for role in roles:
-            role_exported = _release_export(manifest, release.export)
-            availability = role_exported.get("availability")
-            if not isinstance(availability, Mapping) or availability.get(
-                fileset.required_capability
-            ) is not True:
-                raise RuntimeError(
-                    f"IP dependency role {role!r} is unavailable from export "
-                    f"{release.export!r} for {fileset.required_capability}"
-                )
+            view = ReleaseView.from_record(release_role_view(manifest, role, export=release.export))
+            if not view.supports(fileset.required_capability):
+                raise RuntimeError(f"IP dependency role {role!r} is unavailable from export {release.export!r} for {fileset.required_capability}")
             artifact = audited.role(release.export, role)
             relative_paths.append(
                 (

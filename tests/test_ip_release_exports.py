@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import subprocess
 from types import SimpleNamespace
 import uuid
 
@@ -71,6 +72,9 @@ def _publish_release(
 
 
 def _write_release_operation(configs: Path, owner: str) -> None:
+    project_contract = configs.parents[2] / "sigilicon.toml"
+    with project_contract.open("a") as stream:
+        stream.write(f'\n[runtime.tools]\n"vcs.git" = "{shutil.which("git")}"\n')
     (configs.parents[2] / "artifacts/release-store").mkdir(
         parents=True,
         exist_ok=True,
@@ -815,9 +819,17 @@ def test_release_build_rejects_checkout_drift_before_publication(
     assert not object_root.exists() or not tuple(object_root.iterdir())
 
 
+@pytest.mark.parametrize(("capability", "view_format", "synthesis"), [
+    ("synthesis", "liberty", True),
+    ("diagnostic", "liberty", False),
+    ("synthesis", "text", False),
+])
 def test_native_oa_release_exposes_only_structural_synthesis_with_liberty(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capability: str,
+    view_format: str,
+    synthesis: bool,
 ) -> None:
     contract_path = _native_oa_contract_fixture(tmp_path)
     owner = tmp_path / "ip/native_fixture"
@@ -856,6 +868,9 @@ capabilities = ["synthesis"]
 ''',
         encoding="utf-8",
     )
+    contract_path.write_text(contract_path.read_text().replace(
+        'capabilities = ["synthesis"]', f'capabilities = ["{capability}"]'
+    ).replace('format = "liberty"', f'format = "{view_format}"'))
     contract = load_ip_contract(contract_path, project=Project.open(tmp_path))
     _patch_checkout(
         monkeypatch,
@@ -870,7 +885,7 @@ capabilities = ["synthesis"]
 
     assert plan.record["exports"][0]["availability"] == {
         "simulation": True,
-        "synthesis": True,
+        "synthesis": synthesis,
         "physical_implementation": False,
     }
     built = _publish_release(
@@ -1187,3 +1202,117 @@ def test_release_identity_cannot_alias_one_component_as_another_ip(
 
     with pytest.raises(ValueError, match="component identity"):
         load_ip_contract(contract_path, project=Project.open(tmp_path))
+
+
+def test_release_python_closure_includes_relative_imports(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    contract_path = _rtl_contract_fixture(tmp_path)
+    owner = tmp_path / "ip/rtl_fixture"
+    package = owner / "model"
+    package.mkdir()
+    (package / "__init__.py").write_text("from . import helper\n")
+    (package / "helper.py").write_text("from .nested import value\n")
+    (package / "nested.py").write_text("value = 7\n")
+    program = owner / "entry.py"
+    program.write_text("from .model import helper\n")
+    component = owner / "configs/ip.toml"
+    component.write_text(component.read_text().replace("[sources]", '[sources]\nmodel = "ip/rtl_fixture/entry.py"'))
+    _patch_checkout(monkeypatch, lambda *_: SimpleNamespace(commit="a" * 40, working_tree_dirty=False))
+    project = Project.open(tmp_path)
+    plan = ip_release_planning.plan_ip_release_contract(load_ip_contract(contract_path, project=project), project=project)
+    assert {"ip/rtl_fixture/entry.py", "ip/rtl_fixture/model/__init__.py", "ip/rtl_fixture/model/helper.py", "ip/rtl_fixture/model/nested.py"} <= set(plan.source_files)
+
+
+def test_package_audit_recomputes_capability_from_views(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    contract = _rtl_contract_fixture(tmp_path)
+    _patch_checkout(monkeypatch, lambda *_: SimpleNamespace(commit="a" * 40, working_tree_dirty=False))
+    project = Project.open(tmp_path)
+    built = _publish_release(contract, project=project)
+    manifest_path = _built_manifest(project, built)
+    manifest = json.loads(manifest_path.read_text())
+    for view in manifest["views"]:
+        if view["role"] == "rtl_source":
+            view["capabilities"] = ["diagnostic"]
+    manifest_path.chmod(0o644)
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(RuntimeError, match="availability"):
+        ip_packaging.audit_ip_release_manifest(manifest_path)
+
+
+@pytest.mark.parametrize("receipt_fault", [None, "source-commit", "missing-receipt-role", "tool-version"])
+def test_signoff_receipt_policy_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, receipt_fault: str | None) -> None:
+    contract_path = _native_oa_contract_fixture(tmp_path)
+    configs = contract_path.parent
+    sources = configs.parent / "sources"
+    commit = "c" * 40
+    oa = {"library": "native_lib", "cell": "NATIVE_TOP", "schematic_view": "schematic", "layout_view": "layout"}
+    views = {
+        "raw_macro_lef": ("lef", ["physical_implementation"]),
+        "raw_macro_liberty_or_db": ("liberty", ["synthesis", "physical_implementation"]),
+        "raw_macro_gds_or_oasis": ("gds", ["physical_implementation"]),
+        "raw_macro_cdl_or_lvs_netlist": ("cdl", ["physical_implementation"]),
+        "pex_netlist": ("spectre", ["circuit_simulation"]),
+    }
+    bound_roles = ["circuit_netlist", *views]
+    receipt = {"status": "passed", "source_commit": commit, "oa": oa,
+               "tool": {"name": "fixture", "version": "1"},
+               "inputs": [{"role": role} for role in bound_roles], "outputs": []}
+    if receipt_fault == "source-commit":
+        receipt["source_commit"] = "d" * 40
+    elif receipt_fault == "missing-receipt-role":
+        receipt["inputs"] = []
+    elif receipt_fault == "tool-version":
+        receipt["tool"] = {"name": "fixture"}
+    receipts = ("schematic_layout_parity_receipt", "drc_receipt", "lvs_receipt", "characterization_receipt")
+    views.update({role: ("json", ["signoff"]) for role in receipts})
+    component = configs / "ip.toml"
+    source_rows = []
+    collateral_rows = []
+    for role, (view_format, capabilities) in views.items():
+        path = sources / f"{role}.data"
+        path.write_text(json.dumps(receipt) if role in receipts else "fixture view\n")
+        source_rows.append(f'{role} = "{path.relative_to(tmp_path)}"')
+        collateral_rows.append(f'''
+[[collateral]]
+export = "native-top"
+role = "{role}"
+component = "native-fixture"
+source = "{role}"
+package_path = "exports/native-top/{role}.data"
+format = "{view_format}"
+library = "native_lib"
+cell = "NATIVE_TOP"
+view = "layout"
+corner = "tt"
+capabilities = {json.dumps(capabilities)}
+''')
+    component.write_text(component.read_text().replace("[sources]", "[sources]\n" + "\n".join(source_rows)))
+    contract_path.write_text(contract_path.read_text() + "".join(collateral_rows))
+    operation = configs / "operations.toml"
+    operation.write_text(operation.read_text().replace('maturity = "development"', 'maturity = "signoff"'))
+    _patch_checkout(monkeypatch, lambda *_: SimpleNamespace(commit=commit, working_tree_dirty=False))
+    project = Project.open(tmp_path)
+    contract = load_ip_contract(contract_path, project=project)
+    plan = ip_release_planning.plan_ip_release_contract(contract, project=project, maturity="signoff")
+    if receipt_fault:
+        assert any(receipt_fault in item for item in plan.missing_items)
+        assert plan.record["availability"]["physical_implementation"] is False
+    else:
+        assert plan.missing_items == ()
+        built = _publish_release(contract_path, project=project, maturity="signoff")
+        audited = ip_packaging.audit_ip_release_manifest(_built_manifest(project, built))
+        assert audited["availability"]["physical_implementation"] is True
+
+
+def test_managed_release_rechecks_the_real_git_commit(tmp_path: Path) -> None:
+    contract_path = _rtl_contract_fixture(tmp_path)
+    (tmp_path / ".gitignore").write_text("artifacts/\n")
+    git = shutil.which("git")
+    for arguments in (("init",), ("add", "."),
+                      ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "source")):
+        subprocess.run([git, *arguments], cwd=tmp_path, check=True, capture_output=True)
+    commit = subprocess.run([git, "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip()
+    project = Project.open(tmp_path)
+    built = _publish_release(contract_path, project=project)
+    audited = ip_packaging.audit_ip_release_manifest(_built_manifest(project, built))
+    assert audited["source_commit"] == commit
+    assert audited["availability"]["simulation"] is True

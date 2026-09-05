@@ -27,7 +27,7 @@ from sigilicon.adapters.release.ip_integration import (
 from conftest import write_project_context
 
 
-def _write_release_fixture(artifact_root: Path) -> tuple[str, str]:
+def _write_release_fixture(artifact_root: Path, *, diagnostic_role: str | None = None) -> tuple[str, str]:
     release_id = "development-fixture"
     relative_root = Path("staging/fixture-ip") / release_id
     release_root = artifact_root / relative_root
@@ -83,7 +83,8 @@ endmodule
             "export": "macro",
             "role": role,
             "path": relative,
-            "format": "systemverilog" if path.suffix == ".sv" else path.suffix[1:],
+            "format": {".sv": "systemverilog", ".scs": "spectre"}.get(path.suffix, path.suffix[1:]),
+            "capabilities": ["diagnostic" if role == diagnostic_role else "simulation"],
             "size": path.stat().st_size,
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         }
@@ -129,6 +130,7 @@ endmodule
             "producer": "ip/fixture",
         },
     }
+    manifest["availability"] = manifest["exports"][0]["availability"]
     (release_root / "manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
@@ -177,6 +179,7 @@ ports = [{ name = "clk", direction = "input", width = 1 }]
             "path": "rtl/fixture_rtl.sv",
             "source": "ip/fixture/rtl/fixture_rtl.sv",
             "format": "systemverilog",
+            "capabilities": ["simulation"],
             "module": "fixture_rtl",
             "size": source.stat().st_size,
             "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
@@ -218,6 +221,7 @@ ports = [{ name = "clk", direction = "input", width = 1 }]
             "producer": "ip/fixture",
         },
     }
+    manifest["availability"] = manifest["exports"][0]["availability"]
     (release_root / "manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
@@ -1332,3 +1336,15 @@ def test_ip_integration_rejects_invalid_locked_release_state(
             project=Project.open(project_root).with_artifact_root(artifact_root),
             variant_name="default",
         )
+
+
+def test_integration_rejects_a_diagnostic_role_from_an_available_export(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    artifact_root = tmp_path / "artifacts"
+    release_id, manifest = _write_release_fixture(artifact_root, diagnostic_role="integration_adapter")
+    contract = _write_ip_fixture(project_root, release_id, manifest)
+    variant = project_root / "ip/demo/configs/variants/default.toml"
+    variant.write_text(variant.read_text().replace('fixture-ip = ["transaction_model"]', 'fixture-ip = ["integration_adapter"]'))
+    project = Project.open(project_root).with_artifact_root(artifact_root)
+    with pytest.raises(RuntimeError, match="integration_adapter.*unavailable.*simulation"):
+        check_ip_integration(contract, project=project, variant_name="default")

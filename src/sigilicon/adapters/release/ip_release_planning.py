@@ -28,12 +28,11 @@ from sigilicon.project import Project
 from sigilicon.domain.systemverilog import module_ports
 from sigilicon.adapters.release.source_control import inspect_checkout
 from sigilicon.adapters.release.release_contract_checks import (
-    _availability,
     _development_interface_check,
     _development_interface_check_with_design_inventory,
     _missing_roles,
     _project_path,
-    _qualification_semantics,
+    _release_semantics,
 )
 from sigilicon.adapters.release.release_plan_record import (
     IpReleasePlan,
@@ -49,6 +48,7 @@ from sigilicon.adapters.release.release_plan_record import (
     ReleaseInterface,
     ReleaseOaIdentity,
     RequiredRolesCheck,
+    QualifiedViewSemanticsCheck,
     RtlReleaseInterface,
 )
 
@@ -98,11 +98,22 @@ def _python_import_closure(root: Path, paths: set[Path]) -> None:
         except (OSError, SyntaxError) as exc:
             raise ValueError(f"cannot inspect Python release input {path}: {exc}") from exc
         imports: set[str] = set()
+        source_root = root / "src" if path.is_relative_to(root / "src") else root
+        package = path.parent.relative_to(source_root).parts
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 imports.update(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-                imports.add(node.module)
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:
+                    if node.level > len(package):
+                        raise ValueError(f"relative Python import escapes its package: {path}")
+                    base = package[:len(package) - node.level + 1]
+                    module = ".".join((*base, *((node.module or "").split(".") if node.module else ())))
+                else:
+                    module = node.module or ""
+                if module:
+                    imports.add(module)
+                    imports.update(f"{module}.{alias.name}" for alias in node.names if alias.name != "*")
         for module in imports:
             for imported in _python_module_paths(root, module):
                 if imported not in paths:
@@ -658,12 +669,14 @@ def _plan_loaded_ip_release(
             for exported in contract.exports
         ]
     )
-    semantic_check, semantic_missing = _qualification_semantics(
+    semantics = _release_semantics(
         contract,
         level,
         source_commit=commit,
     )
-    missing = [*role_missing, *semantic_missing]
+    semantic_missing = sorted({problem for _, problems in semantics.values() for problem in problems})
+    semantic_check = QualifiedViewSemanticsCheck(passed=not semantic_missing, problems=tuple(semantic_missing))
+    missing = sorted(set(role_missing) | set(semantic_missing))
     export_rows: list[ReleaseExportRecord] = []
     role_checks: list[ReleaseCheck] = []
     for exported in contract.exports:
@@ -671,12 +684,7 @@ def _plan_loaded_ip_release(
         export_missing = [
             item for item in missing if item.startswith(f"{exported.name}:")
         ]
-        availability = _availability(
-            exported,
-            level,
-            roles,
-            collateral_passed=not export_missing,
-        )
+        availability = semantics[exported.name][0]
         role_checks.append(
             RequiredRolesCheck(
                 export=exported.name,
