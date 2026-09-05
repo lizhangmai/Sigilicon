@@ -191,11 +191,6 @@ class XceliumAdapter:
         return sources
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
-        config = _strict_config(step, self._fields)
-        for source in self._hdl_sources(step):
-            _relative(source, "HDL fileset source")
-        _text(config, "success_marker")
-        _positive_integer(config, "timeout_seconds")
         return (_executable_check(resources, _XRUN),)
 
     def prepare(
@@ -205,6 +200,11 @@ class XceliumAdapter:
         resources: Resources,
     ) -> AdapterPreparation:
         del project
+        config = _strict_config(step, self._fields)
+        for source in self._hdl_sources(step):
+            _relative(source, "HDL fileset source")
+        _text(config, "success_marker")
+        _positive_integer(config, "timeout_seconds")
         return AdapterPreparation(
             resources=_runtime_bindings(resources, _XRUN),
         )

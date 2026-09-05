@@ -561,9 +561,14 @@ class Project:
                     raise ValueError("repository owner roots must not overlap")
         object.__setattr__(result, "owners", reachable)
         def closure(component: ComponentContract) -> Mapping[str, ComponentContract]:
-            selected = {component.name: component}
-            for child in component.components:
-                selected.update(closure(inventory[child.name]))
+            selected = {}
+            pending = [component]
+            while pending:
+                current = pending.pop()
+                if current.name in selected:
+                    continue
+                selected[current.name] = current
+                pending.extend(inventory[child.name] for child in current.components)
             return MappingProxyType(selected)
         graphs = {name: closure(component) for name, component in owner_components.items()}
         object.__setattr__(result, "_composition_documents", None)

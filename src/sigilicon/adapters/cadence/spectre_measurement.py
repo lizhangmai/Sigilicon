@@ -11,7 +11,7 @@ from sigilicon.adapters.cadence._common import (
     _positive_integer, _relative, _strict_config, _text,
 )
 from sigilicon.adapters.cadence.spectre import run_spectre_deck
-from sigilicon.contracts import freeze_toml_document, thaw_toml_document
+from sigilicon.contracts import freeze_toml_document, require_strings, thaw_toml_document
 from sigilicon.domain.platform import load_platform, model_resource_identities
 from sigilicon.execution import AdapterPreparation
 from sigilicon.execution._model import (
@@ -28,6 +28,8 @@ class MeasurementAction:
     program: str
     spec: str
     circuit: str
+    inputs: tuple[str, ...]
+    platform: str
     parameters: Mapping[str, object]
     models: tuple[tuple[str, str], ...]
     sections: tuple[str, ...]
@@ -38,6 +40,7 @@ class MeasurementAction:
         return {
             "kind": "spectre-measurement", "program": self.program,
             "spec": self.spec, "circuit": self.circuit,
+            "inputs": list(self.inputs), "platform": self.platform,
             "parameters": thaw_toml_document(self.parameters),
             "models": [list(row) for row in self.models], "sections": list(self.sections),
             "timeout_seconds": self.timeout_seconds,
@@ -46,7 +49,7 @@ class MeasurementAction:
 
 def prepare_measurement(project: Project, step: Step, resources: Resources) -> AdapterPreparation:
     config = _strict_config(step, frozenset({
-        "program", "spec", "circuit", "platform", "model_set", "parameters", "timeout_seconds",
+        "program", "spec", "circuit", "inputs", "platform", "model_set", "parameters", "timeout_seconds",
     }))
     selected = {}
     for field in ("program", "spec", "circuit"):
@@ -54,6 +57,12 @@ def prepare_measurement(project: Project, step: Step, resources: Resources) -> A
         if value not in step.sources:
             raise ContractError(f"measurement {field} must be selected by the step filesets")
         selected[field] = value
+    inputs = tuple(
+        _relative(value, "measurement input")
+        for value in require_strings(config.get("inputs", []), "inputs")
+    )
+    if any(value not in step.sources for value in inputs):
+        raise ContractError("measurement inputs must select sources from the step filesets")
     parameters = config.get("parameters", {})
     if not isinstance(parameters, Mapping):
         raise ContractError("measurement parameters must be a table")
@@ -70,7 +79,8 @@ def prepare_measurement(project: Project, step: Step, resources: Resources) -> A
     if len({name for _, name in model_inputs}) != len(model_inputs):
         raise ContractError("Spectre model support filenames collide")
     action = MeasurementAction(
-        **selected, parameters=freeze_toml_document(parameters), models=model_inputs,
+        **selected, inputs=inputs, platform=_text(config, "platform"),
+        parameters=freeze_toml_document(parameters), models=model_inputs,
         sections=tuple(models.sections), timeout_seconds=_positive_integer(config, "timeout_seconds"),
     )
     return AdapterPreparation(
@@ -116,7 +126,11 @@ def run_measurement(context: ExecutionIO) -> StepResult:
     artifacts: list[Artifact] = []
     request = {
         "spec": context.source_text(action.spec),
+        "spec_path": action.spec,
         "circuit": context.source_text(action.circuit),
+        "circuit_path": action.circuit,
+        "inputs": {path: context.source_text(path) for path in action.inputs},
+        "platform": action.platform,
         "parameters": thaw_toml_document(action.parameters),
         "sections": list(action.sections),
     }

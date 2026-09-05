@@ -7,6 +7,8 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
 
+from sigilicon.paths import validate_artifact_component
+
 from sigilicon.contracts import (
     DocumentStore,
     ContractReader,
@@ -163,7 +165,7 @@ def _parse_component_contract(
     reader.consume(*_COMPONENT_FIELDS)
     reader.finish()
     owner_root = root.joinpath(*require_relative_path(document.get("root"), "root").parts)
-    if owner_root != owner_root.resolve() or not contract_path.is_relative_to(owner_root):
+    if not owner_root.is_dir() or owner_root != owner_root.resolve() or not contract_path.is_relative_to(owner_root):
         raise ValueError("component contract must stay inside its declared owner root")
     kind = require_text(document.get("kind"), "kind")
     if kind not in COMPONENT_KINDS:
@@ -248,7 +250,7 @@ def _parse_component_contract(
             raise ValueError(
                 f"component[{index}] contains unknown fields: {sorted(unknown)}"
             )
-        name = require_text(value.get("name"), f"component[{index}].name")
+        name = validate_artifact_component(value.get("name"), f"component[{index}].name")
         if name in names:
             raise ValueError(f"duplicate component dependency: {name}")
         names.add(name)
@@ -269,8 +271,8 @@ def _parse_component_contract(
         path=contract_path,
         project_root=root,
         root=owner_root,
-        owner=header.owner,
-        name=require_text(document.get("name"), "name"),
+        owner=validate_artifact_component(header.owner, "component owner"),
+        name=validate_artifact_component(document.get("name"), "component name"),
         kind=kind,
         lifecycle=lifecycle,
         public_interface=public_interface,

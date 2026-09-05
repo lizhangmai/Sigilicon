@@ -1,4 +1,7 @@
 from pathlib import Path
+import json
+import subprocess
+import sys
 
 import pytest
 
@@ -16,6 +19,64 @@ contract = "{contract.relative_to(root).as_posix()}"
 ''',
         encoding="utf-8",
     )
+
+
+def _component(root: Path, name: str, children: tuple[str, ...] = ()) -> Path:
+    path = root / f"ip/graph/{name}.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f'''schema = 4
+contract_kind = "ip-component"
+path_scope = "owner"
+owner = "graph"
+root = "ip/graph"
+name = "{name}"
+kind = "composite-ip"
+''' + "".join(f'''
+[[component]]
+name = "{child}"
+contract = "ip/graph/{child}.toml"
+''' for child in children))
+    return path
+
+
+def test_shared_component_dag_opens_with_bounded_work(tmp_path: Path) -> None:
+    # 65 components and 126 edges encode billions of paths to the last layer.
+    levels = [("graph",)] + [(f"n{i}_a", f"n{i}_b") for i in range(32)]
+    for index, names in enumerate(levels):
+        for name in names:
+            _component(tmp_path, name, levels[index + 1] if index + 1 < len(levels) else ())
+    _catalog_component(tmp_path, "graph", tmp_path / "ip/graph/graph.toml")
+    probe = subprocess.run(
+        [sys.executable, "-c", '''
+import json, sys
+from sigilicon.project import Project
+from sigilicon.domain.component import load_component_graph
+project = Project.open(sys.argv[1])
+graph = load_component_graph(project.owner("graph").component.path, project=project)
+print(json.dumps(sorted(graph)))
+''', str(tmp_path)],
+        capture_output=True, text=True, check=True, timeout=10,
+    )
+    assert json.loads(probe.stdout) == sorted(name for names in levels for name in names)
+
+
+def test_component_owner_root_must_be_a_directory(tmp_path: Path) -> None:
+    contract = _component(tmp_path, "graph")
+    contract.write_text(contract.read_text().replace('root = "ip/graph"', 'root = "ip/graph/graph.toml"'))
+    _catalog_component(tmp_path, "graph", contract)
+    with pytest.raises(ValueError, match="owner root"):
+        Project.open(tmp_path)
+
+
+@pytest.mark.parametrize("field", ("name", "owner"))
+def test_uncataloged_component_has_a_valid_artifact_identity(tmp_path: Path, field: str) -> None:
+    top = _component(tmp_path, "graph", ("child",))
+    child = _component(tmp_path, "child")
+    old = 'name = "child"' if field == "name" else 'owner = "graph"'
+    child.write_text(child.read_text().replace(old, f'{field} = "bad/name"'))
+    _catalog_component(tmp_path, "graph", top)
+    with pytest.raises(ValueError, match="component.*(name|owner)"):
+        Project.open(tmp_path)
 
 
 def test_source_library_is_a_first_class_component_kind(tmp_path: Path) -> None:

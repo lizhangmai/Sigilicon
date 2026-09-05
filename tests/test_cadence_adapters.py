@@ -18,7 +18,40 @@ from sigilicon.execution._model import (
 )
 from sigilicon.execution._model import Resources
 
-from conftest import write_file as _file
+from conftest import write_file as _file, write_component_owner
+from sigilicon.project import Project
+from sigilicon.cli.main import main
+
+
+@pytest.mark.parametrize(("config", "hdl", "error"), (
+    ('timeout_seconds = 1', True, "success_marker"),
+    ('success_marker = "DONE", timeout_seconds = 0', True, "timeout_seconds"),
+    ('success_marker = "DONE", timeout_seconds = 1, unknown = 1', True, "unknown"),
+    ('success_marker = "DONE", timeout_seconds = 1', False, "no Verilog sources"),
+))
+def test_xcelium_static_contract_fails_during_plan_and_check(
+    tmp_path: Path, config: str, hdl: bool, error: str,
+) -> None:
+    _file(tmp_path / "ip/fixture/top.sv", "module top; endmodule\n")
+    _file(tmp_path / "ip/fixture/operations.toml", f'''schema = 4
+contract_kind = "owner-operations"
+path_scope = "owner"
+owner = "fixture"
+[operations.rtl]
+uses = "cadence.xcelium"
+filesets = ["rtl"]
+config = {{ {config} }}
+''')
+    component = write_component_owner(tmp_path, "fixture", filesets={
+        "operation": ("ip/fixture/operations.toml",),
+        "rtl": ("ip/fixture/top.sv",) if hdl else ("ip/fixture/operations.toml",),
+    })
+    component.write_text(component.read_text().replace("[sources]", 'operation_catalog = "source_0"\n[sources]'))
+    with (tmp_path / "sigilicon.toml").open("a") as stream:
+        stream.write('\n[runtime.tools]\n"cadence.xrun" = "/bin/true"\n')
+    with pytest.raises(ValueError, match=error):
+        Project.open(tmp_path).plan("fixture:rtl")
+    assert main(["check", "--project-root", str(tmp_path)]) != 0
 
 
 def test_oa_operations_have_fixed_backend_identities() -> None:
