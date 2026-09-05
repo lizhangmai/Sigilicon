@@ -2,14 +2,9 @@
 
 from __future__ import annotations
 
-from sigilicon.execution._model import (
-    ExecutionIO,
-    StepResult,
-)
-from sigilicon.external_tools import (
-    owned_scratch_directory,
-    process_group_cleanup_uncertainty,
-)
+from sigilicon.execution._io import ExecutionIO
+from sigilicon.execution._result import StepResult
+from sigilicon.external_tools import owned_scratch_directory, process_group_cleanup_uncertainty
 from sigilicon.adapters.synopsys._common import (
     _artifact,
     _logs,

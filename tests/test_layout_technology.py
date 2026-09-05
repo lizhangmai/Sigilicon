@@ -64,16 +64,23 @@ gate_contact_enhancement_value = "Bottom"
     )
 
 
+@pytest.mark.parametrize("platform_payload", (False, True))
 def test_layout_technology_keeps_owner_schema_and_resolves_routing_roles(
-    tmp_path: Path,
+    tmp_path: Path, platform_payload: bool,
 ) -> None:
     contract = tmp_path / "technology.toml"
     _write_contract(contract)
 
+    if platform_payload:
+        contract.write_text(contract.read_text().replace('schema = 1', 'schema = 2').replace(
+            'contract_kind = "test-layout-technology"', 'contract_kind = "platform-layout"'
+        ).replace('path_scope = "owner"', 'path_scope = "platform"').replace("\n[", "\n[custom_layout."))
     technology = load_layout_technology(
         contract,
-        contract_kind="test-layout-technology",
+        contract_kind="platform-layout" if platform_payload else "test-layout-technology",
         owner="test-owner",
+        path_scope="platform" if platform_payload else "owner",
+        payload_key="custom_layout" if platform_payload else None,
     )
 
     assert technology.polarity("pch") == "pmos"

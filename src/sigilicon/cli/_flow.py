@@ -8,10 +8,7 @@ from pathlib import Path
 import sys
 
 from sigilicon.cli.common import emit_json, open_cli_project
-from sigilicon.execution._model import (
-    ContractError,
-    ExecutionError,
-)
+from sigilicon.execution._values import ContractError, ExecutionError
 from sigilicon.execution.operations import parse_selector
 from sigilicon.execution.runs import RunStore, RunStoreError
 from sigilicon.project import Project

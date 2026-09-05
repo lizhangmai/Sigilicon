@@ -10,7 +10,7 @@ from sigilicon.adapters.mentor import physical_verification
 from sigilicon.adapters.cadence import oa_export
 import sys
 from sigilicon.execution._workspace import ExecutionWorkspace
-from sigilicon.execution._model import Resources
+from sigilicon.execution._resources import Resources
 
 
 def _drc_summary(*, violation_count: int = 0) -> str:
@@ -184,7 +184,7 @@ def test_verifier_accepts_stream_producers_and_requires_real_reports(tmp_path: P
     import json
     from sigilicon.project import Project
     from sigilicon.execution import AdapterPreparation
-    from sigilicon.execution._model import Artifact, StepResult
+    from sigilicon.execution._result import (Artifact, StepResult)
     from sigilicon.adapters.mentor.calibre_adapter import CalibreAdapter
     from sigilicon.external_tools import ProcessResult
 

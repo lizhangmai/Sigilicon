@@ -14,15 +14,11 @@ from sigilicon.adapters.synopsys.hspice_adapter import HspiceAdapter
 from sigilicon.adapters.synopsys.vcs_adapter import VcsAdapter
 from sigilicon.execution import Step
 from sigilicon.project import Project
-from sigilicon.execution._model import (
-    ContractError,
-    ExecutionError,
-    Resources,
-    RuntimeEnvironment,
-    ExecutionIO,
-    Artifact,
-    StepResult,
-)
+from sigilicon.execution._values import ContractError, ExecutionError
+from sigilicon.execution._resources import Resources
+from sigilicon.execution._plan import RuntimeEnvironment
+from sigilicon.execution._io import ExecutionIO
+from sigilicon.execution._result import Artifact, StepResult
 
 from conftest import write_file as _file
 

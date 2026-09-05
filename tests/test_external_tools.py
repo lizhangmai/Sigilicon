@@ -30,7 +30,7 @@ from sigilicon.external_tools import (
     xrun_env,
 )
 from sigilicon.execution._workspace import ExecutionWorkspace
-from sigilicon.execution._model import Resources
+from sigilicon.execution._resources import Resources
 from sigilicon.adapters.cadence.spectre import (
     StagedSpectreInput,
     run_spectre_deck,

@@ -8,13 +8,11 @@ from types import SimpleNamespace
 import pytest
 
 import sigilicon.adapters.cadence.oa_check as oa_check
-from conftest import managed_execution_workspace, write_component_owner, write_test_platform
+from conftest import managed_execution_workspace, write_component_owner, write_test_platform, write_test_layout_platform
 from sigilicon.project import Project
-from sigilicon.execution._model import Resources
+from sigilicon.execution._resources import Resources
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
-from sigilicon.adapters.cadence.oa_check import (
-    check_oa_library,
-)
+from sigilicon.adapters.cadence.oa_check import check_oa_library
 from sigilicon.adapters.cadence.oa_library import (
     OALibraryRebuildPlan,
     ViewRebuildStep,
@@ -84,48 +82,24 @@ def test_read_only_check_workspace_does_not_create_flow_lock(
     assert not (root / ".flow-operation.lock").exists()
 
 
-def test_oa_check_rejects_pure_layout_snapshot() -> None:
-    step = SimpleNamespace(
-        spec=SimpleNamespace(cell="CELL", view="layout"),
-        planning=SimpleNamespace(plan=None),
-    )
-    plan = SimpleNamespace(layouts=(step,))
-    plan.require_layout_ir = lambda operation: OALibraryRebuildPlan.require_layout_ir(
-        plan, operation
-    )
-
+@pytest.mark.parametrize("operation", ("check", "rebuild"))
+def test_oa_assembly_requires_managed_layout_ir_before_live_access(tmp_path: Path, operation: str) -> None:
+    plan = _typed_oa_plan(tmp_path, with_layout=True)
     with pytest.raises(ValueError, match="requires managed LayoutIR"):
-        check_oa_library(plan, client=SimpleNamespace())
+        if operation == "check":
+            check_oa_library(plan, client=object())
+        else:
+            rebuild_oa_library(
+                plan, object(), source_paths={}, resource_paths={}, resources=OA_RESOURCES,
+                artifacts=managed_execution_workspace(tmp_path),
+            )
 
 
-def test_oa_rebuild_rejects_pure_layout_snapshot_before_live_access(tmp_path: Path) -> None:
-    step = SimpleNamespace(
-        spec=SimpleNamespace(cell="CELL", view="layout"),
-        planning=SimpleNamespace(plan=None),
-    )
-    plan = SimpleNamespace(layouts=(step,))
-    plan.require_layout_ir = lambda operation: OALibraryRebuildPlan.require_layout_ir(
-        plan, operation
-    )
-    client = SimpleNamespace(
-        library=SimpleNamespace(
-            list=lambda **_kwargs: pytest.fail("live OA accessed before IR validation")
-        )
-    )
-
-    with pytest.raises(ValueError, match="OA rebuild requires managed LayoutIR"):
-        rebuild_oa_library(
-            plan,
-            client,
-            source_paths={},
-            resource_paths={},
-            resources=OA_RESOURCES,
-            artifacts=managed_execution_workspace(tmp_path),
-        )
-
-
-def _typed_oa_plan(root: Path) -> OALibraryRebuildPlan:
-    write_test_platform(root)
+def _typed_oa_plan(root: Path, *, with_layout: bool = False) -> OALibraryRebuildPlan:
+    if with_layout:
+        write_test_layout_platform(root)
+    else:
+        write_test_platform(root)
     workspace = root / "virtuoso"
     workspace.mkdir(exist_ok=True)
     cell = root / "ip/fixture/cells/MODEL"
@@ -176,6 +150,32 @@ views = [
 ''',
         encoding="utf-8",
     )
+    layout_sources = ()
+    if with_layout:
+        (cell / "layout_generator.py").write_text("def build_layout_plan(spec): raise AssertionError('planning must not run a generator')\n")
+        (cell / "layout.toml").write_text('''schema = 1
+contract_kind = "cell-layout"
+path_scope = "cell"
+owner = "fixture"
+[layout]
+library = "fixture_lib"
+cell = "MODEL"
+view = "layout"
+generator = "test_generator"
+generator_source = "layout_generator.py"
+source_netlist = "circuit.scs"
+pdk = "testpdk"
+[ports]
+order = ["IN", "OUT", "VDD", "VSS"]
+[ports.directions]
+IN = "input"
+OUT = "output"
+VDD = "inputOutput"
+VSS = "inputOutput"
+''')
+        cell_manifest = cell / "cell.toml"
+        cell_manifest.write_text(cell_manifest.read_text().replace("views = [", 'views = [\n  { name = "layout", kind = "layout", source = "layout.toml" },'))
+        layout_sources = ("ip/fixture/cells/MODEL/layout.toml", "ip/fixture/cells/MODEL/layout_generator.py")
     manifest = root / "ip/fixture/configs/oa.toml"
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
@@ -199,6 +199,7 @@ primitive_masters = []
                 "ip/fixture/cells/MODEL/cell.toml",
                 "ip/fixture/cells/MODEL/circuit.scs",
                 "ip/fixture/cells/MODEL/design.toml",
+                *layout_sources,
             )
         },
     )
@@ -376,11 +377,8 @@ config = { owner = "fixture", timeout_seconds = 30 }
     assert ("cadence.xrun" in identities) is (kind != "spectre_model")
 
 
-@pytest.mark.parametrize("simulator", ("spectre", "ams"))
-def test_native_maestro_plan_captures_its_simulator_dependencies(
-    tmp_path: Path, simulator: str,
-) -> None:
-    _typed_oa_plan(tmp_path)
+def _native_maestro_project(tmp_path: Path, simulator: str, *, with_layout: bool = False) -> Project:
+    _typed_oa_plan(tmp_path, with_layout=with_layout)
     owner = tmp_path / "ip/fixture"
     tb = owner / "cells/tb"
     tb.mkdir()
@@ -443,7 +441,68 @@ config = { owner = "fixture", testbench = "tb", timeout_seconds = 30 }
 "cadence.spectre" = "/bin/true"
 "cadence.xrun" = "/bin/true"
 ''')
-    plan = Project.open(tmp_path).plan("fixture:simulate")
+    return Project.open(tmp_path)
+
+
+@pytest.mark.parametrize("simulator", ("spectre", "ams"))
+def test_native_maestro_plan_captures_its_simulator_dependencies(
+    tmp_path: Path, simulator: str,
+) -> None:
+    plan = _native_maestro_project(tmp_path, simulator).plan("fixture:simulate")
     identities = {resource.identity for resource in plan.resources}
     assert "cadence.spectre" in identities
     assert ("cadence.xrun" in identities) is (simulator == "ams")
+
+
+@pytest.mark.parametrize("unrelated_file", ("testbench.scs", "simulation.toml", "setup.il", "cell.toml"))
+def test_native_maestro_inputs_follow_the_selected_testbench_and_real_masters(
+    tmp_path: Path, unrelated_file: str,
+) -> None:
+    import shutil
+    _native_maestro_project(tmp_path, "spectre")
+    owner = tmp_path / "ip/fixture"
+    unrelated = owner / "cells/other_tb"
+    shutil.copytree(owner / "cells/tb", unrelated)
+    for path in unrelated.iterdir():
+        path.write_text(path.read_text().replace('"tb"', '"other_tb"').replace("tb/", "other_tb/").replace("subckt tb", "subckt other_tb").replace("ends tb", "ends other_tb"))
+    component = owner / "component.toml"
+    declarations = "\n".join(
+        f'other_{i} = "ip/fixture/cells/other_tb/{path.name}"'
+        for i, path in enumerate(sorted(unrelated.iterdir()))
+    )
+    component.write_text(component.read_text().replace("[sources]", "[sources]\n" + declarations))
+    before = Project.open(tmp_path).plan("fixture:simulate")
+    selected_paths = {source.location for source in before.sources}
+    master = owner / "cells/MODEL/circuit.scs"
+    assert master in selected_paths
+    assert owner / "cells/tb/setup.il" in selected_paths
+    assert not any(path.is_relative_to(unrelated) for path in selected_paths)
+
+    changed = unrelated / unrelated_file
+    changed.write_text(changed.read_text() + "\n// unrelated change\n" if changed.suffix != ".toml" else changed.read_text() + "\n# unrelated change\n")
+    after = Project.open(tmp_path).plan("fixture:simulate")
+    assert after.identity == before.identity
+
+    master.write_text(master.read_text() + "\n// selected master revision\n")
+    revised = Project.open(tmp_path).plan("fixture:simulate")
+    assert revised.identity != before.identity
+
+
+@pytest.mark.parametrize("operation", ("check", "rebuild"))
+def test_selected_oa_simulation_plan_cannot_replace_assembly_verification(
+    tmp_path: Path, operation: str,
+) -> None:
+    project = _native_maestro_project(tmp_path, "spectre", with_layout=True)
+    owner = tmp_path / "ip/fixture"
+    plan = plan_oa_library_rebuild(owner / "configs/oa.toml", project=project, testbench="tb")
+    assert plan.selected_testbench == "tb"
+    assert set(plan.cells) == {"MODEL", "tb"}
+    assert not plan.layouts
+    with pytest.raises(ValueError, match="requires a complete OA assembly"):
+        if operation == "check":
+            check_oa_library(plan, client=object())
+        else:
+            rebuild_oa_library(
+                plan, object(), source_paths={}, resource_paths={}, resources=OA_RESOURCES,
+                artifacts=managed_execution_workspace(tmp_path),
+            )

@@ -4,13 +4,29 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sigilicon.adapters.cadence._common import (
-    AdapterPreparation, CADENCE_SPECTRE_TOOL, ContractError, ExecutionError,
-    ExecutionIO, PreflightCheck, Resources, Step, StepResult,
-    _CadenceInputs, Project, _XRUN, _executable_check,
-    _positive_integer, _prepare_cadence_inputs, _relative, _strict_config,
-    _text, canonical_digest, json, owned_scratch_directory,
+import json
+from sigilicon.execution.adapter import AdapterPreparation
+from sigilicon.external_tools import (
+    CADENCE_SPECTRE_TOOL,
+    owned_scratch_directory,
     process_group_cleanup_uncertainty,
+)
+from sigilicon.execution._values import ContractError, ExecutionError
+from sigilicon.execution._io import ExecutionIO
+from sigilicon.execution._plan import PreflightCheck, Step
+from sigilicon.execution._resources import Resources
+from sigilicon.execution._result import StepResult
+from sigilicon.project import Project
+from sigilicon.canonical import canonical_digest
+from sigilicon.adapters.cadence._common import (
+    _CadenceInputs,
+    _XRUN,
+    _executable_check,
+    _positive_integer,
+    _prepare_cadence_inputs,
+    _relative,
+    _strict_config,
+    _text,
 )
 from sigilicon.adapters.cadence.xcelium_ams import XceliumAmsCellPlan
 
@@ -19,6 +35,9 @@ from sigilicon.adapters.cadence.xcelium_ams import XceliumAmsCellPlan
 class _XceliumAmsAction:
     plan: XceliumAmsCellPlan
     inputs: _CadenceInputs
+    owner: str
+    cell: str
+    timeout_seconds: int
 
     def __post_init__(self) -> None:
         if not isinstance(self.plan, XceliumAmsCellPlan):
@@ -26,7 +45,7 @@ class _XceliumAmsAction:
 
     @property
     def record(self) -> dict[str, object]:
-        return {"kind": "xcelium-ams", "inputs": self.inputs.record}
+        return {"kind": "xcelium-ams", "inputs": self.inputs.record, "owner": self.owner, "cell": self.cell, "timeout_seconds": self.timeout_seconds}
 
     @property
     def identity(self) -> str:
@@ -85,7 +104,6 @@ class XceliumAmsAdapter:
             raise ContractError("Xcelium AMS plan source snapshot is incomplete")
         prepared = _prepare_cadence_inputs(
             project,
-            step,
             resources,
             owner=owner,
             plan_identity=canonical_digest(planning.as_dict()),
@@ -93,14 +111,12 @@ class XceliumAmsAdapter:
             resource_identities=planning.resource_identities,
             runtime_identities=(_XRUN, CADENCE_SPECTRE_TOOL),
         )
-        return prepared.bind(_XceliumAmsAction(planning, prepared.inputs))
+        return prepared.bind(_XceliumAmsAction(planning, prepared.inputs, owner, _text(config, "cell"), _positive_integer(config, "timeout_seconds")))
 
     def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
         from sigilicon.adapters.cadence.xcelium_ams import execute_xcelium_ams_cell
 
-        config = _strict_config(step, self._fields)
-        owner = _text(config, "owner")
         context.step.validate_action()
         action = context.step.action
         if not isinstance(action, _XceliumAmsAction):
@@ -115,8 +131,8 @@ class XceliumAmsAdapter:
             artifacts = context.workspace(
                 "xcelium-ams",
                 {
-                    "owner": owner,
-                    "cell": str(config["cell"]),
+                    "owner": action.owner,
+                    "cell": action.cell,
                 },
                 tool_work_root=scratch.path,
             )
@@ -128,7 +144,7 @@ class XceliumAmsAdapter:
                 resources=context.runtime,
                 source_paths=bound_sources,
                 environment_values=context.runtime.environment,
-                timeout=_positive_integer(config, "timeout_seconds"),
+                timeout=action.timeout_seconds,
             )
         envelope = context.step.evidence
         if envelope is None:

@@ -31,25 +31,16 @@ from sigilicon.domain.component import (
     resolve_component_graph,
 )
 from sigilicon.source import SourceReference
-from sigilicon.paths import (
-    ProjectContext,
-    validate_artifact_component,
-)
-from sigilicon.execution._model import (
-    ContractError,
-    Resources,
-    Source,
-    resource_identity,
-)
+from sigilicon.paths import ProjectContext, validate_artifact_component
+from sigilicon.execution._values import ContractError, resource_identity
+from sigilicon.execution._resources import Resources
+from sigilicon.execution._source import Source
 
 _HEADER_FIELDS = frozenset({"schema", "contract_kind", "path_scope", "owner"})
 if TYPE_CHECKING:
     from sigilicon.execution.adapter import AdapterRegistry
-    from sigilicon.execution._model import (
-        ExecutionPlan,
-        PreflightResult,
-        RunResult,
-    )
+    from sigilicon.execution._plan import (ExecutionPlan, PreflightResult)
+    from sigilicon.execution._result import (RunResult)
 
 
 def _runtime_resources(raw: Mapping[str, Any], contract: Path) -> Resources:
@@ -285,7 +276,7 @@ class Project:
         """Check a plan without creating a run or starting an adapter."""
 
         from sigilicon.execution.engine import _preflight
-        from sigilicon.execution._model import ExecutionPlan
+        from sigilicon.execution._plan import (ExecutionPlan)
 
         if not isinstance(plan, ExecutionPlan):
             raise TypeError("Project.preflight requires an ExecutionPlan")
@@ -303,7 +294,7 @@ class Project:
         """Execute one source-current plan through its selected adapters."""
 
         from sigilicon.execution.engine import _run
-        from sigilicon.execution._model import ExecutionPlan
+        from sigilicon.execution._plan import (ExecutionPlan)
 
         if not isinstance(plan, ExecutionPlan):
             raise TypeError("Project.run requires an ExecutionPlan")

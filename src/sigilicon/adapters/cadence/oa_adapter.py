@@ -4,16 +4,41 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import json
+from sigilicon.execution.adapter import AdapterPreparation
+from typing import Any, Mapping
+from sigilicon.external_tools import (
+    CADENCE_SPICEIN_TOOL,
+    CADENCE_SPECTRE_TOOL,
+    CADENCE_TEXT_IMPORT_TOOL,
+    CADENCE_VIRTUOSO_TOOL,
+    owned_scratch_directory,
+    process_group_cleanup_uncertainty,
+)
+from sigilicon.execution._values import ContractError, ExecutionError
+from sigilicon.execution._io import ExecutionIO
+from sigilicon.execution._plan import PreflightCheck, Step
+from sigilicon.execution._resources import Resources
+from sigilicon.execution._result import StepResult
+from sigilicon.project import Project
+from sigilicon.canonical import canonical_digest
+from sigilicon.domain.oa_library import find_oa_assembly
 from sigilicon.adapters.cadence._common import (
-    AdapterPreparation, Any, CADENCE_SPICEIN_TOOL, CADENCE_SPECTRE_TOOL,
-    CADENCE_TEXT_IMPORT_TOOL, CADENCE_VIRTUOSO_TOOL, ContractError,
-    ExecutionError, ExecutionIO, Mapping, PreflightCheck, Resources, Step,
-    StepResult, _BRIDGE_RESOURCES, _CadenceInputs, Project,
-    _OA_CAPABILITIES, _PYTHON, _XRUN, _bridge_check, _capability_checks,
-    _executable_check, _oa_resource_identities, _oa_runtime_executables,
-    _positive_integer, _prepare_cadence_inputs, _strict_config, _text,
-    _validate_oa_plan_sources, canonical_digest, find_oa_assembly,
-    json, owned_scratch_directory, process_group_cleanup_uncertainty,
+    _BRIDGE_RESOURCES,
+    _CadenceInputs,
+    _OA_CAPABILITIES,
+    _PYTHON,
+    _XRUN,
+    _bridge_check,
+    _capability_checks,
+    _executable_check,
+    _oa_resource_identities,
+    _oa_runtime_executables,
+    _positive_integer,
+    _prepare_cadence_inputs,
+    _strict_config,
+    _text,
+    _validate_oa_plan_sources,
 )
 from sigilicon.adapters.cadence.oa_library import OALibraryRebuildPlan
 
@@ -22,6 +47,9 @@ from sigilicon.adapters.cadence.oa_library import OALibraryRebuildPlan
 class _NativeOaAction:
     plan: OALibraryRebuildPlan
     inputs: _CadenceInputs
+    owner: str
+    testbench: str
+    timeout_seconds: int
 
     def __post_init__(self) -> None:
         if not isinstance(self.plan, OALibraryRebuildPlan):
@@ -29,7 +57,7 @@ class _NativeOaAction:
 
     @property
     def record(self) -> dict[str, object]:
-        return {"kind": "native-oa", "inputs": self.inputs.record}
+        return {"kind": "native-oa", "inputs": self.inputs.record, "owner": self.owner, "testbench": self.testbench, "timeout_seconds": self.timeout_seconds}
 
     @property
     def identity(self) -> str:
@@ -43,10 +71,14 @@ class NativeOaAdapter:
     _fields = frozenset({"owner", "testbench", "timeout_seconds"})
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
-        config = _strict_config(step, self._fields)
-        _text(config, "owner")
-        _text(config, "testbench")
-        _positive_integer(config, "timeout_seconds")
+        if step.action is None:
+            config = _strict_config(step, self._fields)
+            _text(config, "owner")
+            _text(config, "testbench")
+            _positive_integer(config, "timeout_seconds")
+        elif not isinstance(step.action, _NativeOaAction):
+            raise ContractError("native OA Step has an invalid planned action")
+        step.validate_action()
         compiler = (
             (_XRUN,)
             if isinstance(step.action, _NativeOaAction)
@@ -86,6 +118,7 @@ class NativeOaAdapter:
             manifest,
             project=project,
             platform_inventory=platforms,
+            testbench=_text(config, "testbench"),
         )
         testbench = _text(config, "testbench")
         matches = tuple(item for item in planning.testbenches if item.cell == testbench)
@@ -99,7 +132,6 @@ class NativeOaAdapter:
         )
         prepared = _prepare_cadence_inputs(
             project,
-            step,
             resources,
             owner=owner,
             plan_identity=canonical_digest(planning.as_dict()),
@@ -118,7 +150,7 @@ class NativeOaAdapter:
                 *((_XRUN,) if matches[0].simulation.simulator == "ams" else ()),
             ),
         )
-        return prepared.bind(_NativeOaAction(planning, prepared.inputs))
+        return prepared.bind(_NativeOaAction(planning, prepared.inputs, owner, testbench, _positive_integer(config, "timeout_seconds")))
 
     def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
@@ -128,13 +160,11 @@ class NativeOaAdapter:
         )
         from sigilicon.adapters.cadence.oa_simulation import execute_oa_maestro_testbench
 
-        config = _strict_config(step, self._fields)
-        owner = _text(config, "owner")
-        testbench = _text(config, "testbench")
         context.step.validate_action()
         action = context.step.action
         if not isinstance(action, _NativeOaAction):
             raise ExecutionError("native OA Step has no typed action")
+        owner, testbench = action.owner, action.testbench
         action.inputs.validate(context)
         plan = build_oa_layout_ir(
             action.plan,
@@ -167,7 +197,7 @@ class NativeOaAdapter:
                     bind_operation=context.register_mutation,
                     resources=context.runtime,
                     record_uncertainty=uncertainty.append,
-                    timeout=_positive_integer(config, "timeout_seconds"),
+                    timeout=action.timeout_seconds,
                 )
         except Exception:
             published = context.output_artifacts(
@@ -200,6 +230,7 @@ class NativeOaAdapter:
 class _OaCheckAction:
     plan: OALibraryRebuildPlan
     inputs: _CadenceInputs
+    timeout_seconds: int
 
     def __post_init__(self) -> None:
         if not isinstance(self.plan, OALibraryRebuildPlan):
@@ -207,7 +238,7 @@ class _OaCheckAction:
 
     @property
     def record(self) -> dict[str, object]:
-        return {"kind": "oa-check", "inputs": self.inputs.record}
+        return {"kind": "oa-check", "inputs": self.inputs.record, "timeout_seconds": self.timeout_seconds}
 
     @property
     def identity(self) -> str:
@@ -218,6 +249,7 @@ class _OaCheckAction:
 class _OaRebuildAction:
     plan: OALibraryRebuildPlan
     inputs: _CadenceInputs
+    timeout_seconds: int
 
     def __post_init__(self) -> None:
         if not isinstance(self.plan, OALibraryRebuildPlan):
@@ -225,7 +257,7 @@ class _OaRebuildAction:
 
     @property
     def record(self) -> dict[str, object]:
-        return {"kind": "oa-rebuild", "inputs": self.inputs.record}
+        return {"kind": "oa-rebuild", "inputs": self.inputs.record, "timeout_seconds": self.timeout_seconds}
 
     @property
     def identity(self) -> str:
@@ -236,6 +268,8 @@ class _OaRebuildAction:
 class _OaAttestAction:
     plan: OALibraryRebuildPlan
     inputs: _CadenceInputs
+    testbench: str
+    timeout_seconds: int
 
     def __post_init__(self) -> None:
         if not isinstance(self.plan, OALibraryRebuildPlan):
@@ -243,7 +277,7 @@ class _OaAttestAction:
 
     @property
     def record(self) -> dict[str, object]:
-        return {"kind": "oa-attest", "inputs": self.inputs.record}
+        return {"kind": "oa-attest", "inputs": self.inputs.record, "testbench": self.testbench, "timeout_seconds": self.timeout_seconds}
 
     @property
     def identity(self) -> str:
@@ -273,7 +307,8 @@ def _oa_preflight(
     fields: frozenset[str],
     action_type: type[_OaOperationAction],
 ) -> tuple[PreflightCheck, ...]:
-    _oa_config(step, fields)
+    if step.action is None:
+        _oa_config(step, fields)
     action = step.action
     if action is not None and not isinstance(action, action_type):
         raise ContractError("OA Step has an invalid planned action")
@@ -330,7 +365,6 @@ def _prepare_oa(
     )
     prepared = _prepare_cadence_inputs(
         project,
-        step,
         resources,
         owner=owner,
         plan_identity=canonical_digest(planning.as_dict()),
@@ -346,7 +380,7 @@ def _prepare_oa(
             *_oa_runtime_executables(planning, operation),
         ),
     )
-    return planning, prepared
+    return planning, prepared, config
 
 
 def _publish_oa_result(
@@ -397,14 +431,14 @@ class OaCheckAdapter:
         step: Step,
         resources: Resources,
     ) -> AdapterPreparation:
-        planning, prepared = _prepare_oa(
+        planning, prepared, config = _prepare_oa(
             project,
             step,
             resources,
             fields=_OA_FIELDS,
             operation="check",
         )
-        return prepared.bind(_OaCheckAction(planning, prepared.inputs))
+        return prepared.bind(_OaCheckAction(planning, prepared.inputs, _positive_integer(config, "timeout_seconds")))
 
     def run(self, context: ExecutionIO) -> StepResult:
         from sigilicon.adapters.cadence.oa_check import check_oa_library
@@ -414,7 +448,6 @@ class OaCheckAdapter:
         )
         from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 
-        config = _oa_config(context.step, _OA_FIELDS)
         context.step.validate_action()
         action = context.step.action
         if not isinstance(action, _OaCheckAction):
@@ -440,7 +473,7 @@ class OaCheckAdapter:
             payload = check_oa_library(
                 planning,
                 client=client,
-                timeout=_positive_integer(config, "timeout_seconds"),
+                timeout=action.timeout_seconds,
                 operation=operation,
             )
         return _publish_oa_result(context, "check", payload)
@@ -469,14 +502,14 @@ class OaRebuildAdapter:
         step: Step,
         resources: Resources,
     ) -> AdapterPreparation:
-        planning, prepared = _prepare_oa(
+        planning, prepared, config = _prepare_oa(
             project,
             step,
             resources,
             fields=_OA_FIELDS,
             operation="rebuild",
         )
-        return prepared.bind(_OaRebuildAction(planning, prepared.inputs))
+        return prepared.bind(_OaRebuildAction(planning, prepared.inputs, _positive_integer(config, "timeout_seconds")))
 
     def run(self, context: ExecutionIO) -> StepResult:
         from sigilicon.adapters.cadence.oa_client import get_client
@@ -485,7 +518,6 @@ class OaRebuildAdapter:
             rebuild_oa_library,
         )
 
-        config = _oa_config(context.step, _OA_FIELDS)
         context.step.validate_action()
         action = context.step.action
         if not isinstance(action, _OaRebuildAction):
@@ -504,7 +536,7 @@ class OaRebuildAdapter:
             resource_paths=action.inputs.resource_paths(context),
             resources=context.runtime,
             artifacts=context.workspace("oa", {}).scoped("layouts"),
-            timeout=_positive_integer(config, "timeout_seconds"),
+            timeout=action.timeout_seconds,
             operation_id=context.operation_id,
             bind_operation=context.register_mutation,
         )
@@ -534,14 +566,14 @@ class OaAttestAdapter:
         step: Step,
         resources: Resources,
     ) -> AdapterPreparation:
-        planning, prepared = _prepare_oa(
+        planning, prepared, config = _prepare_oa(
             project,
             step,
             resources,
             fields=_OA_ATTEST_FIELDS,
             operation="attest",
         )
-        return prepared.bind(_OaAttestAction(planning, prepared.inputs))
+        return prepared.bind(_OaAttestAction(planning, prepared.inputs, _text(config, "testbench"), _positive_integer(config, "timeout_seconds")))
 
     def run(self, context: ExecutionIO) -> StepResult:
         from sigilicon.adapters.cadence.oa_client import get_client
@@ -549,13 +581,12 @@ class OaAttestAdapter:
             attest_oa_testbench,
         )
 
-        config = _oa_config(context.step, _OA_ATTEST_FIELDS)
         context.step.validate_action()
         action = context.step.action
         if not isinstance(action, _OaAttestAction):
             raise ExecutionError("OA attest Step has no typed action")
         action.inputs.validate(context)
-        testbench = _text(config, "testbench")
+        testbench = action.testbench
         matches = tuple(
             item for item in action.plan.testbenches if item.cell == testbench
         )
@@ -565,7 +596,7 @@ class OaAttestAdapter:
             action.plan,
             matches[0],
             get_client(context.runtime),
-            timeout=_positive_integer(config, "timeout_seconds"),
+            timeout=action.timeout_seconds,
             operation_id=context.operation_id,
             bind_operation=context.register_mutation,
         )

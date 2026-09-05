@@ -7,7 +7,7 @@ import pytest
 
 import sigilicon.adapters.cadence.hierarchy_import as hierarchy
 from sigilicon.artifacts import RunRecord
-from sigilicon.execution._model import Resources
+from sigilicon.execution._resources import Resources
 from sigilicon.paths import ArtifactLayout
 from sigilicon.virtuoso.workspace import OperationPolicy
 

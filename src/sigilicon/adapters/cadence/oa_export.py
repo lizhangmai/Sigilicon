@@ -12,16 +12,24 @@ from sigilicon.contracts import ContractReader
 from sigilicon.domain.oa_library import find_oa_assembly, load_oa_library_source
 from sigilicon.domain.platform import load_platform
 from sigilicon.execution.adapter import AdapterPreparation
-from sigilicon.execution._model import (
-    ContractError, ExecutionError, ExecutionIO, PreflightCheck, ResourceBinding,
-    Resources, Source, Step, StepResult,
-)
+from sigilicon.execution._values import ContractError, ExecutionError
+from sigilicon.execution._io import ExecutionIO
+from sigilicon.execution._plan import PreflightCheck, Step
+from sigilicon.execution._resources import ResourceBinding, Resources
+from sigilicon.execution._source import Source
+from sigilicon.execution._result import StepResult
 from sigilicon.execution._workspace import ExecutionWorkspace
 from sigilicon.external_tools import owned_input_file, owned_scratch_directory, process_group_cleanup_uncertainty
 from sigilicon.project import Project
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 from sigilicon.virtuoso.xstream import XStreamExportError, XStreamExportRequest, run_xstream_export
-from sigilicon.adapters.cadence._common import _BRIDGE_RESOURCES, _OA_CAPABILITIES, _bridge_check, _capability_checks, _executable_check
+from sigilicon.adapters.cadence._common import (
+    _BRIDGE_RESOURCES,
+    _OA_CAPABILITIES,
+    _bridge_check,
+    _capability_checks,
+    _executable_check,
+)
 
 
 @dataclass(frozen=True)

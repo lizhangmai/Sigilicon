@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess
 import pytest
 
-from sigilicon.execution._model import Resources
+from sigilicon.execution._resources import Resources
 from sigilicon.adapters.release.source_control import inspect_checkout, verify_source_commit
 
 

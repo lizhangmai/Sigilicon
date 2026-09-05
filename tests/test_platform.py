@@ -5,11 +5,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-from conftest import (
-    write_project_context,
-    write_test_layout_platform,
-    write_test_platform,
-)
+from conftest import write_project_context, write_test_layout_platform, write_test_platform
 from sigilicon.domain.platform import (
     Platform,
     load_platform,
@@ -17,7 +13,7 @@ from sigilicon.domain.platform import (
     load_platforms,
     resolve_platform_snapshot,
 )
-from sigilicon.execution._model import Resources
+from sigilicon.execution._resources import Resources
 from sigilicon.project import Project
 
 

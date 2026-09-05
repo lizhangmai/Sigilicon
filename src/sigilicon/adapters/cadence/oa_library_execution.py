@@ -14,10 +14,7 @@ from sigilicon.virtuoso.layout_generation import validate_layout_plan
 from sigilicon.virtuoso.oa import cell_view_exists, delete_cell, delete_cell_view
 from sigilicon.virtuoso.text_view import check_oa_text_view_source
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
-from sigilicon.adapters.cadence.design_lifecycle import (
-    attest_oa_design,
-    synchronize_design,
-)
+from sigilicon.adapters.cadence.design_lifecycle import attest_oa_design, synchronize_design
 from sigilicon.adapters.cadence.layout_generation import (
     build_managed_layout_ir,
     generate_layout,
@@ -163,6 +160,8 @@ def check_oa_parity(
     setup semantic attestation.
     """
 
+    if plan.selected_testbench is not None and testbench != plan.selected_testbench:
+        raise ValueError("selected OA plan requires its own testbench parity scope")
     plan.require_layout_ir("OA parity")
 
     if testbench is not None and testbench not in plan.expected_views:
@@ -176,7 +175,7 @@ def check_oa_parity(
     scoped_cells = (
         tuple(plan.cells)
         if testbench is None
-        else _testbench_dependency_cells(plan, testbench)
+        else (tuple(plan.cells) if plan.selected_testbench is not None else _testbench_dependency_cells(plan, testbench))
     )
     scoped_cell_set = set(scoped_cells)
     expected = {
@@ -193,6 +192,12 @@ def check_oa_parity(
             if cell in actual
         }
     )
+    if plan.selected_testbench is not None:
+        # Views outside the simulation plan belong to assembly-level verification.
+        scoped_actual = {
+            cell: tuple(view for view in views if view in expected[cell])
+            for cell, views in scoped_actual.items()
+        }
     missing_cells = sorted(set(expected) - set(scoped_actual))
     extra_cells = sorted(set(scoped_actual) - set(expected))
     missing_views = {
@@ -486,6 +491,7 @@ def rebuild_oa_library(
     a full rebuild refreshes every source-defined object.
     """
 
+    plan.require_assembly("OA rebuild")
     plan.require_layout_ir("OA rebuild")
     target_cell = cell
     if target_cell is not None and testbench is not None:

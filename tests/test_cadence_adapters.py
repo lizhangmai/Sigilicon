@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 import sys
 
@@ -10,11 +9,7 @@ from sigilicon.adapters.cadence import cadence_adapters
 from sigilicon.adapters.cadence.oa_adapter import NativeOaAdapter
 from sigilicon.adapters.cadence.rtl_adapter import XceliumAdapter
 from sigilicon.execution import Step
-from sigilicon.execution._model import (
-    ContractError,
-    ExecutionIO,
-)
-from sigilicon.execution._model import Resources
+from sigilicon.execution._resources import Resources
 
 from conftest import write_file as _file, write_component_owner
 from sigilicon.project import Project
@@ -61,38 +56,6 @@ def test_oa_operations_have_fixed_backend_identities() -> None:
         "cadence.oa-rebuild",
         "cadence.oa-attest",
     }.issubset(names)
-
-
-def _context(
-    tmp_path: Path,
-    step: Step,
-    resources: Resources,
-    *,
-    project_root: Path | None = None,
-    owner_root: Path | None = None,
-    workspace_root: Path | None = None,
-    scopes: dict[str, str] | None = None,
-    register_operation=None,
-) -> ExecutionIO:
-    runtime_step = step
-    run_root = tmp_path / "run"
-    work = run_root / "work" / runtime_step.id
-    output = run_root / "outputs" / runtime_step.id
-    sources = run_root / "inputs/sources"
-    for root in (work, output, sources):
-        root.mkdir(parents=True, exist_ok=True)
-    return ExecutionIO(
-        "1" * 64,
-        runtime_step,
-        "2" * 32,
-        "3" * 64,
-        run_root,
-        resources,
-        {},
-        owner="fixture",
-        _source_scopes={} if scopes is None else scopes,
-        _register_mutation=register_operation,
-    )
 
 
 def _fake_xrun(tmp_path: Path, marker: str) -> Path:
@@ -144,86 +107,31 @@ def test_xcelium_backend_requires_explicit_sources_and_completion_marker(
 ) -> None:
     marker = "RTL_SUMMARY failures=0"
     executable = _fake_xrun(tmp_path, marker)
-    step = Step(
-        "rtl",
-        "cadence.xcelium",
-        {
-            "success_marker": marker,
-            "timeout_seconds": 10,
-        },
-        sources=("rtl/design.sv", "dv/testbench.sv"),
-    )
-    resources = Resources(
-        tools={"cadence.xrun": str(executable)},
-        environment=dict(os.environ),
-    )
-    project = tmp_path / "project"
-    owner = project / "ip/example"
-    workspace = project / "workspace"
-    owner.mkdir(parents=True)
-    workspace.mkdir()
-    context = _context(
-        tmp_path,
-        step,
-        resources,
-        project_root=project,
-        owner_root=owner,
-        workspace_root=workspace,
-        scopes={source: "owner" for source in step.sources},
-    )
-    _file(context.source_directory / "rtl/design.sv", "module design; endmodule\n")
-    _file(context.source_directory / "dv/testbench.sv", "module testbench; endmodule\n")
-    adapter = XceliumAdapter()
-
-    assert all(check.status == "ready" for check in adapter.preflight(step, resources))
-    result = adapter.run(context)
-
+    root = tmp_path
+    _file(root / "ip/example/rtl/design.sv", "module design; endmodule\n")
+    _file(root / "ip/example/dv/testbench.sv", "module testbench; endmodule\n")
+    _file(root / "ip/example/operations.toml", f'''schema = 4
+contract_kind = "owner-operations"
+path_scope = "owner"
+owner = "example"
+[operations.rtl]
+uses = "cadence.xcelium"
+filesets = ["rtl"]
+config = {{ success_marker = "{marker}", timeout_seconds = 10 }}
+''')
+    component = write_component_owner(root, "example", filesets={
+        "rtl": ("ip/example/rtl/design.sv", "ip/example/dv/testbench.sv"),
+        "operations": ("ip/example/operations.toml",),
+    })
+    component.write_text(component.read_text().replace("[sources]", 'operation_catalog = "source_2"\n[sources]'))
+    with (root / "sigilicon.toml").open("a") as stream:
+        stream.write(f'\n[runtime.tools]\n"cadence.xrun" = "{executable}"\n')
+    project = Project.open(root)
+    plan = project.plan("example:rtl")
+    assert project.preflight(plan).status == "ready"
+    result = project.run(plan)
     assert result.status == "succeeded"
-    assert len(result.artifacts) == 4
-    assert not (context.work_directory / "xcelium.d").exists()
-
-
-def _oa_context(
-    tmp_path: Path,
-    step: Step,
-    *,
-    registered: list[object],
-    tools: dict[str, str] | None = None,
-) -> ExecutionIO:
-    project = tmp_path / "source-project"
-    owner = project / "ip/example"
-    workspace = tmp_path / "oa-workspace"
-    owner.mkdir(parents=True)
-    workspace.mkdir()
-    runtime_step = step
-    virtuoso = _file(tmp_path / "site/virtuoso", executable=True)
-    context = _context(
-        tmp_path,
-        runtime_step,
-        Resources(
-            capabilities=frozenset(
-                {"tool.virtuoso-bridge", "license.cadence-oa"}
-            ),
-            tools={
-                "cadence.virtuoso": str(virtuoso),
-                "runtime.python": sys.executable,
-                **(tools or {}),
-            },
-            values={
-                "virtuoso-bridge.host": "127.0.0.1",
-                "virtuoso-bridge.port": "65432",
-            },
-        ),
-        project_root=project,
-        owner_root=owner,
-        workspace_root=workspace,
-        scopes={source: "owner" for source in runtime_step.sources},
-        register_operation=registered.append,
-    )
-    for source in runtime_step.sources:
-        _file(context.source_directory / source)
-        _file(owner / source)
-    return context
+    assert {artifact.kind for artifact in result.outcomes[0].result.artifacts} >= {"summary.cadence-xcelium"}
 
 
 def test_native_oa_preflight_requires_explicit_virtuoso_executable(

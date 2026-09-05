@@ -12,21 +12,11 @@ import stat
 from typing import Any, Iterator
 
 from sigilicon.artifacts import RunRecord, SafeTree, new_identity, read_nofollow_text
-from sigilicon.execution._model import (
-    Artifact,
-    ContractError,
-    ExecutionPlan,
-    ExecutionError,
-    PreflightCheck,
-    PreflightResult,
-    ResourceBinding,
-    Resources,
-    RunResult,
-    Step,
-    ExecutionIO,
-    StepOutcome,
-    StepResult,
-)
+from sigilicon.execution._result import Artifact, RunResult, StepOutcome, StepResult
+from sigilicon.execution._values import ContractError, ExecutionError
+from sigilicon.execution._plan import ExecutionPlan, PreflightCheck, PreflightResult, Step
+from sigilicon.execution._resources import ResourceBinding, Resources
+from sigilicon.execution._io import ExecutionIO
 from sigilicon.execution.adapter import AdapterRegistry
 from sigilicon.external_tools import (
     owned_directory,

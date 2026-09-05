@@ -18,11 +18,7 @@ from sigilicon.domain.platform import (
     model_resource_identities,
 )
 from sigilicon.project import Project
-from sigilicon.release_store import (
-    ReleaseRef,
-    ReleaseStore,
-    release_store_resource,
-)
+from sigilicon.release_store import ReleaseRef, ReleaseStore, release_store_resource
 from sigilicon.domain.verification_cell import (
     VerificationCellSpec,
     XceliumAmsReleaseCircuit,
@@ -30,7 +26,7 @@ from sigilicon.domain.verification_cell import (
     load_verification_cell,
 )
 from sigilicon.external_tools import ProcessPort, managed_process
-from sigilicon.execution._model import Resources
+from sigilicon.execution._resources import Resources
 from sigilicon.execution._workspace import ExecutionWorkspace
 from sigilicon.adapters.release.ip_packaging import validate_ip_release_package
 from sigilicon.adapters.release.ip_integration import check_ip_integration

@@ -1,7 +1,8 @@
 """The small public vocabulary for planning and managed execution."""
 
 from sigilicon.execution.adapter import Adapter, AdapterPreparation
-from sigilicon.execution._model import ExecutionPlan, RunResult, Step
+from sigilicon.execution._plan import ExecutionPlan, Step
+from sigilicon.execution._result import RunResult
 from sigilicon.execution.runs import RunStore
 
 

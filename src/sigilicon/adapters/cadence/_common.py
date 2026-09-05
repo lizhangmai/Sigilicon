@@ -3,50 +3,26 @@
 from __future__ import annotations
 
 import hashlib
-import json
-import os
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from sigilicon.artifacts import read_nofollow_text
 from sigilicon.canonical import canonical_digest
 from sigilicon.contracts import require_relative_path
-from sigilicon.domain.oa_library import find_oa_assembly
 from sigilicon.execution.adapter import AdapterPreparation
-from sigilicon.execution._model import (
-    Artifact,
-    ContractError,
-    ExecutionError,
-    PlannedAction,
-    ResourceBinding,
-    PreflightCheck,
-    Resources,
-    Source,
-    Step,
-    ExecutionIO,
-    StepResult,
-)
-from sigilicon.external_tools import (
-    CADENCE_SPECTRE_TOOL,
-    CADENCE_SPICEIN_TOOL,
-    CADENCE_TEXT_IMPORT_TOOL,
-    CADENCE_VIRTUOSO_TOOL,
-    owned_scratch_directory,
-    process_group_cleanup_uncertainty,
-)
+from sigilicon.execution._values import ContractError, ExecutionError
+from sigilicon.execution._plan import PlannedAction, PreflightCheck, Step
+from sigilicon.execution._resources import ResourceBinding, Resources
+from sigilicon.execution._source import Source
+from sigilicon.execution._io import ExecutionIO
+from sigilicon.external_tools import CADENCE_SPICEIN_TOOL, CADENCE_TEXT_IMPORT_TOOL
 from sigilicon.project import Project
-from sigilicon.virtuoso.bridge import (
-    VIRTUOSO_BRIDGE_HOST,
-    VIRTUOSO_BRIDGE_PORT,
-)
+from sigilicon.virtuoso.bridge import VIRTUOSO_BRIDGE_HOST, VIRTUOSO_BRIDGE_PORT
 
 
 _XRUN = "cadence.xrun"
-_XSTREAM = "cadence.xstream"
-_CALIBRE = "mentor.calibre"
 _PYTHON = "runtime.python"
 _OA_CAPABILITIES = frozenset({"tool.virtuoso-bridge", "license.cadence-oa"})
 _OA_TEXT_VIEW_KINDS = frozenset({"spectre_model", "veriloga", "system_verilog"})
@@ -182,50 +158,41 @@ def _oa_runtime_executables(planning: Any, operation: str) -> tuple[str, ...]:
     return tuple(required)
 
 
-def _bind_source_paths(
+def _capture_project_sources(
     project: Project,
     owner_name: str,
-    step: Step,
-    paths: Mapping[Path, str | Source] | tuple[Path, ...] | frozenset[Path],
-) -> Mapping[Path, tuple[str, str]]:
-    """Bind Project-owned inputs; package code and PDK files stay runtime resources."""
+    records: Mapping[Path, str | Source],
+) -> tuple[Source, ...]:
+    """Capture each project input once and bind it to the parsed plan payload."""
 
     project_root = project.project_root.resolve()
     owner_root = project.owner(owner_name).root.resolve()
     artifact_root = project.artifact_root.resolve()
-    selected: dict[Path, tuple[str, str]] = {}
-    for source in paths:
+    selected: list[Source] = []
+    for source, expected in sorted(records.items(), key=lambda item: str(item[0])):
         path = Path(source).absolute()
         if path != path.resolve():
             raise ContractError(f"adapter source must not traverse a symlink: {path}")
         if path.is_relative_to(artifact_root):
             continue
         if path.is_relative_to(owner_root):
-            name = path.relative_to(owner_root).as_posix()
+            root, scope = owner_root, "owner"
         elif path.is_relative_to(project_root):
-            name = path.relative_to(project_root).as_posix()
+            root, scope = project_root, "project"
         else:
             continue
-        snapshot = None
-        if isinstance(paths, Mapping):
-            expected = paths[source]
-            if isinstance(expected, Source):
-                if expected.location != path or not expected.current():
-                    raise ContractError(f"typed adapter source snapshot drift: {path}")
-                digest = expected.sha256
-            else:
-                snapshot = read_nofollow_text(path)
-                if snapshot != expected:
-                    raise ContractError(f"typed adapter source snapshot drift: {path}")
-                digest = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
+        if isinstance(expected, Source):
+            captured = expected
+            if captured.root != root or captured.scope != scope:
+                raise ContractError(f"prepared source has the wrong scope: {path}")
+            if captured.location != path or not captured.current():
+                raise ContractError(f"typed adapter source snapshot drift: {path}")
         else:
-            snapshot = read_nofollow_text(path)
-            digest = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
-        selected[path] = (
-            name,
-            digest,
-        )
-    return MappingProxyType(selected)
+            captured = Source.capture(path, root=root, scope=scope)
+            if captured.read_text() != expected:
+                raise ContractError(f"typed adapter source snapshot drift: {path}")
+        selected.append(captured)
+    return tuple(selected)
 
 
 def _validate_oa_plan_sources(
@@ -258,17 +225,6 @@ def _validate_oa_plan_sources(
         {member.location: member for member in members}
     )
 
-
-def _require_bound_sources(
-    context: ExecutionIO,
-    sources: Mapping[Path, tuple[str, str]],
-) -> None:
-    for name, digest in sources.values():
-        current = hashlib.sha256(
-            context.source_text(name).encode("utf-8")
-        ).hexdigest()
-        if current != digest:
-            raise ExecutionError(f"sealed adapter source identity drift: {name}")
 
 
 def _external_file_records(
@@ -377,40 +333,14 @@ def _oa_resource_identities(
     return MappingProxyType(selected)
 
 
-def _captured_project_sources(
-    project: Project,
-    owner_name: str,
-    sources: Mapping[Path, tuple[str, str]],
-    records: Mapping[Path, str | Source],
-) -> tuple[Source, ...]:
-    project_root = project.project_root.resolve()
-    owner_root = project.owner(owner_name).root.resolve()
-    captured: list[Source] = []
-    for path in sorted(sources, key=str):
-        if path.is_relative_to(owner_root):
-            root, scope = owner_root, "owner"
-        elif path.is_relative_to(project_root):
-            root, scope = project_root, "project"
-        else:
-            raise ContractError(f"prepared source is outside the Project: {path}")
-        existing = records.get(path)
-        if isinstance(existing, Source):
-            if existing.root != root or existing.scope != scope:
-                raise ContractError(f"prepared source has the wrong scope: {path}")
-            captured.append(existing)
-        else:
-            captured.append(Source.capture(path, root=root, scope=scope))
-    return tuple(captured)
-
-
 @dataclass(frozen=True)
 class _CadenceInputs:
-    """Sealed source, resource, and workspace bindings shared by Cadence actions."""
+    """Canonical captured inputs and their original paths for a Cadence action."""
 
     plan_identity: str
     runtime_identities: tuple[str, ...]
-    sources: Mapping[Path, tuple[str, str]]
-    resources: tuple[tuple[Path, str, str], ...]
+    sources: tuple[Source, ...]
+    resources: tuple[ResourceBinding, ...]
     workspace_root: Path
 
     def __post_init__(self) -> None:
@@ -420,44 +350,11 @@ class _CadenceInputs:
             or len(self.plan_identity) != 71
         ):
             raise ContractError("Cadence action plan identity is invalid")
-        if not isinstance(self.runtime_identities, tuple) or any(
-            not isinstance(name, str) or not name
-            for name in self.runtime_identities
-        ):
-            raise ContractError("Cadence action runtime identities are invalid")
-        if not isinstance(self.sources, Mapping):
-            raise ContractError("prepared Cadence sources must be a mapping")
-        if len({identity for _path, identity, _digest in self.resources}) != len(
-            self.resources
-        ):
+        if len({resource.identity for resource in self.resources}) != len(self.resources):
             raise ContractError("prepared Cadence resources contain duplicate identities")
-        object.__setattr__(self, "sources", MappingProxyType(dict(self.sources)))
-        object.__setattr__(self, "workspace_root", self.workspace_root.resolve())
-
-    @classmethod
-    def create(
-        cls,
-        plan_identity: str,
-        runtime_identities: tuple[str, ...],
-        sources: Mapping[Path, tuple[str, str]],
-        resources: tuple[ResourceBinding, ...],
-        workspace_root: Path,
-    ) -> "_CadenceInputs":
-        return cls(
-            plan_identity,
-            runtime_identities,
-            sources,
-            tuple(
-                (resource.location, resource.identity, resource.sha256)
-                for resource in resources
-            ),
-            workspace_root,
-        )
 
     @property
     def identity(self) -> str:
-        """Return the deterministic identity recorded by the Step."""
-
         return canonical_digest(self.record)
 
     @property
@@ -465,48 +362,35 @@ class _CadenceInputs:
         return {
             "plan_identity": self.plan_identity,
             "runtime_identities": self.runtime_identities,
-            "sources": tuple(
-                sorted((name, digest) for name, digest in self.sources.values())
-            ),
-            "resources": tuple(
-                sorted(
-                    (identity, digest)
-                    for _path, identity, digest in self.resources
-                )
-            ),
+            "sources": tuple(source.record for source in self.sources),
+            "resources": tuple(resource.record for resource in self.resources),
         }
 
     def validate(self, context: ExecutionIO) -> None:
-        _require_bound_sources(context, self.sources)
-        for _path, identity, _digest in self.resources:
-            context.resource_path(identity)
+        for source in self.sources:
+            payload = context.source_text(source.path).encode("utf-8")
+            if len(payload) != source.size or hashlib.sha256(payload).hexdigest() != source.sha256:
+                raise ExecutionError(f"sealed adapter source identity drift: {source.path}")
+        for resource in self.resources:
+            context.resource_path(resource.identity)
 
     def source_paths(self, context: ExecutionIO) -> Mapping[Path, Path]:
         self.validate(context)
-        return MappingProxyType(
-            {
-                original: context.source_path(name)
-                for original, (name, _digest) in self.sources.items()
-            }
-        )
+        return MappingProxyType({
+            source.location: context.source_path(source.path) for source in self.sources
+        })
 
     def resource_paths(self, context: ExecutionIO) -> Mapping[Path, Path]:
-        self.validate(context)
-        return MappingProxyType(
-            {
-                original: context.resource_path(identity)
-                for original, identity, _digest in self.resources
-            }
-        )
+        return MappingProxyType({
+            resource.location: context.resource_path(resource.identity)
+            for resource in self.resources
+        })
 
     def resource_text(self, context: ExecutionIO) -> Mapping[Path, str]:
-        self.validate(context)
-        return MappingProxyType(
-            {
-                original: context.resource_text(identity)
-                for original, identity, _digest in self.resources
-            }
-        )
+        return MappingProxyType({
+            resource.location: context.resource_text(resource.identity)
+            for resource in self.resources
+        })
 
 @dataclass(frozen=True)
 class _CadencePreparation:
@@ -526,7 +410,6 @@ class _CadencePreparation:
 
 def _prepare_cadence_inputs(
     project: Project,
-    step: Step,
     resources: Resources,
     *,
     owner: str,
@@ -538,7 +421,7 @@ def _prepare_cadence_inputs(
 ) -> _CadencePreparation:
     """Seal common inputs without erasing the vertical action's plan type."""
 
-    sources = _bind_source_paths(project, owner, step, source_records)
+    sources = _capture_project_sources(project, owner, source_records)
     external = _external_file_records(
         project,
         source_records,
@@ -552,18 +435,13 @@ def _prepare_cadence_inputs(
     ):
         raise ContractError("Cadence plan binds a runtime identity more than once")
     return _CadencePreparation(
-        _CadenceInputs.create(
+        _CadenceInputs(
             plan_identity,
             tuple(binding.identity for binding in runtime_bindings),
             sources,
             external,
             project.workspace_root,
         ),
-        _captured_project_sources(
-            project,
-            owner,
-            sources,
-            source_records,
-        ),
+        sources,
         combined_bindings,
     )

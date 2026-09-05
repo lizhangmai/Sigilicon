@@ -16,22 +16,14 @@ from typing import Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from sigilicon.adapters.synopsys.planning import Invocation
 
-from sigilicon.artifacts import (
-    SafeTree,
-)
+from sigilicon.artifacts import SafeTree
 from sigilicon.contracts import require_relative_path
-from sigilicon.execution._model import (
-    Artifact,
-    ContractError,
-    ExecutionError,
-    Resources,
-    Step,
-    ExecutionIO,
-)
-from sigilicon.execution.runtime import (
-    BoundEnvironment,
-    bind_environment,
-)
+from sigilicon.execution._result import Artifact
+from sigilicon.execution._values import ContractError, ExecutionError
+from sigilicon.execution._resources import Resources
+from sigilicon.execution._plan import Step
+from sigilicon.execution._io import ExecutionIO
+from sigilicon.execution.runtime import BoundEnvironment, bind_environment
 from sigilicon.external_tools import (
     ProcessRequest,
     ProcessResult,

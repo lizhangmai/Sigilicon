@@ -2,19 +2,11 @@
 
 from __future__ import annotations
 
-from sigilicon.execution._model import (
-    Artifact,
-    ExecutionError,
-    ExecutionIO,
-    StepResult,
-)
-from pathlib import (
-    Path,
-)
-from sigilicon.external_tools import (
-    owned_scratch_directory,
-    process_group_cleanup_uncertainty,
-)
+from sigilicon.execution._result import Artifact, StepResult
+from sigilicon.execution._values import ExecutionError
+from sigilicon.execution._io import ExecutionIO
+from pathlib import Path
+from sigilicon.external_tools import owned_scratch_directory, process_group_cleanup_uncertainty
 from sigilicon.adapters.synopsys._common import (
     _ToolVerdict,
     _archive_directory,

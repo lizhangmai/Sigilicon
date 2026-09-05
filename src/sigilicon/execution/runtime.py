@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from sigilicon.execution._model import PreflightCheck, Resources, RuntimeEnvironment
+from sigilicon.execution._plan import PreflightCheck, RuntimeEnvironment
+from sigilicon.execution._resources import Resources
 
 
 @dataclass(frozen=True)

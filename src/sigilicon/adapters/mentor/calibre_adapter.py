@@ -13,10 +13,12 @@ from sigilicon.domain.physical_verification import PhysicalVerificationPolicy, p
 from sigilicon.domain.platform import VerificationDeck, load_platform
 from sigilicon.execution.adapter import AdapterPreparation
 from sigilicon.execution._workspace import ExecutionWorkspace
-from sigilicon.execution._model import (
-    ContractError, ExecutionError, ExecutionIO, PreflightCheck, ResourceBinding,
-    Resources, Source, Step, StepResult,
-)
+from sigilicon.execution._values import ContractError, ExecutionError
+from sigilicon.execution._io import ExecutionIO
+from sigilicon.execution._plan import PreflightCheck, Step
+from sigilicon.execution._resources import ResourceBinding, Resources
+from sigilicon.execution._source import Source
+from sigilicon.execution._result import StepResult
 from sigilicon.external_tools import owned_scratch_directory, process_group_cleanup_uncertainty
 from sigilicon.project import Project
 from sigilicon.adapters.mentor.physical_verification import VerificationRequest, render_run_deck, run_calibre_verification

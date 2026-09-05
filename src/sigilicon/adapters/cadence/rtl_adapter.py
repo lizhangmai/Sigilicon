@@ -2,16 +2,63 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import asdict, dataclass
+from sigilicon.canonical import canonical_digest
+from sigilicon.execution.adapter import AdapterPreparation
+from sigilicon.execution._result import Artifact, StepResult
+from sigilicon.external_tools import CADENCE_SPECTRE_TOOL, owned_scratch_directory
+from sigilicon.execution._values import ContractError, ExecutionError
+from sigilicon.execution._io import ExecutionIO
+from typing import Mapping
+from pathlib import Path, PurePosixPath
+from sigilicon.project import Project
+from sigilicon.execution._plan import PreflightCheck, Step
+from sigilicon.execution._resources import Resources
 from sigilicon.adapters.cadence._common import (
-    AdapterPreparation, Artifact, CADENCE_SPECTRE_TOOL, ContractError,
-    ExecutionError, ExecutionIO, Mapping, Path, Project, PreflightCheck,
-    PurePosixPath, Resources, Step, StepResult, _SPECTRE_TEMPLATE_TOKEN, _XRUN,
-    _executable_check, _positive_integer, _relative, _runtime_bindings,
-    _strict_config, _strings, _text, json, owned_scratch_directory,
+    _SPECTRE_TEMPLATE_TOKEN,
+    _XRUN,
+    _executable_check,
+    _positive_integer,
+    _relative,
+    _runtime_bindings,
+    _strict_config,
+    _strings,
+    _text,
 )
 from sigilicon.adapters.cadence.spectre_measurement import (
     MeasurementAction, prepare_measurement, run_measurement,
 )
+
+@dataclass(frozen=True)
+class _SpectreAction:
+    deck: str
+    outputs: tuple[str, ...]
+    timeout_seconds: int
+
+    @property
+    def record(self) -> dict[str, object]:
+        return {"kind": "direct-spectre", **asdict(self)}
+
+    @property
+    def identity(self) -> str:
+        return canonical_digest(self.record)
+
+
+@dataclass(frozen=True)
+class _XceliumAction:
+    sources: tuple[str, ...]
+    success_marker: str
+    timeout_seconds: int
+
+    @property
+    def record(self) -> dict[str, object]:
+        return {"kind": "direct-xcelium", **asdict(self)}
+
+    @property
+    def identity(self) -> str:
+        return canonical_digest(self.record)
+
 
 class SpectreAdapter:
     """Run one source-owned Spectre deck template as managed raw evidence."""
@@ -47,8 +94,9 @@ class SpectreAdapter:
         if "program" in step.config:
             return prepare_measurement(project, step, resources)
         del project
-        self._configuration(step)
+        action = _SpectreAction(*self._configuration(step))
         return AdapterPreparation(
+            action=action,
             resources=_runtime_bindings(resources, CADENCE_SPECTRE_TOOL),
         )
 
@@ -61,7 +109,11 @@ class SpectreAdapter:
             step.validate_action()
             return (_executable_check(resources, CADENCE_SPECTRE_TOOL),
                     _executable_check(resources, "runtime.python"))
-        self._configuration(step)
+        if step.action is None:
+            self._configuration(step)
+        elif not isinstance(step.action, _SpectreAction):
+            raise ContractError("Spectre Step has an invalid typed action")
+        step.validate_action()
         from sigilicon.execution.runtime import preflight_environment
 
         return (
@@ -75,7 +127,11 @@ class SpectreAdapter:
         from sigilicon.adapters.cadence.spectre import run_spectre_deck
 
         step = context.step
-        deck, outputs, timeout = self._configuration(step)
+        step.validate_action()
+        action = step.action
+        if not isinstance(action, _SpectreAction):
+            raise ExecutionError("Spectre Step has no typed action")
+        deck, outputs, timeout = action.deck, action.outputs, action.timeout_seconds
         workspace = context.workspace(
             "spectre",
             {
@@ -201,11 +257,13 @@ class XceliumAdapter:
     ) -> AdapterPreparation:
         del project
         config = _strict_config(step, self._fields)
-        for source in self._hdl_sources(step):
-            _relative(source, "HDL fileset source")
-        _text(config, "success_marker")
-        _positive_integer(config, "timeout_seconds")
+        action = _XceliumAction(
+            tuple(_relative(source, "HDL fileset source") for source in self._hdl_sources(step)),
+            _text(config, "success_marker"),
+            _positive_integer(config, "timeout_seconds"),
+        )
         return AdapterPreparation(
+            action=action,
             resources=_runtime_bindings(resources, _XRUN),
         )
 
@@ -213,14 +271,13 @@ class XceliumAdapter:
         step = context.step
         from sigilicon.adapters.cadence.xcelium import execute_xcelium_invocation
 
-        config = _strict_config(context.step, self._fields)
-        source_names = self._hdl_sources(context.step)
-        sources = tuple(
-            context.owner_source_path(_relative(source, "hdl source"))
-            for source in source_names
-        )
-        timeout = _positive_integer(config, "timeout_seconds")
-        marker = _text(config, "success_marker")
+        step.validate_action()
+        action = step.action
+        if not isinstance(action, _XceliumAction):
+            raise ExecutionError("Xcelium Step has no typed action")
+        source_names = action.sources
+        sources = tuple(context.owner_source_path(source) for source in source_names)
+        timeout, marker = action.timeout_seconds, action.success_marker
         with owned_scratch_directory(
             prefix=f"sigilicon-xcelium-{context.run_id}-"
         ) as scratch:

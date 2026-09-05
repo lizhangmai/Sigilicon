@@ -3,51 +3,26 @@
 from __future__ import annotations
 
 import json
-from sigilicon.execution.adapter import (
-    AdapterPreparation,
-)
-from typing import (
-    Any,
-)
-from sigilicon.execution._model import (
-    ContractError,
-    ExecutionError,
-    ExecutionIO,
-    PreflightCheck,
-    ResourceBinding,
-    Resources,
-    Source,
-    Step,
-    StepResult,
-)
-from collections.abc import (
-    Mapping,
-)
-from pathlib import (
-    Path,
-)
-from sigilicon.project import (
-    Project,
-)
+from sigilicon.execution.adapter import AdapterPreparation
+from typing import Any
+from sigilicon.execution._values import ContractError, ExecutionError
+from sigilicon.execution._io import ExecutionIO
+from sigilicon.execution._plan import PreflightCheck, Step
+from sigilicon.execution._resources import ResourceBinding, Resources
+from sigilicon.execution._source import Source
+from sigilicon.execution._result import StepResult
+from collections.abc import Mapping
+from pathlib import Path
+from sigilicon.project import Project
 from sigilicon.adapters.synopsys.structural_link import (
     StructuralLinkPlan,
     execute_structural_link,
     plan_structural_link,
 )
-from sigilicon.canonical import (
-    canonical_digest,
-)
-from dataclasses import (
-    dataclass,
-    replace,
-)
-from sigilicon.external_tools import (
-    owned_scratch_directory,
-    process_group_cleanup_uncertainty,
-)
-from sigilicon.execution.runtime import (
-    preflight_environment,
-)
+from sigilicon.canonical import canonical_digest
+from dataclasses import dataclass, replace
+from sigilicon.external_tools import owned_scratch_directory, process_group_cleanup_uncertainty
+from sigilicon.execution.runtime import preflight_environment
 from sigilicon.adapters.synopsys._common import (
     _mapping,
     _positive_integer,
@@ -66,11 +41,13 @@ class _StructuralLinkAction:
     link_script: str
     release_manifest_resource: str
     release_liberty_resource: str
+    timeout_seconds: int
 
     @property
     def record(self) -> Mapping[str, Any]:
         return {
             "owner": self.plan.owner,
+            "timeout_seconds": self.timeout_seconds,
             "variant": self.plan.variant,
             "top": self.plan.top,
             "rtl_sources": list(self.rtl_sources),
@@ -308,6 +285,7 @@ class StructuralLinkAdapter:
             link_name,
             external[0].identity,
             external[1].identity,
+            _positive_integer(config, "timeout_seconds"),
         )
         return AdapterPreparation(
             action=structural_link,
@@ -318,9 +296,9 @@ class StructuralLinkAdapter:
     def _execute(
         self,
         context: ExecutionIO,
-        planning: StructuralLinkPlan,
+        action: _StructuralLinkAction,
     ) -> StepResult:
-        config = self._config(context.step)
+        planning = action.runtime(context)
         runtime = _runtime_environment(context.runtime, context.step)
         try:
             library_compiler = context.step.runtime.tools[
@@ -350,7 +328,7 @@ class StructuralLinkAdapter:
                 library_compiler=library_compiler,
                 design_compiler=design_compiler,
                 environment=runtime.values,
-                timeout=_positive_integer(config, "timeout_seconds"),
+                timeout=action.timeout_seconds,
             )
         envelope = context.step.evidence
         if envelope is None:
@@ -399,4 +377,4 @@ class StructuralLinkAdapter:
         action = step.action
         if not isinstance(action, _StructuralLinkAction):
             raise ExecutionError("structural-link Step has no typed plan")
-        return self._execute(context, action.runtime(context))
+        return self._execute(context, action)

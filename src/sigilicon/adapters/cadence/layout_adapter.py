@@ -4,14 +4,29 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from sigilicon.execution.adapter import AdapterPreparation
+from typing import Any
+from sigilicon.execution._values import ContractError, ExecutionError
+from sigilicon.execution._io import ExecutionIO
+from sigilicon.execution._plan import PreflightCheck, Step
+from sigilicon.execution._resources import Resources
+from sigilicon.execution._result import StepResult
+from sigilicon.project import Project
+from sigilicon.canonical import canonical_digest
+from sigilicon.external_tools import owned_scratch_directory, process_group_cleanup_uncertainty
 from sigilicon.adapters.cadence._common import (
-    AdapterPreparation, Any, ContractError, ExecutionError, ExecutionIO,
-    PreflightCheck, Resources, Step, StepResult, _BRIDGE_RESOURCES,
-    _CadenceInputs, _OA_CAPABILITIES, Project,
-    _PYTHON, _bridge_check, _capability_checks, _executable_check,
-    _positive_integer, _prepare_cadence_inputs, _relative, _strict_config,
-    _text, canonical_digest, owned_scratch_directory,
-    process_group_cleanup_uncertainty,
+    _BRIDGE_RESOURCES,
+    _CadenceInputs,
+    _OA_CAPABILITIES,
+    _PYTHON,
+    _bridge_check,
+    _capability_checks,
+    _executable_check,
+    _positive_integer,
+    _prepare_cadence_inputs,
+    _relative,
+    _strict_config,
+    _text,
 )
 from sigilicon.adapters.cadence.layout_generation import LayoutPlanningResult
 
@@ -20,6 +35,9 @@ from sigilicon.adapters.cadence.layout_generation import LayoutPlanningResult
 class _LayoutAction:
     plan: LayoutPlanningResult
     inputs: _CadenceInputs
+    owner: str
+    spec: str
+    timeout_seconds: int
 
     def __post_init__(self) -> None:
         if not isinstance(self.plan, LayoutPlanningResult):
@@ -27,7 +45,7 @@ class _LayoutAction:
 
     @property
     def record(self) -> dict[str, object]:
-        return {"kind": "layout", "inputs": self.inputs.record}
+        return {"kind": "layout", "inputs": self.inputs.record, "owner": self.owner, "spec": self.spec, "timeout_seconds": self.timeout_seconds}
 
     @property
     def identity(self) -> str:
@@ -81,7 +99,6 @@ class LayoutAdapter:
             raise ContractError("OA layout generation requires a platform OA capability")
         prepared = _prepare_cadence_inputs(
             project,
-            step,
             resources,
             owner=owner,
             plan_identity=canonical_digest(
@@ -97,7 +114,7 @@ class LayoutAdapter:
             resource_identities=platform_resource_identities(planning.spec.pdk),
             runtime_identities=(*_BRIDGE_RESOURCES, _PYTHON),
         )
-        return prepared.bind(_LayoutAction(planning, prepared.inputs))
+        return prepared.bind(_LayoutAction(planning, prepared.inputs, owner, _text(config, "spec"), _positive_integer(config, "timeout_seconds")))
 
     def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
@@ -120,8 +137,9 @@ class LayoutAdapter:
         from sigilicon.adapters.cadence.oa_client import get_client
         from sigilicon.adapters.cadence.layout_generation import generate_layout, render_canonical_source_cdl
 
-        config = _strict_config(context.step, self._fields)
-        owner = _text(config, "owner")
+        action = context.step.action
+        if not isinstance(action, _LayoutAction):
+            raise ExecutionError("layout Step has no typed action")
         uncertainty: list[str] = []
         try:
             with owned_scratch_directory(
@@ -131,7 +149,7 @@ class LayoutAdapter:
             ) as scratch:
                 artifacts = context.workspace(
                     "layout",
-                    {"owner": owner, "spec": str(config["spec"])},
+                    {"owner": action.owner, "spec": action.spec},
                     tool_work_root=scratch.path,
                 )
                 result = generate_layout(
@@ -141,7 +159,7 @@ class LayoutAdapter:
                     operation_id=context.operation_id,
                     bind_operation=context.register_mutation,
                     record_uncertainty=uncertainty.append,
-                    timeout=_positive_integer(config, "timeout_seconds"),
+                    timeout=action.timeout_seconds,
                 )
         except Exception:
             published = context.output_artifacts(

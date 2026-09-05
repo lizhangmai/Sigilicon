@@ -7,18 +7,11 @@ from dataclasses import asdict, dataclass
 from types import MappingProxyType
 from typing import ClassVar, Self
 
-from sigilicon.execution.adapter import (
-    AdapterPreparation,
-)
-from sigilicon.execution._model import (
-    ContractError,
-    PreflightCheck,
-    Resources,
-    Step,
-)
-from sigilicon.project import (
-    Project,
-)
+from sigilicon.execution.adapter import AdapterPreparation
+from sigilicon.execution._values import ContractError
+from sigilicon.execution._plan import PreflightCheck, Step
+from sigilicon.execution._resources import Resources
+from sigilicon.project import Project
 from sigilicon.adapters.synopsys._common import (
     _ENVIRONMENT,
     _ENVIRONMENT_PREFIX,

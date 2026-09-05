@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 from typing import Mapping
 
-from sigilicon.execution._model import Resources
+from sigilicon.execution._resources import Resources
 from sigilicon.external_tools import ProcessRequest, managed_process, owned_input_file
 
 

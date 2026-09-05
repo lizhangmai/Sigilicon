@@ -16,7 +16,7 @@ from sigilicon.domain.physical_verification import (
     PhysicalVerificationStatus, VerificationCompletion,
 )
 from sigilicon.domain.platform import VerificationDeck
-from sigilicon.execution._model import Resources
+from sigilicon.execution._resources import Resources
 from sigilicon.execution._workspace import ExecutionWorkspace
 from sigilicon.external_tools import (
     ProcessRequest, cadence_subprocess_env, managed_process, owned_directory, owned_input_file,

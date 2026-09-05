@@ -8,15 +8,21 @@ from pathlib import Path
 from typing import Mapping
 
 from sigilicon.adapters.cadence._common import (
-    _positive_integer, _relative, _strict_config, _text,
+    _positive_integer,
+    _relative,
+    _strict_config,
+    _text,
 )
 from sigilicon.adapters.cadence.spectre import run_spectre_deck
 from sigilicon.contracts import freeze_toml_document, require_strings, thaw_toml_document
 from sigilicon.domain.platform import load_platform, model_resource_identities
 from sigilicon.execution import AdapterPreparation
-from sigilicon.execution._model import (
-    Artifact, ContractError, ExecutionIO, ResourceBinding, Resources, Source, Step, StepResult,
-)
+from sigilicon.execution._result import Artifact, StepResult
+from sigilicon.execution._values import ContractError
+from sigilicon.execution._io import ExecutionIO
+from sigilicon.execution._resources import ResourceBinding, Resources
+from sigilicon.execution._source import Source
+from sigilicon.execution._plan import Step
 from sigilicon.external_tools import (
     ProcessRequest, managed_process, owned_sealed_input, process_group_cleanup_uncertainty,
 )

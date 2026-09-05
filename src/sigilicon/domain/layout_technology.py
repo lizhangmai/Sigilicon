@@ -8,7 +8,7 @@ import re
 from types import MappingProxyType
 from typing import Mapping
 
-from sigilicon.contracts import read_toml, require_config_header
+from sigilicon.contracts import contract_schema, read_toml, require_config_header
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
@@ -200,6 +200,7 @@ def load_layout_technology(
         raw,
         contract,
         contract_kind=contract_kind,
+        schema=contract_schema(contract_kind),
         path_scope=path_scope,
         owner=owner,
     )

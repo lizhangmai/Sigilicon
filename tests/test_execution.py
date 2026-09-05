@@ -20,18 +20,12 @@ from sigilicon.execution import (
     RunStore,
     Step,
 )
-from sigilicon.execution._model import (
-    Artifact,
-    ContractError,
-    ExecutionError,
-    PreflightCheck,
-    RunFailureProvenance,
-    Source,
-    ExecutionIO,
-    StepOutcome,
-    StepResult,
-)
-from sigilicon.execution._model import ResourceBinding, Resources
+from sigilicon.execution._result import Artifact, RunFailureProvenance, StepOutcome, StepResult
+from sigilicon.execution._values import ContractError, ExecutionError
+from sigilicon.execution._plan import PreflightCheck
+from sigilicon.execution._source import Source
+from sigilicon.execution._io import ExecutionIO
+from sigilicon.execution._resources import ResourceBinding, Resources
 from sigilicon.canonical import canonical_digest
 from sigilicon.domain.context import RepositoryIdentity
 from sigilicon.execution.operations import parse_selector

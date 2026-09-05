@@ -301,6 +301,7 @@ def check_oa_library(
     the Cadence API-level check.
     """
 
+    plan.require_assembly("OA check")
     plan.require_layout_ir("OA check")
     manifest_path = plan.source.manifest_path
 

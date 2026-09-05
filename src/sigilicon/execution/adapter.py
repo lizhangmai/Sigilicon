@@ -7,20 +7,12 @@ from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from sigilicon.execution._model import (
-    ContractError,
-    ExecutionPlan,
-    PreflightCheck,
-    PlannedAction,
-    ResourceBinding,
-    Resources,
-    Source,
-    Step,
-    ExecutionIO,
-    StepResult,
-    _bind_execution_plan,
-    adapter_identity,
-)
+from sigilicon.execution._values import ContractError, adapter_identity
+from sigilicon.execution._plan import (ExecutionPlan, PreflightCheck, PlannedAction, Step, _bind_execution_plan)
+from sigilicon.execution._resources import ResourceBinding, Resources
+from sigilicon.execution._source import Source
+from sigilicon.execution._io import ExecutionIO
+from sigilicon.execution._result import StepResult
 
 if TYPE_CHECKING:
     from sigilicon.project import Project

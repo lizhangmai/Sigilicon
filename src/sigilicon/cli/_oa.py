@@ -9,7 +9,7 @@ import sys
 from typing import Any
 
 from sigilicon.cli.common import emit_json, open_cli_project
-from sigilicon.execution._model import Resources
+from sigilicon.execution._resources import Resources
 from sigilicon.paths import ProjectContext
 from sigilicon.adapters.cadence.virtuoso_operations import close_cell, open_project_cell
 

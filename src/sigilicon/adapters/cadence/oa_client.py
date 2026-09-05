@@ -5,12 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from sigilicon.execution._model import ResourceBinding, Resources
-from sigilicon.virtuoso.bridge import (
-    VIRTUOSO_BRIDGE_HOST,
-    VIRTUOSO_BRIDGE_PORT,
-    create_client,
-)
+from sigilicon.execution._resources import ResourceBinding, Resources
+from sigilicon.virtuoso.bridge import VIRTUOSO_BRIDGE_HOST, VIRTUOSO_BRIDGE_PORT, create_client
 
 
 @dataclass(frozen=True)

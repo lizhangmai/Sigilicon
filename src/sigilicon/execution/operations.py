@@ -9,15 +9,9 @@ from typing import TYPE_CHECKING, Any
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.contracts import contract_schema
-from sigilicon.execution._model import (
-    ContractError,
-    Evidence,
-    ExecutionPlan,
-    RuntimeEnvironment,
-    Source,
-    Step,
-    adapter_identity,
-)
+from sigilicon.execution._values import ContractError, adapter_identity
+from sigilicon.execution._plan import Evidence, ExecutionPlan, RuntimeEnvironment, Step
+from sigilicon.execution._source import Source
 from sigilicon.paths import validate_artifact_component
 
 if TYPE_CHECKING:

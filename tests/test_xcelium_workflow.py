@@ -10,17 +10,10 @@ import pytest
 from sigilicon.project import Project
 from sigilicon.adapters.cadence import xcelium as xcelium_workflow
 from sigilicon.external_tools import ProcessResult
-from sigilicon.execution._model import Resources
-from sigilicon.adapters.cadence.xcelium import (
-    execute_xcelium_cell,
-    plan_xcelium_cell,
-)
+from sigilicon.execution._resources import Resources
+from sigilicon.adapters.cadence.xcelium import execute_xcelium_cell, plan_xcelium_cell
 
-from conftest import (
-    managed_execution_workspace,
-    write_component_owner,
-    write_file as _write,
-)
+from conftest import managed_execution_workspace, write_component_owner, write_file as _write
 
 
 def _verification_project(root: Path) -> Path:

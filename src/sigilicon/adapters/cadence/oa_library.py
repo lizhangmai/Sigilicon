@@ -33,13 +33,11 @@ from sigilicon.domain.platform import (
 )
 from sigilicon.project import Project
 from sigilicon.domain.source import TextSourceSnapshot, load_text_source_snapshot
-from sigilicon.execution._model import Source, json_value
+from sigilicon.execution._source import Source
+from sigilicon.execution._values import json_value
 from sigilicon.layout.ir import LayoutPlan
 from sigilicon.layout.spec import LayoutSpec, load_layout_spec
-from sigilicon.adapters.cadence.design_lifecycle import (
-    DesignInspection,
-    inspect_design,
-)
+from sigilicon.adapters.cadence.design_lifecycle import DesignInspection, inspect_design
 from sigilicon.adapters.cadence.layout_generation import (
     LayoutPlanningResult,
     plan_layout_snapshot,
@@ -113,11 +111,16 @@ class OALibraryRebuildPlan:
     testbenches: tuple[TestbenchRebuildStep, ...]
     views: tuple[ViewRebuildStep, ...]
     expected_views: Mapping[str, tuple[str, ...]]
+    selected_testbench: str | None = None
     netlist_snapshots: Mapping[Path, NetlistSnapshot] = field(
         default_factory=lambda: MappingProxyType({}),
         repr=False,
         compare=False,
     )
+
+    def require_assembly(self, operation: str) -> None:
+        if self.selected_testbench is not None:
+            raise ValueError(f"{operation} requires a complete OA assembly plan")
 
     def require_layout_ir(self, operation: str) -> None:
         missing = tuple(
@@ -142,6 +145,7 @@ class OALibraryRebuildPlan:
 
         return {
             "passed": True,
+            "selected_testbench": self.selected_testbench,
             "manifest": self.source.manifest_path.relative_to(root).as_posix(),
             "source_library": self.source.name,
             "target_library": self.library,
@@ -437,6 +441,7 @@ def _override_inspection_library(
 
 def _load_definitions(
     source: OALibrarySource,
+    captured: Mapping[Path, NetlistSnapshot] | None = None,
 ) -> tuple[
     Mapping[str, NetlistSubcircuit],
     Mapping[Path, NetlistSnapshot],
@@ -447,7 +452,7 @@ def _load_definitions(
         if any(view.kind == "spectre_netlist" for view in cell.views)
     )
     snapshots = {
-        path: load_netlist_snapshot(path)
+        path: captured[path] if captured is not None else load_netlist_snapshot(path)
         for path in dict.fromkeys(
             cell.canonical_source for cell in netlist_cells
         )
@@ -820,6 +825,70 @@ def _plan_views(
     return tuple(step_by_key[key] for key in order)
 
 
+def _testbench_source_closure(
+    source: OALibrarySource,
+    testbench: str,
+) -> tuple[OALibrarySource, Mapping[Path, NetlistSnapshot]]:
+    """Select simulation views and recursively resolve their actual circuit masters."""
+
+    inventory = {cell.cell: cell for cell in source.cells}
+    if testbench not in inventory or inventory[testbench].role != "testbench":
+        raise ValueError(f"unknown native OA testbench: {testbench}")
+    selected: set[str] = set()
+    pending = [testbench]
+    snapshots: dict[Path, NetlistSnapshot] = {}
+    while pending:
+        name = pending.pop()
+        if name in selected:
+            continue
+        cell = inventory[name]
+        selected.add(name)
+        for view in cell.views:
+            if view.kind != "layout":
+                pending.extend(dependency.cell for dependency in view.dependencies)
+        if any(view.kind == "spectre_netlist" for view in cell.views):
+            path = cell.canonical_source
+            if path not in snapshots:
+                snapshots[path] = load_netlist_snapshot(path)
+            definitions = parse_subcircuit_definitions((snapshots[path],))
+            if name not in definitions:
+                raise ValueError(f"canonical source does not define {name}")
+            pending.extend(
+                instance.master
+                for instance in parse_subcircuit_instances(definitions[name])
+                if instance.master in inventory
+            )
+            # A canonical file can own multiple cells; its definitions form one input.
+            pending.extend(other.cell for other in source.cells if other.canonical_source == path)
+    cells = tuple(
+        replace(cell, views=tuple(view for view in cell.views if view.kind != "layout"))
+        for cell in source.cells if cell.cell in selected
+    )
+    selected_cells = {cell.cell: cell for cell in cells}
+    documents = {source.manifest_path, *(cell.manifest_path for cell in cells)}
+    roots = []
+    for root in source.source_roots:
+        members = tuple(selected_cells[cell.cell] for cell in root.cells if cell.cell in selected)
+        if not members:
+            continue
+        documents.add(root.manifest_path)
+        root_documents = {root.manifest_path, *(cell.manifest_path for cell in members)}
+        roots.append(replace(
+            root, cells=members,
+            source_documents=MappingProxyType({
+                path: document for path, document in root.source_documents.items()
+                if path in root_documents
+            }),
+        ))
+    return replace(
+        source, cells=cells, source_roots=tuple(roots), physical_verification=None,
+        source_documents=MappingProxyType({
+            path: document for path, document in source.source_documents.items()
+            if path in documents
+        }),
+    ), MappingProxyType(snapshots)
+
+
 def plan_oa_library_rebuild(
     manifest_path: Path,
     *,
@@ -828,6 +897,7 @@ def plan_oa_library_rebuild(
     platform_inventory: PlatformSet | None = None,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
     architecture_source_documents: Mapping[Path, Mapping[str, Any]] | None = None,
+    testbench: str | None = None,
 ) -> OALibraryRebuildPlan:
     """Prove that source alone describes every cell and canonical OA view."""
 
@@ -856,9 +926,12 @@ def plan_oa_library_rebuild(
         raise ValueError(
             f"OA assembly may materialize only its unique library {source.name}"
         )
-    definitions, netlist_snapshots = _load_definitions(source)
+    selected_snapshots = None
+    if testbench is not None:
+        source, selected_snapshots = _testbench_source_closure(source, testbench)
+    definitions, netlist_snapshots = _load_definitions(source, selected_snapshots)
     if platform_inventory is None:
-        from sigilicon.execution._model import Resources
+        from sigilicon.execution._resources import (Resources)
 
         platform_snapshot: PlatformSnapshot = load_platform(
             project,
@@ -920,5 +993,6 @@ def plan_oa_library_rebuild(
         testbenches=testbenches,
         views=views,
         expected_views=expected_views,
+        selected_testbench=testbench,
         netlist_snapshots=MappingProxyType(dict(netlist_snapshots)),
     )

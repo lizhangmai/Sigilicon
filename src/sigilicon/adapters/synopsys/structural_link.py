@@ -19,13 +19,9 @@ from sigilicon.external_tools import (
     owned_directory,
     owned_input_file,
 )
-from sigilicon.execution._model import Resources
+from sigilicon.execution._resources import Resources
 from sigilicon.execution._workspace import ExecutionWorkspace
-from sigilicon.release_store import (
-    ReleaseRef,
-    ReleaseStore,
-    release_store_resource,
-)
+from sigilicon.release_store import ReleaseRef, ReleaseStore, release_store_resource
 from sigilicon.adapters.release.ip_packaging import validate_ip_release_package
 
 

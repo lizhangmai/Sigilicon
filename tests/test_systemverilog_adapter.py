@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from sigilicon.execution._model import Resources
+from sigilicon.execution._resources import Resources
 from sigilicon.domain.source import load_text_source_snapshot
 from sigilicon.virtuoso.text_view import import_oa_text_view
 from sigilicon.domain.systemverilog import module_port_signatures

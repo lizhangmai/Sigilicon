@@ -9,7 +9,7 @@ import shutil
 import pytest
 
 from sigilicon.execution._workspace import ExecutionWorkspace
-from sigilicon.execution._model import Resources
+from sigilicon.execution._resources import Resources
 from sigilicon.adapters.synopsys.structural_link import (
     execute_structural_link,
     plan_structural_link,

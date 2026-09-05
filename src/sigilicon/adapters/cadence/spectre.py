@@ -15,7 +15,7 @@ import re
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
 
-from sigilicon.execution._model import Resources
+from sigilicon.execution._resources import Resources
 from sigilicon.execution._workspace import ExecutionWorkspace
 from sigilicon.external_tools import (
     ProcessPort,
