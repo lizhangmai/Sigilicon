@@ -5,9 +5,12 @@ from dataclasses import dataclass, field
 import hashlib
 from pathlib import Path, PurePosixPath
 import stat
+import tomllib
+from typing import Any, Mapping
 from sigilicon.artifacts import _inspect_nofollow_file, read_nofollow_bytes
+from sigilicon.canonical import canonical_json
 from sigilicon.source import SourceReference
-from sigilicon.execution._values import ContractError, _ADAPTER
+from sigilicon.execution._values import ContractError, _ADAPTER, json_value
 
 
 @dataclass(frozen=True)
@@ -91,6 +94,21 @@ class Source:
             inspected.st_ino,
             inspected.st_mtime_ns,
         )
+
+    @classmethod
+    def capture_document(
+        cls, path: Path, *, document: Mapping[str, Any], root: Path, scope: str = "project",
+    ) -> "Source":
+        """Bind captured TOML bytes to the document used to compile an action."""
+
+        captured = cls.capture(path, root=root, scope=scope)
+        try:
+            parsed = tomllib.loads(captured.read_text())
+        except tomllib.TOMLDecodeError as exc:
+            raise ContractError(f"source document snapshot drift: {path}") from exc
+        if canonical_json(json_value(parsed)) != canonical_json(json_value(document)):
+            raise ContractError(f"source document snapshot drift: {path}")
+        return captured
 
     @property
     def record(self) -> dict[str, object]:

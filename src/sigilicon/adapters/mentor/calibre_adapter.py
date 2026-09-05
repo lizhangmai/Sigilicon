@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import tomllib
 from typing import Mapping
 
 from sigilicon.artifacts import SafeTree, read_nofollow_text
 from sigilicon.canonical import canonical_digest
-from sigilicon.contracts import ContractReader, read_toml, require_relative_path
+from sigilicon.contracts import ContractReader, require_relative_path
 from sigilicon.domain.physical_verification import PhysicalVerificationPolicy, parse_physical_verification_policy
 from sigilicon.domain.platform import VerificationDeck, load_platform
 from sigilicon.execution.adapter import AdapterPreparation
@@ -117,9 +118,10 @@ class CalibreAdapter:
         if policy_name not in step.sources:
             raise ContractError("verification policy must belong to the selected source closure")
         policy_path = project.owner(owner).root / policy_name
-        if not any(source.location == policy_path for source in step.source_closure):
+        policy_source = next((source for source in step.source_closure if source.location == policy_path), None)
+        if policy_source is None:
             raise ContractError("verification policy owner disagrees with its operation source")
-        policy = parse_physical_verification_policy(policy_path, read_toml(policy_path), owner=owner)
+        policy = parse_physical_verification_policy(policy_path, tomllib.loads(policy_source.read_text()), owner=owner)
         platform = load_platform(project, platform_name, resources=resources)
         if platform.verification is None:
             raise ContractError("Calibre requires a platform verification capability")
@@ -132,7 +134,9 @@ class CalibreAdapter:
             results_path="drc-results.db", summary_path="drc-summary.rep")
         return AdapterPreparation(
             action=action,
-            sources=tuple(Source.capture(path, root=project.project_root) for path in platform.source_paths),
+            sources=tuple(Source.capture_document(path, document=document, root=project.project_root)
+                          for path, document in sorted({platform.source_paths[0]: platform.catalog_document,
+                                                       **platform.source_documents}.items())),
             resources=(ResourceBinding.capture(deck.asset.require_path(), identity=identity), resources.capture(self.name)),
         )
 

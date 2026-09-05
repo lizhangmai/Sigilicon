@@ -146,10 +146,13 @@ class OaExportAdapter:
                                  assembly.workspace_root, identity, cds_identity, platform.layout.xstream_flatten_pcells,
                                  platform.layout.xstream_suppressed_warnings, timeout)
         owner_root = project.owner(owner).root
+        documents = {**assembly.source_documents, **platform.source_documents,
+                     platform.source_paths[0]: platform.catalog_document}
         return AdapterPreparation(action=action,
-            sources=tuple(Source.capture(path, root=owner_root if path.is_relative_to(owner_root) else project.project_root,
+            sources=tuple(Source.capture_document(path, document=document,
+                                         root=owner_root if path.is_relative_to(owner_root) else project.project_root,
                                          scope="owner" if path.is_relative_to(owner_root) else "project")
-                          for path in sorted({*assembly.source_documents, *platform.source_paths})),
+                          for path, document in sorted(documents.items())),
             resources=(ResourceBinding.capture(platform.layout.layermap.require_path(), identity=identity),
                        ResourceBinding.capture(assembly.workspace_root / "cds.lib", identity=cds_identity),
                        *(resources.capture(name) for name in (*_BRIDGE_RESOURCES, "cadence.xstream"))))

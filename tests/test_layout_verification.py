@@ -243,6 +243,87 @@ def test_verifier_rejects_changed_foundry_template(tmp_path: Path, monkeypatch) 
         project.plan("example:verify")
 
 
+@pytest.mark.parametrize("operation,relative,before,after", [
+    ("export", "configs/platform/testpdk/layout.toml", "", "\nxstream_flatten_pcells = false\n"),
+    ("export", "ip/example/cells/TOP/cell.toml", 'role = "design"', 'role = "changed"'),
+    ("verify", "configs/platform/testpdk/verification.toml", 'replacement = "fixture ', 'replacement = "CHANGED '),
+])
+def test_planning_rejects_document_changes_between_parse_and_capture(
+    tmp_path: Path, monkeypatch, operation: str, relative: str, before: str, after: str,
+) -> None:
+    from sigilicon.project import Project
+    from sigilicon.execution._source import Source
+
+    if operation == "export":
+        project = _manual_oa_project(tmp_path)
+    else:
+        _verification_project(tmp_path, origin="source")
+        project = Project.open(tmp_path)
+    target = tmp_path / relative
+    original = Source.capture
+    changed = False
+
+    def capture(cls, path, **kwargs):
+        nonlocal changed
+        if path == target and not changed:
+            text = target.read_text()
+            target.write_text(text.replace(before, after) if before else text + after)
+            changed = True
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(Source, "capture", classmethod(capture))
+    with pytest.raises(ValueError, match="source document snapshot drift"):
+        project.plan(f"example:{operation}")
+
+
+@pytest.mark.parametrize("cell", ["/tmp/outside", "../outside", "svdb/child", "bad\\name", "bad\nname"])
+def test_verifier_rejects_cell_paths_before_execution(tmp_path: Path, cell: str) -> None:
+    import json
+    from sigilicon.project import Project
+
+    _verification_project(tmp_path, origin="source", check="lvs")
+    catalog = tmp_path / "ip/example/operations.toml"
+    catalog.write_text(catalog.read_text().replace('cell = "TOP"', f'cell = {json.dumps(cell)}'))
+    with pytest.raises(ValueError, match="Calibre cell"):
+        Project.open(tmp_path).plan("example:verify")
+
+
+@pytest.mark.parametrize("indirection", [None, "directory", "file"])
+def test_verifier_collects_only_owned_extracted_netlists(tmp_path: Path, monkeypatch, indirection: str | None) -> None:
+    from sigilicon.project import Project
+    from sigilicon.external_tools import ProcessResult
+
+    _verification_project(tmp_path, origin="source", check="lvs")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "TOP.sp").write_text("external content\n")
+
+    def calibre(request):
+        work = Path(request.cwd)
+        for name in ("lvs.rep", "lvs.rep.ext", "calibre_erc.db", "calibre_erc.sum"):
+            (work / name).write_text(" INCORRECT TOP TOP\n")
+        if indirection == "directory":
+            (work / "svdb").symlink_to(outside, target_is_directory=True)
+        elif indirection == "file":
+            (work / "svdb").mkdir()
+            (work / "svdb/TOP.sp").symlink_to(outside / "TOP.sp")
+        else:
+            (work / "svdb").mkdir()
+            (work / "svdb/TOP.sp").write_text("owned extraction\n")
+        return ProcessResult(0, "offline LVS mismatch report\n", "")
+
+    monkeypatch.setattr(physical_verification.managed_process, "run", calibre)
+    project = Project.open(tmp_path)
+    result = project.run(project.plan("example:verify"))
+    assert result.status == "failed"
+    extracted = [artifact for artifact in result.outcomes[0].result.artifacts if artifact.path.name == "extracted.sp"]
+    if indirection is None:
+        assert len(extracted) == 1
+        assert extracted[0].read_text() == "owned extraction\n"
+    else:
+        assert not extracted
+
+
 def _manual_oa_project(tmp_path: Path):
     from sigilicon.project import Project
 

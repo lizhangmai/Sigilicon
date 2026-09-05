@@ -9,7 +9,7 @@ import os
 import re
 from typing import Mapping, Sequence
 
-from sigilicon.artifacts import read_nofollow_bytes, read_nofollow_text
+from sigilicon.artifacts import SafeTree, read_nofollow_bytes, read_nofollow_text
 from sigilicon.domain.physical_verification import (
     CheckedLayoutIdentity, CheckedSourceIdentity, DrcEvidence, DrcViolation,
     LvsEvidence, LvsMismatch, PhysicalVerificationEvidence, PhysicalVerificationPolicy,
@@ -32,6 +32,12 @@ class VerificationRequest:
     plan_identity: str
     policy: PhysicalVerificationPolicy
     deck: VerificationDeck
+
+    def __post_init__(self) -> None:
+        if (not isinstance(self.cell, str) or not self.cell or self.cell in {".", ".."}
+                or any(character in "/\\" or character.isspace() or ord(character) < 32
+                       or ord(character) == 127 for character in self.cell)):
+            raise ValueError("Calibre cell must be a non-empty logical name without path separators or whitespace")
 
 
 def render_run_deck(source: str, request: VerificationRequest, **parameters: str) -> str:
@@ -262,10 +268,8 @@ def _copy_regular_outputs(
 ) -> dict[str, Path]:
     copied: dict[str, Path] = {}
     for source_name, result_name in entries:
-        candidate = work / source_name
-        if not candidate.is_file() or candidate.is_symlink():
-            raise RuntimeError(f"Calibre did not produce regular {source_name}")
-        copied[source_name] = record.copy_file("outputs", (result_name,), candidate)
+        candidate = SafeTree(work).file(source_name, "Calibre output")
+        copied[source_name] = record.copy_file("outputs", (result_name,), candidate.path)
     return copied
 
 
@@ -402,12 +406,9 @@ def run_calibre_verification(
                     ("lvs.rep.ext", "lvs-extraction-report"),
                     ("calibre_erc.db", "calibre-erc-db"),
                     ("calibre_erc.sum", "calibre-erc-summary"),
+                    (f"svdb/{request.cell}.sp", "extracted.sp"),
                 ),
             )
-            extracted = work / "svdb" / f"{request.cell}.sp"
-            if not extracted.is_file() or extracted.is_symlink():
-                raise RuntimeError("Calibre LVS omitted the extracted layout netlist")
-            record.copy_file("outputs", ("extracted.sp",), extracted)
             report = read_nofollow_text(copied["lvs.rep"])
             if (
                 parse_lvs_report(report, primary=request.cell)["passed"]
@@ -433,4 +434,3 @@ def run_calibre_verification(
             exit_code=0,
             message=f"Calibre {check.upper()} evidence is incomplete: {exc}",
         )
-
