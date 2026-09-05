@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import json
 import sys
 import textwrap
 import pytest
@@ -14,8 +15,7 @@ from sigilicon.layout.spec import (
 )
 
 
-@pytest.mark.xfail(strict=True, reason="planner rejects graph-authorized source libraries")
-def test_graph_owned_generator_dependencies_enter_managed_plan(tmp_path: Path) -> None:
+def test_graph_owned_generator_dependencies_enter_managed_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root, layout = _write_fixture(tmp_path)
     component = root / "ip/example/component.toml"
     component.write_text(component.read_text().replace(
@@ -32,10 +32,35 @@ config = { owner = "example", spec = "cell/layout.toml", timeout_seconds = 30 }
 ''')
     with (root / "sigilicon.toml").open("a") as stream:
         stream.write(f'\n[runtime.tools]\n"runtime.python" = "{sys.executable}"\n')
+    manifest = root / "sigilicon.toml"
+    manifest.write_text(manifest.read_text().replace(
+        "[runtime.values]", '[runtime]\ncapabilities = ["license.cadence-oa", "tool.virtuoso-bridge"]\n\n[runtime.values]'))
+    (root / "ip/shared/recipe.py").write_text("VALUE = 7\n")
+    (layout.parent / "layout_generator.py").write_text('''from sigilicon.layout.ir import LayoutPlan, LayoutRect
+from ip.example.cell.recipe import VALUE as local_value
+from ip.shared.recipe import VALUE as shared_value
+
+def build_layout_plan(spec):
+    return LayoutPlan(library=spec.library, cell=spec.cell, view=spec.view,
+                      stage=spec.stage, generator=spec.generator, dbu_per_micron=spec.dbu_per_micron,
+                      instances=(), rectangles=(LayoutRect("shared", "M1", "drawing", ((0, 0), (local_value, shared_value))),))
+''')
+    def fake_oa_write(planning, _client, *, artifacts, **_kwargs):
+        artifacts.write_json("outputs", ("layout.json",), planning.plan.payload())
+
+    monkeypatch.setattr("sigilicon.adapters.cadence.oa_client.get_client", lambda _resources: object())
+    monkeypatch.setattr("sigilicon.adapters.cadence.layout_generation.generate_layout", fake_oa_write)
     project = Project.open(root)
     assert load_layout_spec(layout, project=project).generator_dependencies
     plan = project.plan("example:layout")
-    assert root / "ip/shared/recipe.py" in {source.location for source in plan.sources}
+    shared = next(source for source in plan.sources if source.location == root / "ip/shared/recipe.py")
+    assert shared.reference.component == "shared"
+    assert shared.reference.source == "source_1"
+    assert project.preflight(plan).ready
+    result = project.run(plan)
+    assert result.status == "succeeded"
+    artifact = next(artifact for step in result.outcomes for artifact in step.result.artifacts if artifact.path.name == "layout.json")
+    assert json.loads(artifact.path.read_text())["rectangles"][0]["bbox_dbu"] == [[0, 0], [1, 7]]
 
 
 def _write_component(

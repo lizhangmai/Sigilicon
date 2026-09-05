@@ -143,7 +143,15 @@ def plan_execution(
 
     owner_root = project.owner(draft.owner).root.resolve()
     project_root = project.project_root.resolve()
-    captured = {(source.root, source.path): source for source in draft.sources}
+    inventory = project.source_inventory(draft.owner)
+
+    def qualify(source: Source) -> Source:
+        reference = inventory.get(source.location)
+        if source.reference is not None and source.reference != reference:
+            raise ContractError(f"component source identity disagrees with its graph: {source.path}")
+        return replace(source, reference=reference)
+
+    captured = {(source.root, source.path): qualify(source) for source in draft.sources}
     captured_names = {source.path: source.root for source in draft.sources}
     captured_resources: dict[str, ResourceBinding] = {}
     validated_sources: set[tuple[Path, str]] = set()
@@ -158,17 +166,21 @@ def plan_execution(
             raise ContractError(
                 f"adapter {step.uses!r} produced an invalid preparation"
             )
-        planned = _prepare_step(step, preparation)
+        planned = _prepare_step(
+            replace(step, source_closure=tuple(qualify(source) for source in step.source_closure)),
+            replace(preparation, sources=tuple(qualify(source) for source in preparation.sources)),
+        )
 
         for source in planned.source_closure:
             path = source.location
             source_owner = project.owner_for(path)
-            if source_owner is not None and source_owner.root.resolve() != owner_root:
+            if (source_owner is not None and source_owner.root.resolve() != owner_root
+                    and (source.reference is None or source.reference.component != source_owner.name)):
                 raise ContractError(
-                    f"adapter {step.uses!r} selected source owned outside "
-                    f"{draft.owner!r}: {path}"
+                    f"adapter {step.uses!r} selected source outside the source-level "
+                    f"component graph of {draft.owner!r}: {path}"
                 )
-            if source_owner is not None:
+            if source_owner is not None and source_owner.root.resolve() == owner_root:
                 expected_root, expected_scope = owner_root, "owner"
             elif path.is_relative_to(project_root):
                 expected_root, expected_scope = project_root, "project"

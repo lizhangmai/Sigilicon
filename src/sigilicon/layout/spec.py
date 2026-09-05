@@ -160,30 +160,6 @@ def _owner_oa_assembly(
     return source
 
 
-def _component_source_files(
-    graph: Mapping[str, ComponentContract], *, project_root: Path
-) -> Mapping[Path, tuple[tuple[ComponentContract, str], ...]]:
-    """Index files declared by source-library components in *graph*.
-
-    A layout generator is allowed to import project code only through the
-    current owner's own source tree or an explicitly composed source-library
-    component.  Keeping the index here makes that boundary use the component
-    contract rather than directory naming conventions.
-    """
-
-    declared: dict[Path, list[tuple[ComponentContract, str]]] = {}
-    for component in graph.values():
-        if component.kind != "source-library":
-            continue
-        for source_id, relative in component.sources.items():
-            source = (project_root / Path(relative)).resolve()
-            declared.setdefault(source, []).append((component, source_id))
-    return {
-        source: tuple(declarations)
-        for source, declarations in declared.items()
-    }
-
-
 def _validate_generator_ownership(
     repository: Project,
     *,
@@ -218,9 +194,11 @@ def _validate_generator_ownership(
             f"{owner_name!r}: {generator_source}"
         ) from exc
 
-    source_library_files = _component_source_files(
-        component_graph, project_root=repository.project_root
-    )
+    source_library_files = {
+        path: ((component_graph[reference.component], reference.source),)
+        for path, reference in repository.source_inventory(owner_name).items()
+        if reference.source is not None and component_graph[reference.component].kind == "source-library"
+    }
 
     def validate_project_source(source: Path, field: str) -> None:
         source_owner = repository.owner_for(source)

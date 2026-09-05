@@ -30,6 +30,7 @@ from sigilicon.domain.component import (
     load_component_graph,
     resolve_component_graph,
 )
+from sigilicon.source import SourceReference
 from sigilicon.paths import (
     ProjectContext,
     validate_artifact_component,
@@ -357,6 +358,41 @@ class Project:
 
         self.manifest_source_document()
         return self._execution_resources()
+
+    def source_inventory(self, owner: str) -> Mapping[Path, SourceReference]:
+        """Resolve source identities reachable through source-level component edges.
+
+        A release dependency is consumed through its immutable package and does
+        not grant access to the producer's working source tree.
+        """
+
+        selected = self.owner(owner)
+        graph = self._require_owner_snapshot(selected)
+        inventory: dict[Path, SourceReference] = {
+            component.path: SourceReference(component.name)
+            for component in graph.values()
+        }
+        visited: set[str] = set()
+
+        def visit(component: ComponentContract) -> None:
+            if component.name in visited:
+                return
+            visited.add(component.name)
+            for identity, relative in component.sources.items():
+                path = self.project_root.joinpath(*relative.parts)
+                actual = self.owner_for(path)
+                if actual is not None and actual.name != component.name:
+                    continue
+                reference = SourceReference(component.name, identity)
+                if path in inventory and inventory[path].component != reference.component:
+                    raise ContractError(f"ambiguous component source declaration: {path}")
+                inventory[path] = reference
+            for dependency in component.components:
+                if dependency.release is None:
+                    visit(graph[dependency.name])
+
+        visit(graph[selected.component.name])
+        return MappingProxyType(inventory)
 
     def configuration_documents(self) -> DocumentStore:
         """Return the immutable TOML closure captured when this Project opened."""

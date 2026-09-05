@@ -23,6 +23,7 @@ from sigilicon.artifacts import (
 )
 from sigilicon.canonical import canonical_digest, canonical_json
 from sigilicon.contracts import require_relative_path
+from sigilicon.source import SourceReference
 from sigilicon.paths import validate_artifact_component, validate_artifact_id
 
 if TYPE_CHECKING:
@@ -157,6 +158,7 @@ class Source:
     device: int = field(default=-1, repr=False, compare=False)
     inode: int = field(default=-1, repr=False, compare=False)
     mtime_ns: int = field(default=-1, repr=False, compare=False)
+    reference: SourceReference | None = None
 
     def __post_init__(self) -> None:
         relative = PurePosixPath(self.path)
@@ -186,6 +188,8 @@ class Source:
             raise ContractError("source scope must be a semantic identity")
         if any(type(value) is not int for value in (self.device, self.inode, self.mtime_ns)):
             raise ContractError("source filesystem identity fields must be integers")
+        if self.reference is not None and not isinstance(self.reference, SourceReference):
+            raise ContractError("source reference must identify a component source")
         object.__setattr__(self, "root", root)
         object.__setattr__(self, "location", location)
 
@@ -230,6 +234,7 @@ class Source:
             "sha256": self.sha256,
             "size": self.size,
             "executable": self.executable,
+            "reference": None if self.reference is None else self.reference.record,
         }
 
     def read_bytes(self) -> bytes:
@@ -1149,7 +1154,7 @@ class ExecutionPlan:
     @property
     def record(self) -> dict[str, Any]:
         return {
-            "schema": 15,
+            "schema": 16,
             "contract_kind": "execution-plan",
             "project_identity": self.project_identity,
             "owner": self.owner,

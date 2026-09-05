@@ -917,7 +917,8 @@ def test_planning_rejects_a_compiled_source_change(tmp_path: Path) -> None:
         _plan(project, "example:check")
 
 
-def test_backend_cannot_discover_another_owners_source(tmp_path: Path) -> None:
+@pytest.mark.parametrize("released_dependency", [False, True])
+def test_backend_cannot_discover_another_owners_source(tmp_path: Path, released_dependency: bool) -> None:
     _write_project(tmp_path)
     catalog = tmp_path / "catalogs/ip.toml"
     catalog.write_text(
@@ -949,6 +950,13 @@ source = ["value"]
     )
     value = foreign / "value.txt"
     value.write_text("foreign\n", encoding="utf-8")
+    if released_dependency:
+        with (tmp_path / "ip/example/component.toml").open("a") as stream:
+            stream.write('''\n[[component]]
+name = "foreign"
+contract = "ip/foreign/component.toml"
+release = { export = "foreign", required_maturity = "development", roles = ["source"] }
+''')
 
     class ForeignSourceAdapter(CopyAdapter):
         def prepare(self, project, step, resources):
@@ -956,7 +964,7 @@ source = ["value"]
             return AdapterPreparation(sources=(source,))
 
     project = _project(tmp_path, ForeignSourceAdapter())
-    with pytest.raises(ContractError, match="owned outside 'example'"):
+    with pytest.raises(ContractError, match="outside the source-level component graph"):
         _plan(project, "example:check")
 
 
