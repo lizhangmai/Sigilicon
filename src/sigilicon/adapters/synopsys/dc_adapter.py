@@ -3,64 +3,37 @@
 from __future__ import annotations
 
 from sigilicon.adapters.synopsys._common import (
-    ContractError, ExecutionIO, PreflightCheck, Resources, Step, StepResult,
-    _ToolVerdict, _base_checks, _declared_inputs, _logs, _run_script,
-    _runtime_environment, _safe_relative, _source_members, _strict_config,
-    _strings, _text, _write_filelist, owned_scratch_directory,
-    preflight_environment, process_group_cleanup_uncertainty,
+    ExecutionIO, StepResult, _ToolVerdict, _logs,
+    _run_script, _runtime_environment, _write_filelist, owned_scratch_directory,
+    process_group_cleanup_uncertainty,
 )
 
-class DcAdapter:
-    name = "synopsys.dc"
-    prepare = _declared_inputs
-    _fields = frozenset(
-        {
-            "constraints",
-            "corner",
-            "evaluator",
-            "reports",
-            "rtl_root",
-            "runner",
-            "timeout_seconds",
-            "variant",
-            "verdict_report",
-        }
-    )
+from sigilicon.adapters.synopsys.planning import DcAction, RunnerAdapter, require_action
 
-    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
-        _strict_config(step, self._fields)
-        checks = _base_checks(step)
-        constraints = _safe_relative(_text(step.config, "constraints"), "constraints")
-        evaluator = _safe_relative(_text(step.config, "evaluator"), "evaluator")
-        _text(step.config, "corner")
-        if constraints not in step.sources:
-            raise ContractError("DC constraints must be inside the step source closure")
-        if evaluator not in step.sources:
-            raise ContractError("DC evaluator must be inside the step source closure")
-        _source_members(step, "rtl_root", suffix=".sv")
-        checks.extend(preflight_environment(step.runtime, resources))
-        return tuple(checks)
+class DcAdapter(RunnerAdapter):
+    name = "synopsys.dc"
+    action_type = DcAction
 
     def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
-        config = _strict_config(context.step, self._fields)
+        action = require_action(step, DcAction)
         runtime = _runtime_environment(context.runtime, context.step)
         environment = runtime.values
         environment.update(
             {
-                "SIGILICON_DESIGN_VARIANT": _text(config, "variant"),
+                "SIGILICON_DESIGN_VARIANT": action.invocation.variant,
                 "SIGILICON_DC_RTL_FILELIST": str(
                     _write_filelist(
                         context,
                         "rtl",
-                        _source_members(context.step, "rtl_root", suffix=".sv"),
+                        action.rtl,
                     )
                 ),
                 "SIGILICON_DC_CONSTRAINTS": str(
-                    context.source_path(_text(config, "constraints"))
+                    context.source_path(action.constraints)
                 ),
                 "SIGILICON_IMPLEMENTATION_EVALUATOR": str(
-                    context.source_path(_text(config, "evaluator"))
+                    context.source_path(action.evaluator)
                 ),
             }
         )
@@ -73,6 +46,7 @@ class DcAdapter:
             completed = _run_script(
                 context,
                 environment,
+                invocation=action.invocation,
                 argument="",
                 held_executables=runtime.tools,
                 held_files=runtime.files,
@@ -83,14 +57,12 @@ class DcAdapter:
                 return StepResult(
                     "failed", logs, message=f"DC runner exited {completed.returncode}"
                 )
-            verdict_name = _safe_relative(
-                _text(config, "verdict_report"), "DC verdict report"
-            )
+            verdict_name = action.verdict
             verdict = _ToolVerdict.load(
                 scratch.path / verdict_name,
                 owner=context.owner,
                 stage="synthesis",
-                variant=_text(config, "variant"),
+                variant=action.invocation.variant,
             )
             outputs = (
                 context.copy_output(
@@ -119,7 +91,7 @@ class DcAdapter:
                     source=scratch.path / relative,
                     filename=relative,
                 )
-                for relative in _strings(config, "reports")
+                for relative in action.reports
             )
             verdict_artifact = context.copy_output(
                 role="execution-verdict",

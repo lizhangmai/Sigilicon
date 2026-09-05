@@ -47,8 +47,6 @@ class NativeOaAdapter:
         _text(config, "owner")
         _text(config, "testbench")
         _positive_integer(config, "timeout_seconds")
-        if "configs/oa.toml" not in step.sources:
-            raise ContractError("native OA step must close over configs/oa.toml")
         return (
             _bridge_check(resources),
             _executable_check(resources, CADENCE_VIRTUOSO_TOOL),
@@ -255,8 +253,6 @@ def _oa_config(step: Step, fields: frozenset[str]) -> Mapping[str, Any]:
     _positive_integer(config, "timeout_seconds")
     if "testbench" in fields:
         _text(config, "testbench")
-    if "configs/oa.toml" not in step.sources:
-        raise ContractError("OA management step must close over configs/oa.toml")
     return config
 
 

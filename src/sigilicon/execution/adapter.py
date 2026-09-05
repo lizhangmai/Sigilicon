@@ -151,11 +151,9 @@ def plan_execution(
 
     for step in draft.steps:
         adapter = adapters.get(step.uses)
-        preparation = (
-            AdapterPreparation()
-            if adapter is None
-            else adapter.prepare(project, step, resources)
-        )
+        if adapter is None:
+            raise ContractError(f"unknown trusted adapter: {step.uses!r}")
+        preparation = adapter.prepare(project, step, resources)
         if not isinstance(preparation, AdapterPreparation):
             raise ContractError(
                 f"adapter {step.uses!r} produced an invalid preparation"

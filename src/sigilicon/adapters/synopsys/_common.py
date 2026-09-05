@@ -11,7 +11,10 @@ from pathlib import Path
 import re
 import shlex
 import tarfile
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sigilicon.adapters.synopsys.planning import Invocation
 
 from sigilicon.artifacts import SafeTree, ensure_nofollow_directory
 from sigilicon.canonical import canonical_digest
@@ -157,17 +160,6 @@ class _ToolVerdict:
         }
 
 
-def _declared_inputs(
-    _adapter: object,
-    _project: Project,
-    _step: Step,
-    _resources: Resources,
-) -> AdapterPreparation:
-    """Use only the source and runtime closure declared by the operation."""
-
-    return AdapterPreparation()
-
-
 def _text(config: Mapping[str, Any], name: str) -> str:
     value = config.get(name)
     if not isinstance(value, str) or not value:
@@ -237,7 +229,7 @@ def _source_members(
     step: Step,
     root_name: str,
     *,
-    suffix: str,
+    suffix: str | tuple[str, ...],
 ) -> tuple[str, ...]:
     root = _safe_relative(_text(step.config, root_name), root_name)
     prefix = f"{root}/"
@@ -330,18 +322,6 @@ def _runtime_environment(
     return replace(bound, values=environment)
 
 
-def _base_checks(step: Step) -> list[PreflightCheck]:
-    runner = _runner(step)
-    _positive_integer(step.config, "timeout_seconds")
-    if not step.runtime.tools:
-        raise ContractError("Synopsys step requires a runtime profile with a tool")
-    if _RUNNER_SHELL not in step.runtime.tools:
-        raise ContractError(
-            f"Synopsys runtime profile must bind {_RUNNER_SHELL} as a tool"
-        )
-    return [PreflightCheck("owner-runner", runner, "ready", "sealed plan source")]
-
-
 def _write_filelist(context: ExecutionIO, name: str, sources: tuple[str, ...]) -> Path:
     if not sources:
         raise ExecutionError(f"managed {name} source set is empty")
@@ -378,13 +358,14 @@ def _run_script(
     environment: dict[str, str],
     *,
     argument: str,
+    invocation: Invocation,
     held_executables: tuple[str, ...],
     held_files: tuple[str, ...],
     held_directories: tuple[str, ...] = (),
 ) -> ProcessResult:
     """Run one source-pinned script while holding every external input path."""
 
-    runner = _runner(context.step)
+    runner = invocation.runner
     with ExitStack() as stack:
         source_root = stack.enter_context(owned_directory(context.source_directory))
         work_root = stack.enter_context(owned_directory(context.work_directory))
@@ -531,8 +512,6 @@ def _run_script(
             argv=tuple(command),
             cwd=Path(work_root.child_path),
             environment=environment,
-            timeout_seconds=_positive_integer(
-                context.step.config, "timeout_seconds"
-            ),
+            timeout_seconds=invocation.timeout_seconds,
             before_spawn=visible,
         ))

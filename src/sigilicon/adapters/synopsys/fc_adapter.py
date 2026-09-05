@@ -3,58 +3,29 @@
 from __future__ import annotations
 
 from sigilicon.adapters.synopsys._common import (
-    Artifact, ContractError, ExecutionError, ExecutionIO, Path, PreflightCheck,
-    Resources, Step, StepResult, _ToolVerdict, _archive_directory, _artifact,
-    _base_checks, _declared_inputs, _logs, _mapping, _run_script,
-    _runtime_environment, _safe_relative, _strict_config, _target, _text,
-    owned_scratch_directory, preflight_environment,
-    process_group_cleanup_uncertainty,
+    Artifact, ExecutionError, ExecutionIO, Path,
+    StepResult, _ToolVerdict, _archive_directory, _artifact,
+    _logs, _run_script, _runtime_environment, _safe_relative,
+    owned_scratch_directory, process_group_cleanup_uncertainty,
 )
 
-class FcAdapter:
-    name = "synopsys.fc"
-    prepare = _declared_inputs
-    _fields = frozenset(
-        {
-            "corner",
-            "evaluator",
-            "outputs",
-            "reference_library_output",
-            "reference_step",
-            "runner",
-            "synthesis_step",
-            "target",
-            "timeout_seconds",
-            "top",
-            "variant",
-        }
-    )
+from sigilicon.adapters.synopsys.planning import FcAction, RunnerAdapter, require_action, FC_OUTPUT_ENVIRONMENT
 
-    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
-        _strict_config(step, self._fields)
-        checks = _base_checks(step)
-        target = _target(step.config)
-        _text(step.config, "corner")
-        if target not in {"library", "pnr"}:
-            raise ContractError(f"unsupported FC target {target!r}")
-        if target == "pnr":
-            evaluator = _safe_relative(_text(step.config, "evaluator"), "evaluator")
-            if evaluator not in step.sources:
-                raise ContractError("FC evaluator must be inside the step source closure")
-        checks.extend(preflight_environment(step.runtime, resources))
-        return tuple(checks)
+class FcAdapter(RunnerAdapter):
+    name = "synopsys.fc"
+    action_type = FcAction
 
     def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
-        config = _strict_config(context.step, self._fields)
-        target = _target(config)
+        action = require_action(step, FcAction)
+        target = action.target
         runtime = _runtime_environment(context.runtime, context.step)
         environment = runtime.values
         environment.update(
             {
-                "SIGILICON_DESIGN_VARIANT": _text(config, "variant"),
-                "SIGILICON_DESIGN_CORNER": _text(config, "corner"),
-                "SIGILICON_DESIGN_TOP": _text(config, "top"),
+                "SIGILICON_DESIGN_VARIANT": action.invocation.variant,
+                "SIGILICON_DESIGN_CORNER": action.corner,
+                "SIGILICON_DESIGN_TOP": action.top,
             }
         )
         held_files = list(runtime.files)
@@ -64,18 +35,18 @@ class FcAdapter:
         required: frozenset[str] = frozenset()
         if target == "library":
             reference_name = _safe_relative(
-                _text(config, "reference_library_output"),
+                action.reference_library,
                 "reference library output",
             )
         else:
-            synthesis = _text(config, "synthesis_step")
-            reference = _text(config, "reference_step")
+            synthesis = action.synthesis_step
+            reference = action.reference_step
             mapped_netlist = _artifact(context, synthesis, "mapped-netlist")
             mapped_constraints = _artifact(context, synthesis, "mapped-constraints")
             reference_files = context.artifacts(reference, "reference-library")
             if not reference_files:
                 raise ExecutionError("reference-library step published no files")
-            reference_name = _text(config, "reference_library_output")
+            reference_name = action.reference_library
             candidates = {
                 parent
                 for artifact in reference_files
@@ -84,54 +55,16 @@ class FcAdapter:
             }
             if len(candidates) != 1:
                 raise ExecutionError("cannot reconstruct the reference-library directory")
-            output_names = {
-                key: _safe_relative(str(value), f"FC output {key}")
-                for key, value in _mapping(config, "outputs").items()
-                if isinstance(key, str) and isinstance(value, str)
-            }
-            required = frozenset(
-                {
-                    "routed-netlist",
-                    "routed-constraints",
-                    "layout-stream",
-                    "checkpoint",
-                    "design-check-report",
-                    "structural-report",
-                    "qor-report",
-                    "timing-report",
-                    "area-report",
-                    "power-report",
-                    "drc-report",
-                    "physical-completion-report",
-                    "tie-off-check-report",
-                    "execution-verdict",
-                }
-            )
-            if set(output_names) != required:
-                raise ContractError("FC outputs do not match the physical result contract")
-            role_environment = {
-                "routed-netlist": "SIGILICON_FC_ROUTED_NETLIST",
-                "routed-constraints": "SIGILICON_FC_ROUTED_CONSTRAINTS",
-                "layout-stream": "SIGILICON_FC_GDS",
-                "checkpoint": "SIGILICON_FC_CHECKPOINT",
-                "design-check-report": "SIGILICON_FC_DESIGN_CHECK_REPORT",
-                "structural-report": "SIGILICON_FC_STRUCTURAL_REPORT",
-                "qor-report": "SIGILICON_FC_QOR_REPORT",
-                "timing-report": "SIGILICON_FC_TIMING_REPORT",
-                "area-report": "SIGILICON_FC_AREA_REPORT",
-                "power-report": "SIGILICON_FC_POWER_REPORT",
-                "drc-report": "SIGILICON_FC_DRC_REPORT",
-                "physical-completion-report": "SIGILICON_FC_PHYSICAL_COMPLETION_REPORT",
-                "tie-off-check-report": "SIGILICON_FC_TIE_OFF_CHECK_REPORT",
-                "execution-verdict": "SIGILICON_FC_EXECUTION_VERDICT",
-            }
+            output_names = {output.role: output.path for output in action.outputs}
+            required = frozenset(output_names)
+            role_environment = FC_OUTPUT_ENVIRONMENT
             environment.update(
                 {
                     "SIGILICON_FC_MAPPED_NETLIST": str(mapped_netlist.path),
                     "SIGILICON_FC_MAPPED_SDC": str(mapped_constraints.path),
                     "SIGILICON_FC_REFERENCE_NDM": str(next(iter(candidates))),
                     "SIGILICON_IMPLEMENTATION_EVALUATOR": str(
-                        context.source_path(_text(config, "evaluator"))
+                        context.source_path(action.evaluator)
                     ),
                 }
             )
@@ -167,6 +100,7 @@ class FcAdapter:
             completed = _run_script(
                 context,
                 environment,
+                invocation=action.invocation,
                 argument=target,
                 held_executables=runtime.tools,
                 held_files=tuple(held_files),
@@ -258,7 +192,7 @@ class FcAdapter:
                     verdict_path,
                     owner=context.owner,
                     stage="physical-implementation",
-                    variant=_text(config, "variant"),
+                    variant=action.invocation.variant,
                 )
                 published = (*logs, *artifacts)
                 if not verdict.passed:

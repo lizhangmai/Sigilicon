@@ -13,6 +13,7 @@ from sigilicon.adapters.synopsys.fc_adapter import FcAdapter
 from sigilicon.adapters.synopsys.hspice_adapter import HspiceAdapter
 from sigilicon.adapters.synopsys.vcs_adapter import VcsAdapter
 from sigilicon.execution import Step
+from sigilicon.project import Project
 from sigilicon.execution._model import (
     ContractError,
     ExecutionError,
@@ -29,6 +30,9 @@ def _context(
     step: Step,
     resources: Resources,
 ) -> ExecutionIO:
+    project_root = next(path for path in (tmp_path, *tmp_path.parents) if (path / "sigilicon.toml").is_file())
+    adapters = {adapter.name: adapter for adapter in (VcsAdapter(), DcAdapter(), FcAdapter(), HspiceAdapter())}
+    step = replace(step, action=adapters[step.uses].prepare(Project.open(project_root), step, resources).action)
     run_root = tmp_path / "run"
     roots = (
         run_root / "work" / step.id,
@@ -50,7 +54,7 @@ def _context(
 
 
 @pytest.mark.parametrize("adapter", (VcsAdapter(), DcAdapter(), FcAdapter()))
-def test_synopsys_adapters_reject_unknown_configuration_fields(adapter) -> None:
+def test_synopsys_adapters_reject_unknown_configuration_fields(adapter, tmp_path: Path) -> None:
     common = {
         "runner": "flow/run.sh",
         "variant": "test",
@@ -86,7 +90,7 @@ def test_synopsys_adapters_reject_unknown_configuration_fields(adapter) -> None:
     )
 
     with pytest.raises(ContractError, match="unknown config fields.*misspelled_field"):
-        adapter.preflight(step, Resources())
+        adapter.prepare(Project.open(tmp_path), step, Resources())
 
 
 def test_vcs_backend_runs_one_sealed_owner_script(tmp_path: Path) -> None:
@@ -100,6 +104,9 @@ test -x "$SIGILICON_SYNOPSYS_VCS"
 test "$VCS_HOME" != /ambient/vcs
 test "$VCS_ARCH_OVERRIDE" = linux
 test -s "$SIGILICON_VCS_RTL_FILELIST"
+mapfile -t rtl < "$SIGILICON_VCS_RTL_FILELIST"
+test "${rtl[0]##*/}" = design.sv
+test "${rtl[1]##*/}" = aaa_legacy.v
 test -s "$SIGILICON_VCS_TESTBENCH_FILELIST"
 mkdir -p "$SIGILICON_VCS_OUTPUT_ROOT/csrc" "$SIGILICON_VCS_OUTPUT_ROOT/simv.daidir"
 printf 'archive\n' >"$SIGILICON_VCS_OUTPUT_ROOT/simv.daidir/archive.so"
@@ -109,6 +116,7 @@ printf 'managed vcs\n'
         executable=True,
     )
     _file(sources / "rtl/design.sv")
+    _file(sources / "rtl/aaa_legacy.v")
     _file(sources / "dv/testbench.sv")
     executable = _file(
         tmp_path / "site/vcs-home/bin/vcs",
@@ -127,7 +135,7 @@ printf 'managed vcs\n'
             "success_marker": "managed vcs",
             "timeout_seconds": 10,
         },
-        sources=("dv/run_vcs.sh", "rtl/design.sv", "dv/testbench.sv"),
+        sources=("dv/run_vcs.sh", "rtl/design.sv", "rtl/aaa_legacy.v", "dv/testbench.sv"),
         runtime=RuntimeEnvironment(
             tools={
                 "SIGILICON_RUNNER_SHELL": "runtime.bash",
@@ -148,7 +156,7 @@ printf 'managed vcs\n'
 
     assert all(
         check.status == "ready"
-        for check in adapter.preflight(step, context.runtime)
+        for check in adapter.preflight(context.step, context.runtime)
     )
     result = adapter.run(context)
 
@@ -164,6 +172,7 @@ printf 'managed vcs\n'
         executable=True,
     )
     _file(missing.source_directory / "rtl/design.sv")
+    _file(missing.source_directory / "rtl/aaa_legacy.v")
     _file(missing.source_directory / "dv/testbench.sv")
 
     failed = adapter.run(missing)
@@ -183,6 +192,7 @@ printf 'managed vcs\n'
             executable=True,
         )
         _file(invalid.source_directory / "rtl/design.sv")
+        _file(invalid.source_directory / "rtl/aaa_legacy.v")
         _file(invalid.source_directory / "dv/testbench.sv")
 
         rejected = adapter.run(invalid)
@@ -334,7 +344,7 @@ ln -s ../mapped.ddc "$SIGILICON_DC_OUTPUT_ROOT/cache/current.ddc"
 
     assert all(
         check.status == "ready"
-        for check in adapter.preflight(step, context.runtime)
+        for check in adapter.preflight(context.step, context.runtime)
     )
     result = adapter.run(context)
 
@@ -483,10 +493,11 @@ raise SystemExit(1)
 
     assert all(
         check.status == "ready"
-        for check in adapter.preflight(step, context.runtime)
+        for check in adapter.preflight(context.step, context.runtime)
     )
     with pytest.raises(ContractError, match="unknown config fields: requires_mismatch"):
-        adapter.preflight(
+        adapter.prepare(
+            Project.open(tmp_path),
             replace(
                 step,
                 config={**step.config, "requires_mismatch": True},
@@ -587,7 +598,7 @@ printf 'clean\n' >"$SIGILICON_FC_LIBRARY_CHECK_REPORT"
 
     assert all(
         check.status == "ready"
-        for check in adapter.preflight(step, context.runtime)
+        for check in adapter.preflight(context.step, context.runtime)
     )
     result = adapter.run(context)
 

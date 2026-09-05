@@ -361,12 +361,7 @@ def inspect_repository_designs(
             _selected_owner, operation, variant = parse_selector(
                 f"{owner.name}:{identity}"
             )
-            plan = _compile_operation(
-                context,
-                owner=owner.name,
-                operation=operation,
-                variant=variant,
-            )
+            plan = context.plan(f"{owner.name}:{identity}")
             owner_operations[identity] = {
                 "steps": [
                     {"id": step.id, "uses": step.uses}

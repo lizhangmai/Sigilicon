@@ -231,3 +231,32 @@ def test_oa_check_reports_public_clean_blocked_and_uncertain_results(
 
     assert report["status"] == expected_status
     assert report["passed"] is expected_passed
+
+
+def test_managed_oa_plan_uses_the_owner_selected_assembly_path(tmp_path: Path) -> None:
+    import sys
+    _typed_oa_plan(tmp_path)
+    manifest_path = tmp_path / "sigilicon.toml"
+    with manifest_path.open("a") as stream:
+        stream.write(f'\n[runtime.tools]\n"runtime.python" = "{sys.executable}"\n')
+    owner = tmp_path / "ip/fixture"
+    manifest = owner / "configs/oa.toml"
+    renamed = manifest.with_name("native_assembly.toml")
+    manifest.rename(renamed)
+    component = owner / "component.toml"
+    component.write_text(component.read_text().replace(
+        "configs/oa.toml", "configs/native_assembly.toml"
+    ).replace("[sources]", '\noperation_catalog = "operations"\n\n[sources]\noperations = "ip/fixture/configs/operations.toml"'))
+    (owner / "configs/operations.toml").write_text('''schema = 4
+contract_kind = "owner-operations"
+path_scope = "owner"
+owner = "fixture"
+[operations.check]
+uses = "cadence.oa-check"
+filesets = ["oa_source"]
+config = { owner = "fixture", timeout_seconds = 30 }
+''')
+    project = Project.open(tmp_path)
+    plan = project.plan("fixture:check")
+    assert renamed in {source.location for source in plan.sources}
+    assert project.preflight(plan).status in {"ready", "blocked"}

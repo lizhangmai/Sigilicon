@@ -588,7 +588,7 @@ def test_project_runtime_configuration_replaces_sigilicon_environment(
     assert runtime.inherit_environment == ("LM_LICENSE_FILE",)
     assert set(runtime.environment_record) == {"LM_LICENSE_FILE", "PATH"}
 
-    plan = Project.open(tmp_path).plan("example:check")
+    plan = _project(tmp_path, CopyAdapter()).plan("example:check")
     assert plan.steps[0].runtime.values == {"SELECTED_VALUE": "test.value"}
 
 
@@ -710,8 +710,22 @@ def test_resource_binding_includes_its_configured_location(tmp_path: Path) -> No
 
 
 def test_execution_plan_is_stable_across_project_processes(tmp_path: Path) -> None:
-    _write_project(tmp_path)
-    local = Project.open(tmp_path).plan("example:check")
+    from sigilicon.adapters.cadence.rtl_adapter import SpectreAdapter
+    operations = _write_project(tmp_path)
+    operations.write_text('''schema = 4
+contract_kind = "owner-operations"
+path_scope = "owner"
+owner = "example"
+[operations.check]
+uses = "cadence.spectre"
+filesets = ["value"]
+config = { deck = "configs/value.txt", outputs = ["wave.prn"], timeout_seconds = 1 }
+''')
+    manifest = tmp_path / "sigilicon.toml"
+    manifest.write_text(manifest.read_text().replace(
+        "[runtime.tools]", '[runtime.tools]\n"cadence.spectre" = "/bin/true"'
+    ))
+    local = _project(tmp_path, SpectreAdapter()).plan("example:check")
     completed = subprocess.run(
         (
             sys.executable,
@@ -1150,16 +1164,11 @@ def test_variant_is_part_of_plan_run_and_artifact_identity(tmp_path: Path) -> No
         _read_run(project, "example:check", result.run_id)
 
 
-def test_missing_backend_blocks_preflight_and_run(tmp_path: Path) -> None:
+def test_unknown_backend_is_rejected_during_planning(tmp_path: Path) -> None:
     _write_project(tmp_path)
     project = Project.open(tmp_path)
-    plan = _plan(project, "example:check")
-    checked = project.preflight(plan)
-    assert checked.status == "blocked"
-    missing = next(check for check in checked.checks if check.subject == "fake.copy")
-    assert missing.status == "blocked"
-    with pytest.raises(ExecutionError, match="preflight is blocked"):
-        project.run(plan, run_id="2" * 32)
+    with pytest.raises(ContractError, match="unknown trusted adapter.*fake.copy"):
+        project.plan("example:check")
 
 
 def test_adapter_defects_propagate_from_preflight(tmp_path: Path) -> None:

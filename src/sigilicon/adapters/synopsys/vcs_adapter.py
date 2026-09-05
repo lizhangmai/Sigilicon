@@ -3,48 +3,26 @@
 from __future__ import annotations
 
 from sigilicon.adapters.synopsys._common import (
-    ExecutionIO, PreflightCheck, Resources, Step, StepResult, _artifact,
-    _base_checks, _declared_inputs, _logs, _run_script, _runtime_environment,
-    _source_members, _strict_config, _target, _text, _write_filelist,
-    owned_scratch_directory, preflight_environment,
+    ExecutionIO, StepResult, _artifact, _logs,
+    _run_script, _runtime_environment, _write_filelist, owned_scratch_directory,
     process_group_cleanup_uncertainty,
 )
 
-class VcsAdapter:
-    name = "synopsys.vcs"
-    prepare = _declared_inputs
-    _fields = frozenset(
-        {
-            "rtl_root",
-            "runner",
-            "success_marker",
-            "synthesis_step",
-            "target",
-            "testbench_root",
-            "timeout_seconds",
-            "variant",
-        }
-    )
+from sigilicon.adapters.synopsys.planning import VcsAction, RunnerAdapter, require_action
 
-    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
-        _strict_config(step, self._fields)
-        checks = _base_checks(step)
-        _target(step.config)
-        _text(step.config, "success_marker")
-        _source_members(step, "rtl_root", suffix=".sv")
-        _source_members(step, "testbench_root", suffix=".sv")
-        checks.extend(preflight_environment(step.runtime, resources))
-        return tuple(checks)
+class VcsAdapter(RunnerAdapter):
+    name = "synopsys.vcs"
+    action_type = VcsAction
 
     def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
-        config = _strict_config(context.step, self._fields)
-        target = _target(config)
+        action = require_action(step, VcsAction)
+        target = action.target
         runtime = _runtime_environment(context.runtime, context.step)
         environment = runtime.values
-        environment["SIGILICON_DESIGN_VARIANT"] = _text(config, "variant")
-        rtl = _source_members(context.step, "rtl_root", suffix=".sv")
-        testbench = _source_members(context.step, "testbench_root", suffix=".sv")
+        environment["SIGILICON_DESIGN_VARIANT"] = action.invocation.variant
+        rtl = action.rtl
+        testbench = action.testbench
         if target != "gate":
             environment["SIGILICON_VCS_RTL_FILELIST"] = str(
                 _write_filelist(context, "rtl", rtl)
@@ -55,7 +33,7 @@ class VcsAdapter:
             )
         held = list(runtime.files)
         if target == "gate":
-            artifact = _artifact(context, _text(config, "synthesis_step"), "mapped-netlist")
+            artifact = _artifact(context, action.synthesis_step, "mapped-netlist")
             environment["SIGILICON_VCS_MAPPED_NETLIST"] = str(artifact.path)
             held.append("SIGILICON_VCS_MAPPED_NETLIST")
         with owned_scratch_directory(
@@ -67,6 +45,7 @@ class VcsAdapter:
             completed = _run_script(
                 context,
                 environment,
+                invocation=action.invocation,
                 argument=target,
                 held_executables=runtime.tools,
                 held_files=tuple(held),
@@ -77,7 +56,7 @@ class VcsAdapter:
             return StepResult(
                 "failed", logs, message=f"VCS runner exited {completed.returncode}"
             )
-        marker = _text(config, "success_marker")
+        marker = action.success_marker
         terminal_lines = tuple(
             line.strip() for line in completed.stdout.splitlines() if line.strip()
         )
