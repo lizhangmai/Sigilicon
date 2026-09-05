@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import math
 import os
 import resource
+import shutil
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,6 +37,23 @@ from sigilicon.adapters.cadence.spectre import (
     run_spectre_measurement,
 )
 from sigilicon.adapters.cadence import spectre as spectre_workflow
+
+
+def test_owned_shell_alias_preserves_the_launcher_installation_path(tmp_path: Path) -> None:
+    interpreter = tmp_path / "vendor-shell"
+    shutil.copy2(Path("/bin/bash").resolve(), interpreter)
+    alias = tmp_path / "bash"
+    alias.symlink_to(interpreter)
+    launcher = tmp_path / "tool"
+    launcher.write_text(f'#!{alias}\nprintf "%s\\n" "$0"\n')
+    launcher.chmod(0o755)
+    with Resources(tools={"fixture": str(launcher)}).owned_tool("fixture") as tool:
+        result = managed_process.run(ProcessRequest(
+            argv=tool.command, executable=tool.executable, cwd=tmp_path,
+            environment={}, timeout_seconds=10, before_spawn=tool.require_visible,
+        ))
+    assert result.returncode == 0
+    assert result.stdout.strip() == str(launcher)
 
 
 def test_cadence_child_environment_removes_conflicting_license_variable() -> None:

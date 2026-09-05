@@ -244,7 +244,7 @@ printf 'tampered\n' >>"$source_file"
     assert rtl.read_text(encoding="utf-8").endswith("tampered\n")
 
 
-@pytest.mark.parametrize("mismatch", (None, "owner", "stage", "variant"))
+@pytest.mark.parametrize("mismatch", (None, "owner", "stage", "variant", "corner", "plan_identity", "run_id", "step_id"))
 def test_dc_backend_collects_only_declared_delivery_files(
     tmp_path: Path, mismatch: str | None
 ) -> None:
@@ -258,7 +258,7 @@ mkdir -p "$SIGILICON_DC_OUTPUT_ROOT"
 for output in mapped.v mapped.sdc mapped.ddc check_design.rpt area.rpt; do
   printf '%s\n' "$output" >"$SIGILICON_DC_OUTPUT_ROOT/$output"
 done
-printf '{"schema":1,"contract_kind":"tool-verdict","owner":"fixture","stage":"synthesis","variant":"test","passed":true,"product_qualification_conclusion":false,"checks":{"timing_clean":true}}\n' \
+printf '{"schema":2,"plan_identity":"1111111111111111111111111111111111111111111111111111111111111111","run_id":"22222222222222222222222222222222","step_id":"synthesis","corner":"tt","contract_kind":"tool-verdict","owner":"fixture","stage":"synthesis","variant":"test","passed":true,"product_qualification_conclusion":false,"checks":{"timing_clean":true}}\n' \
   >"$SIGILICON_DC_OUTPUT_ROOT/verdict.json"
 mkdir -p "$SIGILICON_DC_OUTPUT_ROOT/cache"
 ln -s ../mapped.ddc "$SIGILICON_DC_OUTPUT_ROOT/cache/current.ddc"
@@ -334,12 +334,14 @@ ln -s ../mapped.ddc "$SIGILICON_DC_OUTPUT_ROOT/cache/current.ddc"
     adapter = DcAdapter()
 
     if mismatch is not None:
-        expected = {"owner": "fixture", "stage": "synthesis", "variant": "test"}
+        expected = {"owner": "fixture", "stage": "synthesis", "variant": "test", "corner": "tt", "plan_identity": "1" * 64, "run_id": "2" * 32, "step_id": "synthesis"}
         runner.write_text(runner.read_text().replace(
             f'"{mismatch}":"{expected[mismatch]}"', f'"{mismatch}":"unrelated"'
         ))
-        with pytest.raises(ExecutionError, match=f"verdict {mismatch} mismatch"):
-            adapter.run(context)
+        result = adapter.run(context)
+        assert result.status == "failed"
+        assert f"verdict {mismatch} mismatch" in result.message
+        assert {artifact.role for artifact in result.artifacts} >= {"mapped-netlist", "execution-verdict"}
         return
 
     assert all(

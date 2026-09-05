@@ -9,6 +9,9 @@ from sigilicon.adapters.cadence._common import (
     _executable_check, _positive_integer, _relative, _runtime_bindings,
     _strict_config, _strings, _text, json, owned_scratch_directory,
 )
+from sigilicon.adapters.cadence.spectre_measurement import (
+    MeasurementAction, prepare_measurement, run_measurement,
+)
 
 class SpectreAdapter:
     """Run one source-owned Spectre deck template as managed raw evidence."""
@@ -41,6 +44,8 @@ class SpectreAdapter:
         step: Step,
         resources: Resources,
     ) -> AdapterPreparation:
+        if "program" in step.config:
+            return prepare_measurement(project, step, resources)
         del project
         self._configuration(step)
         return AdapterPreparation(
@@ -52,6 +57,10 @@ class SpectreAdapter:
         step: Step,
         resources: Resources,
     ) -> tuple[PreflightCheck, ...]:
+        if isinstance(step.action, MeasurementAction):
+            step.validate_action()
+            return (_executable_check(resources, CADENCE_SPECTRE_TOOL),
+                    _executable_check(resources, "runtime.python"))
         self._configuration(step)
         from sigilicon.execution.runtime import preflight_environment
 
@@ -61,6 +70,8 @@ class SpectreAdapter:
         )
 
     def run(self, context: ExecutionIO) -> StepResult:
+        if isinstance(context.step.action, MeasurementAction):
+            return run_measurement(context)
         from sigilicon.adapters.cadence.spectre import run_spectre_deck
 
         step = context.step

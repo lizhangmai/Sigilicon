@@ -1287,7 +1287,7 @@ def owned_executable(path: Path) -> Iterator[OwnedExecutable]:
             interpreter_path,
             require_single_link=False,
         ) as interpreter:
-            interpreter_name = interpreter_path.name
+            interpreter_name = Path(shebang[0]).name
             if interpreter_name in {"ash", "bash", "dash", "ksh", "sh", "zsh"}:
                 command = (
                     interpreter.child_path,

@@ -85,7 +85,7 @@ class _ToolVerdict:
 
     @classmethod
     def load(
-        cls, path: Path, *, owner: str, stage: str, variant: str
+        cls, path: Path, *, context: ExecutionIO, stage: str, variant: str, corner: str
     ) -> _ToolVerdict:
         try:
             with owned_input_file(path, require_single_link=True) as source:
@@ -101,10 +101,11 @@ class _ToolVerdict:
             "passed",
             "product_qualification_conclusion",
             "checks",
+            "plan_identity", "run_id", "step_id", "corner",
         }
         if not isinstance(payload, dict) or set(payload) != fields:
             raise ExecutionError(f"invalid tool verdict envelope in {path.name}")
-        if payload["schema"] != 1 or payload["contract_kind"] != "tool-verdict":
+        if payload["schema"] != 2 or payload["contract_kind"] != "tool-verdict":
             raise ExecutionError(f"unsupported tool verdict contract in {path.name}")
         texts = {
             name: payload[name]
@@ -112,11 +113,14 @@ class _ToolVerdict:
         }
         if any(not isinstance(value, str) or not value for value in texts.values()):
             raise ExecutionError(f"invalid tool verdict identity in {path.name}")
-        expected = {"owner": owner, "stage": stage, "variant": variant}
+        expected = {
+            "owner": context.owner, "stage": stage, "variant": variant, "corner": corner,
+            "plan_identity": context.plan_identity, "run_id": context.run_id, "step_id": context.step.id,
+        }
         for name, value in expected.items():
-            if texts[name] != value:
+            if payload[name] != value:
                 raise ExecutionError(
-                    f"tool verdict {name} mismatch: expected {value!r}, got {texts[name]!r}"
+                    f"tool verdict {name} mismatch: expected {value!r}, got {payload[name]!r}"
                 )
         passed = payload["passed"]
         qualification = payload["product_qualification_conclusion"]
@@ -366,6 +370,11 @@ def _run_script(
     """Run one source-pinned script while holding every external input path."""
 
     runner = invocation.runner
+    environment.update({
+        "SIGILICON_PLAN_IDENTITY": context.plan_identity,
+        "SIGILICON_RUN_ID": context.run_id,
+        "SIGILICON_STEP_ID": context.step.id,
+    })
     with ExitStack() as stack:
         source_root = stack.enter_context(owned_directory(context.source_directory))
         work_root = stack.enter_context(owned_directory(context.work_directory))

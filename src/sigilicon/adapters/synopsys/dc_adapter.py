@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from sigilicon.adapters.synopsys._common import (
-    ExecutionIO, StepResult, _ToolVerdict, _logs,
+    ExecutionError, ExecutionIO, StepResult, _ToolVerdict, _logs,
     _run_script, _runtime_environment, _write_filelist, owned_scratch_directory,
     process_group_cleanup_uncertainty,
 )
@@ -22,6 +22,7 @@ class DcAdapter(RunnerAdapter):
         environment.update(
             {
                 "SIGILICON_DESIGN_VARIANT": action.invocation.variant,
+                "SIGILICON_DESIGN_CORNER": action.corner,
                 "SIGILICON_DC_RTL_FILELIST": str(
                     _write_filelist(
                         context,
@@ -53,57 +54,35 @@ class DcAdapter(RunnerAdapter):
                 held_directories=runtime.directories,
             )
             logs = _logs(context, completed.stdout, completed.stderr or "")
+            declared = (
+                ("mapped-netlist", "netlist.verilog", "mapped.v"),
+                ("mapped-constraints", "constraints.sdc", "mapped.sdc"),
+                ("checkpoint", "checkpoint.synopsys-ddc", "mapped.ddc"),
+                *(("report", "report.synopsys", name) for name in action.reports),
+                ("execution-verdict", "evidence.tool-verdict", action.verdict),
+            )
+            artifacts = list(logs)
+            missing = []
+            for role, kind, name in declared:
+                source = scratch.path / name
+                if not source.is_file():
+                    missing.append(name)
+                    continue
+                artifacts.append(context.copy_output(role=role, kind=kind, source=source, filename=name))
             if completed.returncode:
-                return StepResult(
-                    "failed", logs, message=f"DC runner exited {completed.returncode}"
+                return StepResult("failed", tuple(artifacts), message=f"DC runner exited {completed.returncode}")
+            if missing:
+                return StepResult("failed", tuple(artifacts), message=f"DC omitted outputs: {missing}")
+            try:
+                verdict = _ToolVerdict.load(
+                    scratch.path / action.verdict, context=context, stage="synthesis",
+                    variant=action.invocation.variant, corner=action.corner,
                 )
-            verdict_name = action.verdict
-            verdict = _ToolVerdict.load(
-                scratch.path / verdict_name,
-                owner=context.owner,
-                stage="synthesis",
-                variant=action.invocation.variant,
-            )
-            outputs = (
-                context.copy_output(
-                    role="mapped-netlist",
-                    kind="netlist.verilog",
-                    source=scratch.path / "mapped.v",
-                    filename="mapped.v",
-                ),
-                context.copy_output(
-                    role="mapped-constraints",
-                    kind="constraints.sdc",
-                    source=scratch.path / "mapped.sdc",
-                    filename="mapped.sdc",
-                ),
-                context.copy_output(
-                    role="checkpoint",
-                    kind="checkpoint.synopsys-ddc",
-                    source=scratch.path / "mapped.ddc",
-                    filename="mapped.ddc",
-                ),
-            )
-            reports = tuple(
-                context.copy_output(
-                    role="report",
-                    kind="report.synopsys",
-                    source=scratch.path / relative,
-                    filename=relative,
-                )
-                for relative in action.reports
-            )
-            verdict_artifact = context.copy_output(
-                role="execution-verdict",
-                kind="evidence.tool-verdict",
-                source=scratch.path / verdict_name,
-                filename=verdict_name,
-            )
-            artifacts = (*logs, *outputs, *reports, verdict_artifact)
+            except ExecutionError as exc:
+                return StepResult("failed", tuple(artifacts), message=str(exc))
             if not verdict.passed:
                 return StepResult(
-                    "failed",
-                    artifacts,
+                    "failed", tuple(artifacts),
                     message="DC execution completed but owner evidence failed",
                 )
-            return StepResult.succeeded(artifacts=artifacts)
+            return StepResult.succeeded(artifacts=tuple(artifacts))

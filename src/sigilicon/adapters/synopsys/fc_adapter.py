@@ -188,13 +188,17 @@ class FcAdapter(RunnerAdapter):
                     / "execution-verdict"
                     / output_names["execution-verdict"]
                 )
-                verdict = _ToolVerdict.load(
-                    verdict_path,
-                    owner=context.owner,
-                    stage="physical-implementation",
-                    variant=action.invocation.variant,
-                )
                 published = (*logs, *artifacts)
+                try:
+                    verdict = _ToolVerdict.load(
+                        verdict_path,
+                        context=context,
+                        stage="physical-implementation",
+                        variant=action.invocation.variant,
+                        corner=action.corner,
+                    )
+                except ExecutionError as exc:
+                    return StepResult("failed", published, message=str(exc))
                 if not verdict.passed:
                     return StepResult(
                         "failed",
