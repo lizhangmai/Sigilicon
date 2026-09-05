@@ -30,7 +30,7 @@ from sigilicon.adapters.release.source_control import inspect_checkout
 from sigilicon.adapters.release.release_contract_checks import (
     _development_interface_check,
     _development_interface_check_with_design_inventory,
-    _missing_roles,
+    _missing_views,
     _project_path,
     _release_semantics,
 )
@@ -47,7 +47,7 @@ from sigilicon.adapters.release.release_plan_record import (
     ReleaseExportRecord,
     ReleaseInterface,
     ReleaseOaIdentity,
-    RequiredRolesCheck,
+    RequiredViewsCheck,
     QualifiedViewSemanticsCheck,
     RtlReleaseInterface,
 )
@@ -537,7 +537,7 @@ def _export_interface_manifest(
         RtlReleaseInterface(
             contract=(contract.producer / interface.contract).as_posix(),
             module=interface.module,
-            source_role=interface.source_role,
+            source_view=interface.source_view,
             variant=interface.variant,
         ),
     )
@@ -643,7 +643,7 @@ def _plan_loaded_ip_release(
     commit = source_state.commit
     dirty = source_state.working_tree_dirty
     release_id = f"{level}-{commit}"
-    role_missing = _missing_roles(contract, level)
+    missing_views = _missing_views(contract, level)
     component_path = _project_path(
         contract.project_root,
         Path(contract.producer) / contract.component_contract,
@@ -681,7 +681,7 @@ def _plan_loaded_ip_release(
                 exported,
                 library=oa_library,
             )
-            key = (exported.name, "circuit_netlist")
+            key = (exported.name, next(item.name for item in exported.collateral if item.role == "circuit_netlist"))
             native_bundle_metadata[key] = metadata
             native_bundles[key] = text
     collateral_source_identity: dict[tuple[str, str], tuple[int, str]] = {}
@@ -692,13 +692,14 @@ def _plan_loaded_ip_release(
             f"{item.export}/{item.role} source",
         )
         source_metadata, source_digest = _inspect_nofollow_file(source)
-        collateral_source_identity[(item.export, item.role)] = (
+        collateral_source_identity[(item.export, item.name)] = (
             source_metadata.st_size,
             source_digest,
         )
     collateral = tuple(
         ReleaseCollateralRecord(
             export=item.export,
+            name=item.name,
             role=item.role,
             component=item.component,
             source_id=item.source_id,
@@ -709,11 +710,12 @@ def _plan_loaded_ip_release(
             library=item.library,
             cell=item.cell,
             view=item.view,
-            corner=item.corner,
+            variant=item.variant,
+            condition=item.condition,
             capabilities=item.capabilities,
-            source_size=collateral_source_identity[(item.export, item.role)][0],
-            source_sha256=collateral_source_identity[(item.export, item.role)][1],
-            native_bundle=native_bundle_metadata.get((item.export, item.role)),
+            source_size=collateral_source_identity[(item.export, item.name)][0],
+            source_sha256=collateral_source_identity[(item.export, item.name)][1],
+            native_bundle=native_bundle_metadata.get((item.export, item.name)),
         )
         for item in contract.collateral
     )
@@ -724,23 +726,23 @@ def _plan_loaded_ip_release(
     )
     semantic_missing = sorted({problem for _, problems in semantics.values() for problem in problems})
     semantic_check = QualifiedViewSemanticsCheck(passed=not semantic_missing, problems=tuple(semantic_missing))
-    missing = sorted(set(role_missing) | set(semantic_missing))
+    missing = sorted(set(missing_views) | set(semantic_missing))
     export_rows: list[ReleaseExportRecord] = []
-    role_checks: list[ReleaseCheck] = []
+    view_checks: list[ReleaseCheck] = []
     for exported in contract.exports:
-        roles = {item.role for item in exported.collateral}
+        view_names = {item.name for item in exported.collateral}
         export_missing = [
             item for item in missing if item.startswith(f"{exported.name}:")
         ]
         availability = semantics[exported.name][0]
-        role_checks.append(
-            RequiredRolesCheck(
+        view_checks.append(
+            RequiredViewsCheck(
                 export=exported.name,
                 passed=not any(
-                    item.startswith(f"{exported.name}:") for item in role_missing
+                    item.startswith(f"{exported.name}:") for item in missing_views
                 ),
-                required=exported.required_roles[level],
-                present=tuple(sorted(roles)),
+                required=exported.required_views[level],
+                present=tuple(sorted(view_names)),
             )
         )
         oa_identity, interface = _export_interface_manifest(contract, exported)
@@ -748,7 +750,7 @@ def _plan_loaded_ip_release(
             ReleaseExportRecord(
                 name=exported.name,
                 interface=interface,
-                maturity_required_roles=exported.required_roles[level],
+                maturity_required_views=exported.required_views[level],
                 maturity_missing_items=tuple(export_missing),
                 availability=availability,
                 oa=oa_identity,
@@ -784,7 +786,7 @@ def _plan_loaded_ip_release(
         working_tree_dirty=dirty,
         source_files=source_paths,
         maturity_level=level,
-        maturity_checks=tuple((*role_checks, *interface_checks, semantic_check)),
+        maturity_checks=tuple((*view_checks, *interface_checks, semantic_check)),
         missing_items=tuple(missing),
         availability=availability,
         exports=tuple(export_rows),

@@ -81,7 +81,7 @@ endmodule
         path = release_root / relative
         view: dict[str, Any] = {
             "export": "macro",
-            "role": role,
+            "name": role, "role": role,
             "path": relative,
             "format": {".sv": "systemverilog", ".scs": "spectre"}.get(path.suffix, path.suffix[1:]),
             "capabilities": ["diagnostic" if role == diagnostic_role else "simulation"],
@@ -92,7 +92,7 @@ endmodule
             view["module"] = module
         views.append(view)
     manifest = {
-        "schema": 2,
+        "schema": 3,
         "contract_kind": "ip-release-manifest",
         "release_kind": "source-package",
         "ip_name": "fixture-ip",
@@ -112,7 +112,7 @@ endmodule
                     "physical": "fixture_macro:oa-1-pin",
                     "logical": "fixture_model:transaction-1-port",
                 },
-                "maturity": {"required_roles": list(role_metadata), "missing_items": []},
+                "maturity": {"required_views": list(role_metadata), "missing_items": []},
                 "availability": {
                     "simulation": True,
                     "synthesis": False,
@@ -142,6 +142,19 @@ endmodule
     return release_id, (relative_root / "manifest.json").as_posix()
 
 
+def test_mixed_signal_release_audits_independently_named_views(tmp_path: Path) -> None:
+    from sigilicon.adapters.release.ip_packaging import audit_ip_release_manifest
+
+    _, relative = _write_release_fixture(tmp_path)
+    manifest_path = tmp_path / relative
+    manifest = json.loads(manifest_path.read_text())
+    for view in manifest["views"]:
+        view["name"] = "named-" + view["role"]
+    manifest["exports"][0]["maturity"]["required_views"] = [view["name"] for view in manifest["views"]]
+    manifest_path.write_text(json.dumps(manifest))
+    assert audit_ip_release_manifest(manifest_path)["availability"]["simulation"] is True
+
+
 def _write_rtl_release_fixture(artifact_root: Path) -> tuple[str, str]:
     release_id = "development-rtl-fixture"
     relative_root = Path("staging/fixture-ip") / release_id
@@ -166,7 +179,7 @@ ports = [{ name = "clk", direction = "input", width = 1 }]
     views = [
         {
             "export": "rtl",
-            "role": "interface_contract",
+            "name": "interface_contract", "role": "interface_contract",
             "path": "interfaces/interface.toml",
             "source": "ip/fixture/configs/interface.toml",
             "format": "toml",
@@ -175,7 +188,7 @@ ports = [{ name = "clk", direction = "input", width = 1 }]
         },
         {
             "export": "rtl",
-            "role": "rtl_source",
+            "name": "rtl_source", "role": "rtl_source",
             "path": "rtl/fixture_rtl.sv",
             "source": "ip/fixture/rtl/fixture_rtl.sv",
             "format": "systemverilog",
@@ -186,7 +199,7 @@ ports = [{ name = "clk", direction = "input", width = 1 }]
         },
     ]
     manifest = {
-        "schema": 2,
+        "schema": 3,
         "contract_kind": "ip-release-manifest",
         "release_kind": "source-package",
         "ip_name": "fixture-ip",
@@ -199,10 +212,10 @@ ports = [{ name = "clk", direction = "input", width = 1 }]
                     "kind": "rtl",
                     "contract": "ip/fixture/configs/interface.toml",
                     "module": "fixture_rtl",
-                    "source_role": "rtl_source",
+                    "source_view": "rtl_source",
                 },
                 "maturity": {
-                    "required_roles": ["interface_contract", "rtl_source"], "missing_items": [],
+                    "required_views": ["interface_contract", "rtl_source"], "missing_items": [],
                 },
                 "availability": {
                     "simulation": True,
@@ -266,12 +279,12 @@ def _select_rtl_dependency(contract: Path) -> None:
         '''[component.release]
 export = "macro"
 required_maturity = "development"
-roles = ["transaction_model", "integration_adapter", "physical_blackbox"]
+views = ["transaction_model", "integration_adapter", "physical_blackbox"]
 ''',
         '''[component.release]
 export = "rtl"
 required_maturity = "development"
-roles = ["rtl_source"]
+views = ["rtl_source"]
 ''',
     )
     contract.write_text(source, encoding="utf-8")
@@ -296,12 +309,12 @@ def _select_native_oa_dependency(
         '''[component.release]
 export = "macro"
 required_maturity = "development"
-roles = ["transaction_model", "integration_adapter", "physical_blackbox"]
+views = ["transaction_model", "integration_adapter", "physical_blackbox"]
 ''',
         '''[component.release]
 export = "macro"
 required_maturity = "development"
-roles = ["interface_contract", "oa_port_contract", "circuit_netlist"]
+views = ["interface_contract", "oa_port_contract", "circuit_netlist"]
 ''',
     )
     contract.write_text(source, encoding="utf-8")
@@ -382,7 +395,7 @@ domains = []
         "oa_port_contract": "ip/fixture/configs/ports.toml",
         "circuit_netlist": "ip/fixture/circuit.scs",
     }
-    exported["maturity"]["required_roles"] = list(selected_roles)
+    exported["maturity"]["required_views"] = list(selected_roles)
     payload["views"] = [
         view
         for view in payload["views"]
@@ -437,7 +450,7 @@ def _write_ip_fixture(project_root: Path, release_id: str, manifest: str) -> Pat
     (owner_root / "rtl").mkdir()
     (dependency_root / "configs").mkdir(parents=True)
     (dependency_root / "configs/ip.toml").write_text(
-        '''schema = 4
+        '''schema = 5
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "fixture-ip"
@@ -457,7 +470,7 @@ source = ["manifest"]
         encoding="utf-8",
     )
     (dependency_root / "configs/release.toml").write_text(
-        '''schema = 2
+        '''schema = 3
 contract_kind = "ip-release"
 path_scope = "owner"
 owner = "fixture-ip"
@@ -471,7 +484,7 @@ owner = "fixture-ip"
         "ip/demo/rtl/top.sv\n", encoding="utf-8"
     )
     (owner_root / "configs/variants/default.toml").write_text(
-        """schema = 1
+        """schema = 2
 contract_kind = "ip-operating-variant"
 path_scope = "variant"
 owner = "demo"
@@ -484,7 +497,7 @@ default_fileset = "simulation"
 filelist = "ip/demo/rtl/simulation.f"
 required_capability = "simulation"
 
-[filesets.simulation.dependency_roles]
+[filesets.simulation.dependency_views]
 fixture-ip = ["transaction_model"]
 
 [physical_binding]
@@ -525,7 +538,7 @@ manifest_sha256 = "{manifest_sha256}"
     )
     contract = owner_root / "configs/ip.toml"
     contract.write_text(
-        """schema = 4
+        """schema = 5
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "demo"
@@ -542,7 +555,7 @@ contract = "ip/fixture/configs/ip.toml"
 [component.release]
 export = "macro"
 required_maturity = "development"
-roles = ["transaction_model", "integration_adapter", "physical_blackbox"]
+views = ["transaction_model", "integration_adapter", "physical_blackbox"]
 
 [variants]
 default = "default_variant"
@@ -628,7 +641,7 @@ def _write_source_component_fixture(project_root: Path) -> Path:
         "module leaf(input logic clk); endmodule\n", encoding="utf-8"
     )
     (dependency / "configs/ip.toml").write_text(
-        '''schema = 4
+        '''schema = 5
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "leaf"
@@ -654,7 +667,7 @@ rtl = ["rtl"]
         encoding="utf-8",
     )
     (owner / "configs/variants/default.toml").write_text(
-        '''schema = 1
+        '''schema = 2
 contract_kind = "ip-operating-variant"
 path_scope = "variant"
 owner = "composite"
@@ -682,7 +695,7 @@ owner = "composite"
     )
     contract = owner / "configs/ip.toml"
     contract.write_text(
-        '''schema = 4
+        '''schema = 5
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "composite"
@@ -908,7 +921,7 @@ def test_rtl_release_dependency_is_consumed_without_physical_identity(
             "collateral": [
                 {
                     "export": "rtl",
-                    "role": "rtl_source",
+                    "name": "rtl_source", "role": "rtl_source",
                     "module": "fixture_rtl",
                 }
             ],
@@ -928,7 +941,7 @@ def test_rtl_release_dependency_is_consumed_without_physical_identity(
     )
 
     assert result["passed"] is True
-    assert result["dependency_releases"][0]["roles"] == {
+    assert result["dependency_releases"][0]["views"] == {
         "rtl_source": f"{Path(manifest).parent.as_posix()}/rtl/fixture_rtl.sv"
     }
     assert result["release_sources"] == [
@@ -989,7 +1002,7 @@ def test_native_oa_release_dependency_is_typed_planned_and_consumed(
             ],
             "collateral": [
                 {"export": "macro", "role": role}
-                for role in release.roles
+                for role in release.views
             ],
         }),
     )
@@ -1000,7 +1013,7 @@ def test_native_oa_release_dependency_is_typed_planned_and_consumed(
         release_inventory={"fixture-ip": producer},
     )
     assert "interface" not in plan["dependencies"][0]["release"]
-    assert plan["dependencies"][0]["release"]["roles"] == [
+    assert plan["dependencies"][0]["release"]["views"] == [
         "interface_contract",
         "oa_port_contract",
         "circuit_netlist",
@@ -1020,7 +1033,7 @@ def test_native_oa_release_dependency_is_typed_planned_and_consumed(
         variant_name="default",
     )
     assert result["passed"] is True
-    circuit = result["dependency_releases"][0]["roles"]["circuit_netlist"]
+    circuit = result["dependency_releases"][0]["views"]["circuit_netlist"]
     assert circuit.startswith("release-store/fixture/objects/sha256-")
     assert circuit.endswith("/circuit/fixture_macro.scs")
 
@@ -1126,7 +1139,7 @@ def test_declaring_release_capability_does_not_implicitly_consume_it(
     variant = contract.parent / "variants/default.toml"
     variant.write_text(
         variant.read_text(encoding="utf-8").replace(
-            '\n[filesets.simulation.dependency_roles]\n'
+            '\n[filesets.simulation.dependency_views]\n'
             'fixture-ip = ["transaction_model"]\n',
             "",
         ),

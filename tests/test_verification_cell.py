@@ -24,7 +24,7 @@ def _contract(root: Path) -> Path:
     contract = _write(
         root,
         f"{cell}/cell.toml",
-        """schema = 1
+        """schema = 2
 contract_kind = "verification-cell"
 path_scope = "cell"
 owner = "demo"
@@ -129,7 +129,7 @@ contract = "../../../component.toml"
 variant = "no-recovery"
 fileset = "ams"
 dependency = "native-provider"
-role = "circuit_netlist"
+view = "circuit_netlist"
 ''',
         encoding="utf-8",
     )
@@ -144,7 +144,7 @@ def test_verification_cell_loads_typed_xcelium_ams_inputs(tmp_path: Path) -> Non
     assert spec.ams is not None
     assert spec.ams.platform == "testpdk"
     assert spec.ams.circuit.contract == tmp_path / "ip/demo/component.toml"
-    assert spec.ams.circuit.role == "circuit_netlist"
+    assert spec.ams.circuit.view == "circuit_netlist"
     assert spec.ams.transient_stop == "1u"
     assert spec.ams.ie_voltage == 0.9
     assert spec.ams.circuit.contract in spec.source_inputs
@@ -168,7 +168,7 @@ contract = "../../../component.toml"
 variant = "no-recovery"
 fileset = "ams"
 dependency = "native-provider"
-role = "circuit_netlist"''',
+view = "circuit_netlist"''',
             '''kind = "source"
 path = "../../../design/standalone.scs"
 cell = "ANALOG_TOP"''',
@@ -226,7 +226,7 @@ def test_verification_cell_rejects_incomplete_ams_table(tmp_path: Path) -> None:
     _as_xcelium_ams(contract)
     contract.write_text(
         contract.read_text(encoding="utf-8").replace(
-            'role = "circuit_netlist"\n',
+            'view = "circuit_netlist"\n',
             'unexpected = "value"\n',
         ),
         encoding="utf-8",

@@ -28,7 +28,7 @@ def _ams_project(root: Path) -> tuple[Path, Path]:
     cell = root / "ip/demo/verification/native/tb_demo_ams"
     contract = _write(
         cell / "cell.toml",
-        '''schema = 1
+        '''schema = 2
 contract_kind = "verification-cell"
 path_scope = "cell"
 owner = "demo"
@@ -53,7 +53,7 @@ contract = "../../../component.toml"
 variant = "no-recovery"
 fileset = "ams"
 dependency = "native-provider"
-role = "circuit_netlist"
+view = "circuit_netlist"
 ''',
     )
     testbench = _write(cell / "testbench.vams", "module tb_demo_ams; endmodule\n")
@@ -100,7 +100,7 @@ def _patch_native_resolution(
                         "release_id": "development-123456789abc",
                         "store": "native-provider",
                         "manifest_sha256": "1" * 64,
-                        "roles": {"circuit_netlist": relative},
+                        "views": {"circuit_netlist": relative},
                     }
                 ],
             },
@@ -112,7 +112,7 @@ def _patch_native_resolution(
 def _configure_locked_native_release(root: Path, circuit: Path) -> Path:
     _write(
         root / "ip/native-provider/configs/release.toml",
-        '''schema = 2
+        '''schema = 3
 contract_kind = "ip-release"
 path_scope = "owner"
 owner = "native-provider"
@@ -143,7 +143,7 @@ contract = "ip/native-provider/component.toml"
 [component.release]
 export = "native-top"
 required_maturity = "development"
-roles = ["circuit_netlist"]
+views = ["circuit_netlist"]
 
 [variants]
 no-recovery = "no_recovery_variant"
@@ -152,7 +152,7 @@ no-recovery = "no_recovery_variant"
     )
     _write(
         root / "ip/demo/configs/variants/no_recovery.toml",
-        '''schema = 1
+        '''schema = 2
 contract_kind = "ip-operating-variant"
 path_scope = "variant"
 owner = "demo"
@@ -166,7 +166,7 @@ default_fileset = "ams"
 filelist = "ip/demo/configs/ams.f"
 required_capability = "simulation"
 
-[filesets.ams.dependency_roles]
+[filesets.ams.dependency_views]
 native-provider = ["circuit_netlist"]
 ''',
     )
@@ -207,7 +207,7 @@ VSS = "inout"
     )
     manifest = release_root / "manifest.json"
     payload = {
-        "schema": 2,
+        "schema": 3,
         "contract_kind": "ip-release-manifest",
         "release_kind": "source-package",
         "ip_name": "native-provider",
@@ -228,7 +228,7 @@ VSS = "inout"
                     "contract": "ip/native-provider/configs/interface.toml",
                 },
                 "maturity": {
-                    "required_roles": [
+                    "required_views": [
                         "interface_contract",
                         "oa_port_contract",
                         "circuit_netlist",
@@ -348,7 +348,7 @@ contract = "../../../component.toml"
 variant = "no-recovery"
 fileset = "ams"
 dependency = "native-provider"
-role = "circuit_netlist"''',
+view = "circuit_netlist"''',
             '''kind = "source"
 path = "../../../design/analog_top.scs"
 cell = "ANALOG_TOP"''',

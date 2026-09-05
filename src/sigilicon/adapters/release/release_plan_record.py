@@ -12,7 +12,7 @@ from sigilicon.domain.ip_release import IpContract, ReceiptPolicy
 
 
 @dataclass(frozen=True)
-class RequiredRolesCheck:
+class RequiredViewsCheck:
     export: str
     passed: bool
     required: tuple[str, ...]
@@ -21,7 +21,7 @@ class RequiredRolesCheck:
     @property
     def record(self) -> dict[str, object]:
         return {
-            "name": f"required_release_roles:{self.export}",
+            "name": f"required_release_views:{self.export}",
             "export": self.export,
             "passed": self.passed,
             "required": list(self.required),
@@ -101,7 +101,7 @@ class QualifiedViewSemanticsCheck:
 
 
 ReleaseCheck: TypeAlias = (
-    RequiredRolesCheck
+    RequiredViewsCheck
     | InterfaceConsistencyCheck
     | QualifiedViewSemanticsCheck
 )
@@ -160,7 +160,7 @@ class ReleaseOaIdentity:
 class RtlReleaseInterface:
     contract: str
     module: str
-    source_role: str
+    source_view: str
     variant: str | None = None
     kind: Literal["rtl"] = field(default="rtl", init=False)
 
@@ -170,7 +170,7 @@ class RtlReleaseInterface:
             "kind": self.kind,
             "contract": self.contract,
             "module": self.module,
-            "source_role": self.source_role,
+            "source_view": self.source_view,
         }
         if self.variant is not None:
             value["variant"] = self.variant
@@ -220,7 +220,7 @@ ReleaseInterface: TypeAlias = (
 class ReleaseExportRecord:
     name: str
     interface: ReleaseInterface
-    maturity_required_roles: tuple[str, ...]
+    maturity_required_views: tuple[str, ...]
     maturity_missing_items: tuple[str, ...]
     availability: ReleaseAvailability
     oa: ReleaseOaIdentity | None = None
@@ -232,7 +232,7 @@ class ReleaseExportRecord:
             "name": self.name,
             "interface": self.interface.record,
             "maturity": {
-                "required_roles": list(self.maturity_required_roles),
+                "required_views": list(self.maturity_required_views),
                 "missing_items": list(self.maturity_missing_items),
             },
             "availability": self.availability.record,
@@ -258,6 +258,7 @@ class NativeBundleMetadata:
 @dataclass(frozen=True)
 class ReleaseCollateralRecord:
     export: str
+    name: str
     role: str
     component: str
     source_id: str
@@ -268,7 +269,8 @@ class ReleaseCollateralRecord:
     library: str | None
     cell: str | None
     view: str | None
-    corner: str | None
+    variant: str | None
+    condition: Mapping[str, str | int | float | bool]
     capabilities: tuple[str, ...]
     source_size: int
     source_sha256: str
@@ -286,6 +288,7 @@ class ReleaseCollateralRecord:
     def record(self) -> dict[str, object]:
         value: dict[str, object] = {
             "export": self.export,
+            "name": self.name,
             "role": self.role,
             "component": self.component,
             "source_id": self.source_id,
@@ -296,7 +299,8 @@ class ReleaseCollateralRecord:
             "library": self.library,
             "cell": self.cell,
             "view": self.view,
-            "corner": self.corner,
+            "variant": self.variant,
+            "condition": dict(self.condition),
             "capabilities": list(self.capabilities),
             "source_size": self.source_size,
             "source_sha256": self.source_sha256,
@@ -340,9 +344,9 @@ class IpReleaseRecord:
         export_names = {exported.name for exported in self.exports}
         if len(export_names) != len(self.exports):
             raise ValueError("release export identities contain duplicates")
-        roles = {(item.export, item.role) for item in self.collateral}
-        if len(roles) != len(self.collateral):
-            raise ValueError("release collateral roles contain duplicates")
+        identities = {(item.export, item.name) for item in self.collateral}
+        if len(identities) != len(self.collateral):
+            raise ValueError("release collateral view identities contain duplicates")
         if any(item.export not in export_names for item in self.collateral):
             raise ValueError("release collateral refers to an unknown export")
 
@@ -395,7 +399,7 @@ class IpReleasePlan:
             )
         bundles = MappingProxyType(dict(self.native_bundles))
         expected_bundles = {
-            (item.export, item.role): item.native_bundle
+            (item.export, item.name): item.native_bundle
             for item in self.payload.collateral
             if item.native_bundle is not None
         }

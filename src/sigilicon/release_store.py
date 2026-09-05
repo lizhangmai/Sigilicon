@@ -15,6 +15,7 @@ from sigilicon.artifacts import (
     read_json_object,
 )
 from sigilicon.paths import validate_artifact_component, validate_artifact_id
+from sigilicon.release_views import ViewSelector, view_condition
 
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -49,14 +50,17 @@ def release_store_resource(store: str) -> str:
 
 @dataclass(frozen=True)
 class ReleaseArtifact:
-    """One digest-bound role in an audited release package."""
+    """One named, digest-bound view in an audited release package."""
 
     export: str
+    name: str
     role: str
     path: Path
     relative_path: str
     sha256: str
     size: int
+    variant: str | None
+    condition: Mapping[str, str | int | float | bool]
 
 
 @dataclass(frozen=True)
@@ -68,23 +72,30 @@ class ReleasePackage:
     artifacts: tuple[ReleaseArtifact, ...]
     ref: ReleaseRef | None = None
 
-    def role(self, export: str, role: str) -> ReleaseArtifact:
+    def view(self, export: str, name: str) -> ReleaseArtifact:
         matches = tuple(
             artifact
             for artifact in self.artifacts
-            if artifact.export == export and artifact.role == role
+            if artifact.export == export and artifact.name == name
         )
         if len(matches) != 1:
             raise RuntimeError(
-                f"release role is missing or ambiguous: {export}/{role}"
+                f"release view is missing or ambiguous: {export}/{name}"
             )
         artifact = matches[0]
         metadata, digest = _inspect_nofollow_file(artifact.path)
         if metadata.st_size != artifact.size or digest != artifact.sha256:
             raise RuntimeError(
-                f"release role content changed after audit: {export}/{role}"
+                f"release view content changed after audit: {export}/{name}"
             )
         return artifact
+
+    def select(self, export: str, selector: ViewSelector) -> ReleaseArtifact:
+        matches = tuple(artifact for artifact in self.artifacts if artifact.export == export
+                        and selector.matches(role=artifact.role, variant=artifact.variant, condition=artifact.condition))
+        if len(matches) != 1:
+            raise RuntimeError(f"release view selection is missing or ambiguous: {export}/{selector.role}")
+        return self.view(export, matches[0].name)
 
 
 def _audit_release_package(
@@ -108,7 +119,7 @@ def _audit_release_package(
         sha256=manifest_sha256,
     )
     if (
-        manifest.get("schema") != 2
+        manifest.get("schema") != 3
         or manifest.get("contract_kind") != "ip-release-manifest"
         or manifest.get("release_kind") != "source-package"
     ):
@@ -132,13 +143,21 @@ def _audit_release_package(
         if not isinstance(row, Mapping):
             raise RuntimeError("release package view entry is invalid")
         export = row.get("export")
+        name = row.get("name")
         role = row.get("role")
+        variant = row.get("variant")
+        try:
+            condition = view_condition(row.get("condition", {}))
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
         relative_text = row.get("path")
         digest = row.get("sha256")
         size = row.get("size")
         if (
             not isinstance(export, str)
             or export not in exports
+            or not isinstance(name, str) or not name
+            or (variant is not None and (not isinstance(variant, str) or not variant))
             or not isinstance(role, str)
             or not role
             or not isinstance(relative_text, str)
@@ -148,10 +167,10 @@ def _audit_release_package(
             or size < 0
         ):
             raise RuntimeError("release package view metadata is invalid")
-        identity = (export, role)
+        identity = (export, name)
         if identity in identities:
             raise RuntimeError(
-                f"release package contains duplicate role: {export}/{role}"
+                f"release package contains duplicate view: {export}/{name}"
             )
         identities.add(identity)
         try:
@@ -165,7 +184,7 @@ def _audit_release_package(
                 f"release package view content drifted: {relative_text}"
             )
         artifacts.append(
-            ReleaseArtifact(export, role, file.path, relative_text, digest, size)
+            ReleaseArtifact(export, name, role, file.path, relative_text, digest, size, variant, condition)
         )
         expected_files.add(file.relative)
     expected_directories = {

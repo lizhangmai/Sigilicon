@@ -51,7 +51,7 @@ _AMS_FIELDS = frozenset(
     }
 )
 _AMS_RELEASE_CIRCUIT_FIELDS = frozenset(
-    {"kind", "contract", "variant", "fileset", "dependency", "role"}
+    {"kind", "contract", "variant", "fileset", "dependency", "view"}
 )
 _AMS_SOURCE_CIRCUIT_FIELDS = frozenset({"kind", "path", "cell"})
 _AMS_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
@@ -195,7 +195,7 @@ class XceliumAmsReleaseCircuit:
     variant: str
     fileset: str
     dependency: str
-    role: str
+    view: str
 
     @property
     def source_inputs(self) -> tuple[Path, ...]:
@@ -208,7 +208,7 @@ class XceliumAmsReleaseCircuit:
             "variant": self.variant,
             "fileset": self.fileset,
             "dependency": self.dependency,
-            "role": self.role,
+            "view": self.view,
         }
 
 
@@ -292,7 +292,7 @@ def _parse_xcelium_ams_circuit(
             variant=_token(value.get("variant"), f"{field}.variant"),
             fileset=_token(value.get("fileset"), f"{field}.fileset"),
             dependency=_token(value.get("dependency"), f"{field}.dependency"),
-            role=_token(value.get("role"), f"{field}.role"),
+            view=_token(value.get("view"), f"{field}.view"),
         )
     if kind == "source":
         expected = _AMS_SOURCE_CIRCUIT_FIELDS
@@ -395,6 +395,7 @@ def _parse_verification_cell(
         contract,
         contract_kind="verification-cell",
         path_scope="cell",
+        schema=2,
     )
     unknown = set(raw) - _FIELDS
     if unknown:

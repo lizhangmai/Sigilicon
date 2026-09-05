@@ -37,6 +37,7 @@ from sigilicon.domain.systemverilog import (
     named_port_connections,
 )
 from sigilicon.external_tools import owned_directory
+from sigilicon.release_views import ViewSelector, view_condition
 from sigilicon.release_store import (
     ReleasePackage,
     ReleaseRef,
@@ -112,7 +113,7 @@ def _publish_ip_release(
         try:
             views: list[dict[str, Any]] = []
             planned_collateral = {
-                (item["export"], item["role"]): item
+                (item["export"], item["name"]): item
                 for item in record["collateral"]
             }
             for item in contract.collateral:
@@ -123,7 +124,7 @@ def _publish_ip_release(
                 )
                 destination = temporary / item.package_path
                 ensure_nofollow_directory(destination.parent)
-                expected = planned_collateral[(item.export, item.role)]
+                expected = planned_collateral[(item.export, item.name)]
                 sealed_source = selected_sources[source]
                 source_metadata, source_digest = _inspect_nofollow_file(sealed_source)
                 if (
@@ -135,7 +136,7 @@ def _publish_ip_release(
                         f"{item.export}/{item.role}"
                     )
                 if expected.get("composition") == "reachable-spectre-hierarchy":
-                    key = (item.export, item.role)
+                    key = (item.export, item.name)
                     try:
                         text = plan.native_bundles[key]
                     except KeyError as exc:
@@ -159,6 +160,7 @@ def _publish_ip_release(
                 packaged_metadata, packaged_digest = _inspect_nofollow_file(destination)
                 view = {
                     "export": item.export,
+                    "name": item.name,
                     "role": item.role,
                     "path": item.package_path.as_posix(),
                     "source": item.source.as_posix(),
@@ -169,7 +171,8 @@ def _publish_ip_release(
                     "library": item.library,
                     "cell": item.cell,
                     "view": item.view,
-                    "corner": item.corner,
+                    "variant": item.variant,
+                    "condition": dict(item.condition),
                     "capabilities": list(item.capabilities),
                 }
                 for field in (
@@ -182,7 +185,7 @@ def _publish_ip_release(
                         view[field] = expected[field]
                 views.append(view)
             manifest: dict[str, Any] = {
-                "schema": 2,
+                "schema": 3,
                 "contract_kind": "ip-release-manifest",
                 "release_kind": "source-package",
                 "ip_name": record["ip_name"],
@@ -265,10 +268,10 @@ def _manifest_exports(manifest: Mapping[str, Any]) -> dict[str, Mapping[str, Any
     return exports
 
 
-def release_role_view(
-    manifest: Mapping[str, Any], role: str, *, export: str
+def release_view(
+    manifest: Mapping[str, Any], selection: str | ViewSelector, *, export: str
 ) -> Mapping[str, Any]:
-    """Return one role from one exact export of an IP release."""
+    """Select one named or semantically unambiguous view from an exact export."""
 
     _manifest_exports(manifest)[export]
     views = manifest.get("views")
@@ -279,11 +282,13 @@ def release_role_view(
         for item in views
         if isinstance(item, Mapping)
         and item.get("export") == export
-        and item.get("role") == role
+        and ((isinstance(selection, str) and item.get("name") == selection)
+             or (isinstance(selection, ViewSelector) and selection.matches(role=item.get("role"),
+                 variant=item.get("variant"), condition=view_condition(item.get("condition", {})))))
     ]
     if len(matches) != 1:
         raise RuntimeError(
-            f"IP release must contain exactly one {export}/{role} view"
+            f"IP release must contain exactly one {export}/{selection} view"
         )
     return matches[0]
 
@@ -295,21 +300,21 @@ def _packaged_rtl_interface_check(
     export_name: str,
     interface: Mapping[str, Any],
 ) -> None:
-    required_fields = {"kind", "contract", "module", "source_role"}
+    required_fields = {"kind", "contract", "module", "source_view"}
     fields = set(interface)
     if fields != required_fields and fields != required_fields | {"variant"}:
         raise RuntimeError(
             f"packaged {export_name} RTL interface fields are invalid"
         )
     module_name = interface.get("module")
-    source_role = interface.get("source_role")
+    source_view = interface.get("source_view")
     contract_source = interface.get("contract")
     variant = interface.get("variant")
     if (
         not isinstance(module_name, str)
         or not module_name
-        or not isinstance(source_role, str)
-        or not source_role
+        or not isinstance(source_view, str)
+        or not source_view
         or not isinstance(contract_source, str)
         or not contract_source
         or (variant is not None and (not isinstance(variant, str) or not variant))
@@ -324,24 +329,24 @@ def _packaged_rtl_interface_check(
         )
     except ValueError as exc:
         raise RuntimeError(str(exc)) from exc
-    contract_path = resolve_release_role(
-        manifest, manifest_path, "interface_contract", export=export_name
+    contract_path = resolve_release_view(
+        manifest, manifest_path, ViewSelector("interface_contract"), export=export_name
     )
-    contract_view = release_role_view(
-        manifest, "interface_contract", export=export_name
+    contract_view = release_view(
+        manifest, ViewSelector("interface_contract"), export=export_name
     )
     if contract_view.get("source") != contract_source:
         raise RuntimeError(
             f"packaged {export_name} interface contract provenance drifted"
         )
-    rtl_source = resolve_release_role(
-        manifest, manifest_path, source_role, export=export_name
+    rtl_source = resolve_release_view(
+        manifest, manifest_path, source_view, export=export_name
     )
-    if release_role_view(
-        manifest, source_role, export=export_name
+    if release_view(
+        manifest, source_view, export=export_name
     ).get("module") != module_name:
         raise RuntimeError(
-            f"packaged {export_name}/{source_role} module disagrees with its interface"
+            f"packaged {export_name}/{source_view} module disagrees with its interface"
     )
     try:
         raw = read_toml(contract_path)
@@ -350,8 +355,8 @@ def _packaged_rtl_interface_check(
             module_name=module_name,
             variant=variant,
         )
-        source_view = release_role_view(
-            manifest, source_role, export=export_name
+        source_view = release_view(
+            manifest, source_view, export=export_name
         )
         if source_view.get("source") != module.get("source"):
             raise ValueError("RTL interface source provenance drifted")
@@ -404,11 +409,11 @@ def _packaged_native_oa_interface_check(
             f"packaged {export_name} native OA identity is invalid"
         )
 
-    contract_path = resolve_release_role(
-        manifest, manifest_path, "interface_contract", export=export_name
+    contract_path = resolve_release_view(
+        manifest, manifest_path, ViewSelector("interface_contract"), export=export_name
     )
-    contract_view = release_role_view(
-        manifest, "interface_contract", export=export_name
+    contract_view = release_view(
+        manifest, ViewSelector("interface_contract"), export=export_name
     )
     if contract_view.get("source") != contract_source:
         raise RuntimeError(
@@ -427,21 +432,21 @@ def _packaged_native_oa_interface_check(
             cell=str(oa["cell"]),
         )
         port_contract_source = port_contract_relative.as_posix()
-        if release_role_view(
-            manifest, "oa_port_contract", export=export_name
+        if release_view(
+            manifest, ViewSelector("oa_port_contract"), export=export_name
         ).get("source") != port_contract_source:
             raise ValueError("OA port contract provenance drifted")
-        port_contract_path = resolve_release_role(
-            manifest, manifest_path, "oa_port_contract", export=export_name
+        port_contract_path = resolve_release_view(
+            manifest, manifest_path, ViewSelector("oa_port_contract"), export=export_name
         )
         expected_ports = _oa_port_contract(read_toml(port_contract_path))
         if len(expected_ports) != port_count:
             raise ValueError("OA port count disagrees with the interface")
-        circuit_path = resolve_release_role(
-            manifest, manifest_path, "circuit_netlist", export=export_name
+        circuit_path = resolve_release_view(
+            manifest, manifest_path, ViewSelector("circuit_netlist"), export=export_name
         )
-        circuit_view = release_role_view(
-            manifest, "circuit_netlist", export=export_name
+        circuit_view = release_view(
+            manifest, ViewSelector("circuit_netlist"), export=export_name
         )
         if circuit_view.get("composition") != "reachable-spectre-hierarchy":
             raise ValueError(
@@ -551,8 +556,8 @@ def _packaged_interface_check(
         except ValueError as exc:
             raise RuntimeError(str(exc)) from exc
 
-        contract_path = resolve_release_role(
-            manifest, manifest_path, "interface_contract", export=export_name
+        contract_path = resolve_release_view(
+            manifest, manifest_path, ViewSelector("interface_contract"), export=export_name
         )
         try:
             raw = read_toml(contract_path)
@@ -578,8 +583,8 @@ def _packaged_interface_check(
                 f"packaged {export_name} interface identities disagree with its manifest"
             )
         for role, module in expected_modules.items():
-            if not isinstance(module, str) or release_role_view(
-                manifest, role, export=export_name
+            if not isinstance(module, str) or release_view(
+                manifest, ViewSelector(role), export=export_name
             ).get("module") != module:
                 raise RuntimeError(
                     f"packaged {export_name}/{role} module disagrees with its interface"
@@ -594,8 +599,8 @@ def _packaged_interface_check(
                 f"packaged {export_name} transaction ports are invalid: {exc}"
             ) from exc
         sources = {
-            role: resolve_release_role(
-                manifest, manifest_path, role, export=export_name
+            role: resolve_release_view(
+                manifest, manifest_path, ViewSelector(role), export=export_name
             )
             for role in (
                 "transaction_model",
@@ -676,7 +681,7 @@ def _packaged_maturity_check(manifest: Mapping[str, Any], manifest_path: Path) -
         if not isinstance(export_maturity, Mapping) or export_maturity.get("missing_items") != []:
             problems.append(f"{name}:maturity-missing-items")
         def read_receipt(role: str):
-            path = resolve_release_role(manifest, manifest_path, role, export=name)
+            path = resolve_release_view(manifest, manifest_path, role, export=name)
             return read_json_object(path, f"{name}/{role} receipt")
         try:
             semantics = ExportSemantics.from_record(exported, views)
@@ -759,14 +764,14 @@ def _audit_loaded_ip_release(
     if not isinstance(views, list):
         raise RuntimeError("IP release views must be a list")
     expected_roles = {
-        (item["export"], item["role"]) for item in plan["collateral"]
+        (item["export"], item["name"]) for item in plan["collateral"]
     }
     actual_roles: set[tuple[str, str]] = set()
     expected_views = {
-        (item["export"], item["role"]): item for item in plan["collateral"]
+        (item["export"], item["name"]): item for item in plan["collateral"]
     }
     audited_views = {
-        (artifact.export, artifact.role): artifact
+        (artifact.export, artifact.name): artifact
         for artifact in audited.artifacts
     }
     for view in views:
@@ -774,7 +779,7 @@ def _audit_loaded_ip_release(
             raise RuntimeError("IP release view entry is invalid")
         role = str(view.get("role"))
         export = str(view.get("export"))
-        role_key = (export, role)
+        role_key = (export, view.get("name"))
         expected_view = expected_views.get(role_key)
         audited_view = audited_views.get(role_key)
         if (
@@ -788,7 +793,9 @@ def _audit_loaded_ip_release(
                     "source",
                     "format",
                     "module",
-                    "corner",
+                    "condition",
+                    "variant",
+                    "role",
                     "capabilities",
                     "composition",
                     "subcircuits",
@@ -801,7 +808,7 @@ def _audit_loaded_ip_release(
             )
         actual_roles.add(role_key)
     if actual_roles != expected_roles:
-        raise RuntimeError("IP release view roles do not match the producer contract")
+        raise RuntimeError("IP release view identities do not match the producer contract")
     expected_files = {
         Path("manifest.json"),
         *(Path(str(view["path"])) for view in views),
@@ -837,20 +844,20 @@ def _audit_loaded_ip_release(
     }
 
 
-def resolve_release_role(
+def resolve_release_view(
     manifest: Mapping[str, Any],
     manifest_path: Path,
-    role: str,
+    selection: str | ViewSelector,
     *,
     export: str,
 ) -> Path:
-    view = release_role_view(manifest, role, export=export)
+    view = release_view(manifest, selection, export=export)
     try:
         file = SafeTree(manifest_path.parent).file(
-            view.get("path"), f"IP release role {export}/{role}"
+            view.get("path"), f"IP release view {export}/{selection}"
         )
     except (OSError, RuntimeError) as exc:
-        raise RuntimeError(f"IP release role {export}/{role} is missing") from exc
+        raise RuntimeError(f"IP release view {export}/{selection} is missing") from exc
     if file.size != view.get("size") or file.sha256 != view.get("sha256"):
-        raise RuntimeError(f"IP release role {export}/{role} content drifted")
+        raise RuntimeError(f"IP release view {export}/{selection} content drifted")
     return file.path

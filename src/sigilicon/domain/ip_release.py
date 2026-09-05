@@ -18,6 +18,7 @@ from sigilicon.contracts import (
 )
 from sigilicon.domain.oa_library import find_oa_assembly
 from sigilicon.domain.context import RepositoryIdentity
+from sigilicon.release_views import view_condition
 
 if TYPE_CHECKING:
     from sigilicon.domain.component import ComponentContract
@@ -53,6 +54,7 @@ def _reject_unknown(
 @dataclass(frozen=True)
 class IpCollateral:
     export: str
+    name: str
     role: str
     component: str
     source_id: str
@@ -63,7 +65,8 @@ class IpCollateral:
     library: str | None
     cell: str | None
     view: str | None
-    corner: str | None
+    variant: str | None
+    condition: Mapping[str, str | int | float | bool]
     capabilities: tuple[str, ...]
 
 
@@ -96,7 +99,7 @@ class RtlIpInterface:
     kind: Literal["rtl"]
     contract: PurePosixPath
     module: str
-    source_role: str
+    source_view: str
     variant: str | None = None
 
 
@@ -110,31 +113,35 @@ class ReceiptPolicy:
 
     inputs: tuple[str, ...]
     outputs: tuple[str, ...]
+    coverage: tuple[str, ...] = ()
 
     @classmethod
     def from_record(cls, value: object) -> ReceiptPolicy:
         row = _table(value, "receipt policy")
-        _reject_unknown(row, {"inputs", "outputs"}, "receipt policy")
+        _reject_unknown(row, {"inputs", "outputs", "coverage"}, "receipt policy")
         groups = []
         for field in ("inputs", "outputs"):
             items = row.get(field)
             if not isinstance(items, (list, tuple)) or any(
                 not isinstance(item, str) or not item for item in items
             ) or len(set(items)) != len(items):
-                raise ValueError(f"receipt policy {field} must be unique roles")
+                raise ValueError(f"receipt policy {field} must be unique view names")
             groups.append(tuple(items))
         if not any(groups) or set(groups[0]) & set(groups[1]):
             raise ValueError("receipt policy must bind distinct inputs and outputs")
-        return cls(*groups)
+        coverage = row.get("coverage", ())
+        if not isinstance(coverage, (list, tuple)) or any(not isinstance(item, str) or not item for item in coverage) or len(set(coverage)) != len(coverage):
+            raise ValueError("receipt policy coverage must be unique names")
+        return cls(*groups, tuple(coverage))
 
     @property
     def record(self) -> dict[str, list[str]]:
-        return {"inputs": list(self.inputs), "outputs": list(self.outputs)}
+        return {"inputs": list(self.inputs), "outputs": list(self.outputs), "coverage": list(self.coverage)}
 
 
 def receipt_policies(value: object) -> Mapping[str, ReceiptPolicy]:
     rows = _table(value, "receipt policies")
-    policies = {_string(role, "receipt role"): ReceiptPolicy.from_record(row)
+    policies = {_string(role, "receipt view name"): ReceiptPolicy.from_record(row)
                 for role, row in rows.items()}
     for role, policy in policies.items():
         if set((*policy.inputs, *policy.outputs)) & set(policies):
@@ -147,7 +154,7 @@ class IpExport:
     name: str
     interface: IpInterface
     collateral: tuple[IpCollateral, ...]
-    required_roles: Mapping[str, tuple[str, ...]]
+    required_views: Mapping[str, tuple[str, ...]]
     receipts: Mapping[str, ReceiptPolicy] = field(default_factory=lambda: MappingProxyType({}))
 
 
@@ -285,7 +292,7 @@ def _parse_ip_contract(
         if interface_kind == "oa-mixed-signal":
             interface_fields.update({"physical", "logical"})
         elif interface_kind == "rtl":
-            interface_fields.update({"module", "source_role", "variant"})
+            interface_fields.update({"module", "source_view", "variant"})
         _reject_unknown(
             interface,
             interface_fields,
@@ -352,9 +359,9 @@ def _parse_ip_contract(
                     interface.get("module"),
                     f"exports[{index}].interface.module",
                 ),
-                source_role=_string(
-                    interface.get("source_role"),
-                    f"exports[{index}].interface.source_role",
+                source_view=_string(
+                    interface.get("source_view"),
+                    f"exports[{index}].interface.source_view",
                 ),
                 variant=(
                     None
@@ -378,7 +385,7 @@ def _parse_ip_contract(
             set(RELEASE_MATURITY_LEVELS),
             f"exports[{index}].maturity",
         )
-        required_roles: dict[str, tuple[str, ...]] = {}
+        required_views: dict[str, tuple[str, ...]] = {}
         previous: set[str] = set()
         for level in RELEASE_MATURITY_LEVELS:
             level_table = _table(
@@ -387,21 +394,21 @@ def _parse_ip_contract(
             )
             _reject_unknown(
                 level_table,
-                {"required_roles"},
+                {"required_views"},
                 f"exports[{index}].maturity.{level}",
             )
-            values = level_table.get("required_roles")
+            values = level_table.get("required_views")
             if not isinstance(values, (list, tuple)) or any(
                 not isinstance(item, str) or not item for item in values
             ):
                 raise ValueError(
-                    f"exports[{index}].maturity.{level}.required_roles "
+                    f"exports[{index}].maturity.{level}.required_views "
                     "must be strings"
                 )
             current = set(values)
             if len(current) != len(values):
                 raise ValueError(
-                    f"exports[{index}].maturity.{level}.required_roles "
+                    f"exports[{index}].maturity.{level}.required_views "
                     "must be unique"
                 )
             if not previous.issubset(current):
@@ -409,11 +416,11 @@ def _parse_ip_contract(
                     f"exports[{index}].maturity.{level} must include "
                     "lower-level roles"
                 )
-            required_roles[level] = tuple(values)
+            required_views[level] = tuple(values)
             previous = current
         export_specs[name] = {
             "interface": parsed_interface,
-            "required_roles": required_roles,
+            "required_views": required_views,
             "receipts": receipt_policies(entry.get("receipts", {})),
         }
 
@@ -431,6 +438,7 @@ def _parse_ip_contract(
             entry,
             {
                 "export",
+                "name",
                 "role",
                 "component",
                 "source",
@@ -440,7 +448,8 @@ def _parse_ip_contract(
                 "library",
                 "cell",
                 "view",
-                "corner",
+                "variant",
+                "condition",
                 "capabilities",
             },
             f"collateral[{index}]",
@@ -451,6 +460,7 @@ def _parse_ip_contract(
                 f"collateral[{index}] names unknown IP export: {export}"
             )
         role = _string(entry.get("role"), f"collateral[{index}].role")
+        name = _string(entry.get("name"), f"collateral[{index}].name")
         component = _string(
             entry.get("component"), f"collateral[{index}].component"
         )
@@ -471,9 +481,9 @@ def _parse_ip_contract(
             not isinstance(value, str) or not value for value in capabilities
         ):
             raise ValueError(f"collateral[{index}].capabilities must be strings")
-        role_key = (export, role)
+        role_key = (export, name)
         if role_key in roles:
-            raise ValueError(f"duplicate IP collateral role: {export}/{role}")
+            raise ValueError(f"duplicate IP collateral view: {export}/{name}")
         if package_path in package_paths:
             raise ValueError(f"duplicate IP package path: {package_path}")
         roles.add(role_key)
@@ -482,11 +492,12 @@ def _parse_ip_contract(
         library = entry.get("library")
         cell = entry.get("cell")
         view = entry.get("view")
-        corner = entry.get("corner")
+        variant = entry.get("variant")
+        condition = view_condition(entry.get("condition", {}))
         if module is not None:
             module = _string(module, f"collateral[{index}].module")
-        if corner is not None:
-            corner = _string(corner, f"collateral[{index}].corner")
+        if variant is not None:
+            variant = _string(variant, f"collateral[{index}].variant")
         if library is not None:
             library = _string(library, f"collateral[{index}].library")
         if cell is not None:
@@ -495,6 +506,7 @@ def _parse_ip_contract(
             view = _string(view, f"collateral[{index}].view")
         parsed = IpCollateral(
             export=export,
+            name=name,
             role=role,
             component=component,
             source_id=source_id,
@@ -505,7 +517,8 @@ def _parse_ip_contract(
             library=library,
             cell=cell,
             view=view,
-            corner=corner,
+            variant=variant,
+            condition=condition,
             capabilities=tuple(capabilities),
         )
         collateral_by_export[export].append(parsed)
@@ -519,7 +532,7 @@ def _parse_ip_contract(
             name=name,
             interface=values["interface"],
             collateral=tuple(collateral_by_export[name]),
-            required_roles=MappingProxyType(dict(values["required_roles"])),
+            required_views=MappingProxyType(dict(values["required_views"])),
             receipts=values["receipts"],
         )
         if isinstance(
@@ -532,8 +545,8 @@ def _parse_ip_contract(
                     f"{exported.interface.library}/{exported.interface.cell}"
                 )
             oa_identities.add(oa_identity)
-        present = {item.role for item in exported.collateral}
-        development = set(exported.required_roles["development"])
+        present = {item.name for item in exported.collateral}
+        development = set(exported.required_views["development"])
         if not development.issubset(present):
             missing = ", ".join(sorted(development - present))
             raise ValueError(
@@ -641,7 +654,7 @@ def resolve_ip_contract(
     if not isinstance(documents, _MAPPING_PROXY_TYPE):
         raise ValueError("IP release snapshot interface document identity drift")
     if any(
-        not isinstance(exported.required_roles, _MAPPING_PROXY_TYPE)
+        not isinstance(exported.required_views, _MAPPING_PROXY_TYPE)
         for exported in snapshot.exports
     ):
         raise ValueError("IP release snapshot typed contract is mutable")

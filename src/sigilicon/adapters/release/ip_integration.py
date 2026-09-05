@@ -33,7 +33,7 @@ from sigilicon.release_store import (
     release_store_resource,
 )
 from sigilicon.adapters.release.release_semantics import ReleaseView
-from sigilicon.adapters.release.ip_packaging import release_role_view
+from sigilicon.adapters.release.ip_packaging import release_view
 from sigilicon.adapters.release.ip_packaging import validate_ip_release_package
 from sigilicon.adapters.release.ip_release_planning import plan_ip_release_contract
 
@@ -178,8 +178,8 @@ def _fileset_source_plan(
         "sources": [
             path.relative_to(contract.project_root).as_posix() for path in sources
         ],
-        "dependency_roles": {
-            name: list(roles) for name, roles in fileset.dependency_roles.items()
+        "dependency_views": {
+            name: list(views) for name, views in fileset.dependency_views.items()
         },
         "source_filesets": dict(fileset.source_filesets),
         "required_capability": fileset.required_capability,
@@ -294,12 +294,12 @@ def plan_ip_integration_contract(
                 "export": release.export,
                 "provider": release_record["contract"],
                 "required_maturity": release.required_maturity,
-                "roles": list(release.roles),
+                "views": list(release.views),
                 "expected_release_id": release_record["release_id"],
             }
         dependencies.append(row)
     return {
-        "schema": 1,
+        "schema": 2,
         "contract_kind": "ip-integration-plan",
         "owner": contract.owner,
         "ip": contract.name,
@@ -442,7 +442,7 @@ def check_ip_integration(
     selected_release_dependencies = tuple(
         dependency
         for dependency in contract.release_dependencies
-        if dependency.name in fileset.dependency_roles
+        if dependency.name in fileset.dependency_views
     )
     locked_by_name: dict[str, LockedIpRelease] = {}
     lock = None
@@ -477,17 +477,17 @@ def check_ip_integration(
                 f"IP dependency release maturity {actual_level!r} does not satisfy "
                 f"{release.required_maturity!r}"
             )
-        roles = fileset.dependency_roles.get(dependency.name, ())
+        views = fileset.dependency_views.get(dependency.name, ())
         exported = _release_export(manifest, release.export)
         availability = exported.get("availability")
-        if roles and (not isinstance(availability, Mapping) or availability.get(fileset.required_capability) is not True):
+        if views and (not isinstance(availability, Mapping) or availability.get(fileset.required_capability) is not True):
             raise RuntimeError(f"IP dependency release is unavailable for {fileset.required_capability}")
         relative_paths: list[str] = []
-        for role in roles:
-            view = ReleaseView.from_record(release_role_view(manifest, role, export=release.export))
+        for view_name in views:
+            view = ReleaseView.from_record(release_view(manifest, view_name, export=release.export))
             if not view.supports(fileset.required_capability):
-                raise RuntimeError(f"IP dependency role {role!r} is unavailable from export {release.export!r} for {fileset.required_capability}")
-            artifact = audited.role(release.export, role)
+                raise RuntimeError(f"IP dependency view_name {view_name!r} is unavailable from export {release.export!r} for {fileset.required_capability}")
+            artifact = audited.view(release.export, view_name)
             relative_paths.append(
                 (
                     Path("release-store")
@@ -507,9 +507,9 @@ def check_ip_integration(
                 "store": pinned.store,
                 "manifest_sha256": pinned.manifest_sha256,
                 "maturity": actual_level,
-                "roles": {
-                    role: path
-                    for role, path in zip(roles, relative_paths, strict=True)
+                "views": {
+                    view_name: path
+                    for view_name, path in zip(views, relative_paths, strict=True)
                 },
             }
         )
@@ -568,7 +568,7 @@ def resolve_ip_integration_fileset(
             pinned=pinned,
         )
         release_sources.extend(
-            package.role(dependency["export"], role).path
-            for role in dependency["roles"]
+            package.view(dependency["export"], view_name).path
+            for view_name in dependency["views"]
         )
     return (*source_files, *release_sources)

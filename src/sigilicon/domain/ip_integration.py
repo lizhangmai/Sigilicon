@@ -75,7 +75,7 @@ class IpIntegrationDependency:
 class IpIntegrationFileset:
     name: str
     filelist: PurePosixPath
-    dependency_roles: Mapping[str, tuple[str, ...]]
+    dependency_views: Mapping[str, tuple[str, ...]]
     source_filesets: Mapping[str, str]
     required_capability: str
 
@@ -292,6 +292,7 @@ def _operating_variant(
         contract_kind="ip-operating-variant",
         path_scope="variant",
         owner=contract.owner,
+        schema=2,
     )
     integration = _table(raw.get("integration"), f"variant {name}.integration")
     if integration.get("variant") != name:
@@ -306,12 +307,16 @@ def _operating_variant(
     for fileset_name, value in filesets_raw.items():
         fileset_name = _string(fileset_name, f"variant {name} fileset name")
         fileset = _table(value, f"variant {name}.filesets.{fileset_name}")
-        roles_raw = _table(
-            fileset.get("dependency_roles", {}),
-            f"variant {name}.filesets.{fileset_name}.dependency_roles",
+        unknown = set(fileset) - {"filelist", "required_capability", "dependency_views", "source_filesets",
+                                 "top_module", "evidence_role", "variant_acceptance"}
+        if unknown:
+            raise ValueError(f"variant {name} fileset {fileset_name} has unknown fields: {sorted(unknown)}")
+        views_raw = _table(
+            fileset.get("dependency_views", {}),
+            f"variant {name}.filesets.{fileset_name}.dependency_views",
         )
-        dependency_roles: dict[str, tuple[str, ...]] = {}
-        for dependency_name, roles_value in roles_raw.items():
+        dependency_views: dict[str, tuple[str, ...]] = {}
+        for dependency_name, views_value in views_raw.items():
             if dependency_name not in dependencies:
                 raise ValueError(
                     f"variant {name} names undeclared dependency {dependency_name}"
@@ -319,26 +324,26 @@ def _operating_variant(
             release = dependencies[dependency_name].release
             if release is None:
                 raise ValueError(
-                    f"variant {name} requests release roles from source-only "
+                    f"variant {name} requests release views from source-only "
                     f"dependency {dependency_name}"
                 )
             if (
-                not isinstance(roles_value, (list, tuple))
-                or not roles_value
-                or any(not isinstance(role, str) or not role for role in roles_value)
-                or len(set(roles_value)) != len(roles_value)
+                not isinstance(views_value, (list, tuple))
+                or not views_value
+                or any(not isinstance(view_name, str) or not view_name for view_name in views_value)
+                or len(set(views_value)) != len(views_value)
             ):
                 raise ValueError(
-                    f"variant {name} dependency roles for {dependency_name} "
+                    f"variant {name} dependency views for {dependency_name} "
                     "must be unique strings"
                 )
-            unknown_roles = set(roles_value) - set(release.roles)
-            if unknown_roles:
+            unknown_views = set(views_value) - set(release.views)
+            if unknown_views:
                 raise ValueError(
-                    f"variant {name} requests undeclared dependency roles: "
-                    f"{sorted(unknown_roles)}"
+                    f"variant {name} requests undeclared dependency views: "
+                    f"{sorted(unknown_views)}"
                 )
-            dependency_roles[dependency_name] = tuple(roles_value)
+            dependency_views[dependency_name] = tuple(views_value)
 
         source_raw = _table(
             fileset.get("source_filesets", {}),
@@ -377,7 +382,7 @@ def _operating_variant(
                 fileset.get("filelist"),
                 f"variant {name}.filesets.{fileset_name}.filelist",
             ),
-            dependency_roles=MappingProxyType(dependency_roles),
+            dependency_views=MappingProxyType(dependency_views),
             source_filesets=MappingProxyType(source_filesets),
             required_capability=capability,
         )
@@ -642,7 +647,7 @@ def resolve_ip_integration_contract(
             or not isinstance(variant.source_document, Mapping)
             or not is_frozen_toml_document(variant.source_document)
             or any(
-                not isinstance(fileset.dependency_roles, _MAPPING_PROXY_TYPE)
+                not isinstance(fileset.dependency_views, _MAPPING_PROXY_TYPE)
                 or not isinstance(fileset.source_filesets, _MAPPING_PROXY_TYPE)
                 for fileset in variant.filesets.values()
             )

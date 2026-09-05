@@ -37,7 +37,7 @@ owner = "demo"
     )
     contract = _write(
         cell / "cell.toml",
-        '''schema = 1
+        '''schema = 2
 contract_kind = "verification-cell"
 path_scope = "cell"
 owner = "demo"

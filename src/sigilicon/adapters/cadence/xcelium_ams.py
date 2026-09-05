@@ -175,8 +175,8 @@ def _locked_native_release(
     if len(matches) != 1:
         raise ValueError("Xcelium AMS dependency release is missing or ambiguous")
     selected = matches[0]
-    roles = selected["roles"]
-    if circuit_selection.role not in roles:
+    roles = selected["views"]
+    if circuit_selection.view not in roles:
         raise ValueError("Xcelium AMS circuit role is not selected by its fileset")
     ref = ReleaseRef(selected["store"], selected["manifest_sha256"])
     try:
@@ -225,7 +225,7 @@ def _locked_native_release(
     ):
         raise ValueError("Xcelium AMS release is unavailable for simulation")
     try:
-        circuit_artifact = audited.role(export, circuit_selection.role)
+        circuit_artifact = audited.view(export, circuit_selection.view)
     except RuntimeError as exc:
         raise ValueError(
             "Xcelium AMS release circuit is missing or unsafe"
@@ -301,7 +301,7 @@ def _external_resource_identities(
     if not isinstance(dependency, str) or not isinstance(release_id, str):
         raise ValueError("Xcelium AMS release identity is incomplete")
     prefix = f"release:{dependency}:{release_id}"
-    selected[circuit.absolute()] = f"{prefix}/role/{ams.circuit.role}"
+    selected[circuit.absolute()] = f"{prefix}/view/{ams.circuit.view}"
     manifests = tuple(
         path
         for path in circuit_records

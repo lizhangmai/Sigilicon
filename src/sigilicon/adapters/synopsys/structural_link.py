@@ -144,7 +144,7 @@ def plan_structural_link(
     expected_unresolved_references: int,
     library_compiler_version: str,
     release_export: str,
-    liberty_role: str,
+    liberty_view: str,
     resources: Resources,
 ) -> StructuralLinkPlan:
     """Validate direct operation inputs and one exact locked release."""
@@ -166,14 +166,14 @@ def plan_structural_link(
         or expected_unresolved_references < 0
     ):
         raise ValueError("structural-link expected results are invalid")
-    if not dependency or not release_export or not liberty_role:
+    if not dependency or not release_export or not liberty_view:
         raise ValueError("structural-link release selection is incomplete")
     if _TOOL_VERSION.fullmatch(library_compiler_version) is None:
         raise ValueError("structural-link Library Compiler version is invalid")
 
     variant_document = _toml(variant_path, "variant")
     if (
-        variant_document.get("schema") != 1
+        variant_document.get("schema") != 2
         or variant_document.get("contract_kind") != "ip-operating-variant"
         or variant_document.get("owner") != owner
     ):
@@ -186,12 +186,12 @@ def plan_structural_link(
         raise ValueError("structural-link synthesis top is invalid")
     try:
         selected_variant = variant_document["integration"]["variant"]
-        selected_roles = variant_document["filesets"]["synthesis"][
-            "dependency_roles"
+        selected_views = variant_document["filesets"]["synthesis"][
+            "dependency_views"
         ][dependency]
     except (KeyError, TypeError) as exc:
         raise ValueError("structural-link variant omits its release selection") from exc
-    if selected_variant != variant or selected_roles != [liberty_role]:
+    if selected_variant != variant or selected_views != [liberty_view]:
         raise ValueError("structural-link variant release selection is inconsistent")
 
     lock = _toml(dependency_lock_path, "dependency lock")
@@ -241,7 +241,7 @@ def plan_structural_link(
     ):
         raise ValueError("structural-link release maturity is invalid")
     try:
-        liberty = audited.role(release_export, liberty_role)
+        liberty = audited.view(release_export, liberty_view)
     except RuntimeError as exc:
         raise ValueError(
             "structural-link release does not contain one macro Liberty"

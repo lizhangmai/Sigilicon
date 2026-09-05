@@ -62,7 +62,7 @@ _MAPPING_PROXY_TYPE = type(MappingProxyType({}))
 class ComponentRelease:
     export: str
     required_maturity: str
-    roles: tuple[str, ...]
+    views: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -126,11 +126,11 @@ def _component_release(value: object, label: str) -> ComponentRelease | None:
     if value is None:
         return None
     value = require_table(value, label)
-    required = {"export", "required_maturity", "roles"}
+    required = {"export", "required_maturity", "views"}
     if set(value) != required:
         raise ValueError(f"{label} fields must be exactly {sorted(required)}")
-    roles_raw = require_strings(
-        value.get("roles"), f"{label}.roles", nonempty=True
+    views_raw = require_strings(
+        value.get("views"), f"{label}.views", nonempty=True
     )
     return ComponentRelease(
         export=require_text(value.get("export"), f"{label}.export"),
@@ -138,7 +138,7 @@ def _component_release(value: object, label: str) -> ComponentRelease | None:
             value.get("required_maturity"),
             f"{label}.required_maturity",
         ),
-        roles=roles_raw,
+        views=views_raw,
     )
 
 

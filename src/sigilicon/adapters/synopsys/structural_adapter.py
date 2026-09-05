@@ -140,7 +140,7 @@ class StructuralLinkAdapter:
             "expected_unresolved_references",
             "library_compiler_version",
             "release_export",
-            "liberty_role",
+            "liberty_view",
             "timeout_seconds",
         }
     )
@@ -192,7 +192,7 @@ class StructuralLinkAdapter:
             "library_name",
             "macro_cell",
             "release_export",
-            "liberty_role",
+            "liberty_view",
         ):
             _text(config, name)
         _mapping(config, "parameter_overrides")
@@ -271,7 +271,7 @@ class StructuralLinkAdapter:
             ),
             library_compiler_version=_text(config, "library_compiler_version"),
             release_export=_text(config, "release_export"),
-            liberty_role=_text(config, "liberty_role"),
+            liberty_view=_text(config, "liberty_view"),
             resources=resources,
         )
         external = (
@@ -286,7 +286,7 @@ class StructuralLinkAdapter:
                 planning.release_sources[1],
                 identity=(
                     f"release:{_text(config, 'dependency')}:"
-                    f"{planning.release_id}/role/{_text(config, 'liberty_role')}"
+                    f"{planning.release_id}/view/{_text(config, 'liberty_view')}"
                 ),
             ),
         )

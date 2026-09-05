@@ -13,6 +13,7 @@ from sigilicon.contracts import (
     require_relative_path,
 )
 from sigilicon.domain.ip_release import (
+    IpCollateral,
     IpContract,
     IpExport,
     OaMixedSignalIpInterface,
@@ -54,6 +55,17 @@ def _table(value: object, label: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError(f"{label} must be a table")
     return value
+
+
+def _interface_views(exported: IpExport, roles: set[str]) -> dict[str, IpCollateral]:
+    """Resolve the singular interface views without discarding ambiguous matches."""
+    result = {}
+    for role in roles:
+        matches = [item for item in exported.collateral if item.role == role]
+        if len(matches) != 1:
+            raise ValueError(f"{exported.name}: interface role {role} requires one view, got {len(matches)}")
+        result[role] = matches[0]
+    return result
 
 
 def _interface_ports(value: object, label: str) -> dict[str, ModulePort]:
@@ -207,8 +219,7 @@ def _development_interface_check_with_design_inventory(
         raw = read_toml(interface_path)
     physical = _table(raw.get("physical_macro"), "physical_macro")
     transaction = _table(raw.get("transaction_boundary"), "transaction_boundary")
-    by_role = {item.role: item for item in exported.collateral}
-    required_roles = {
+    required_views = {
         "interface_contract",
         "oa_port_contract",
         "physical_blackbox",
@@ -216,8 +227,7 @@ def _development_interface_check_with_design_inventory(
         "transaction_model",
         "circuit_netlist",
     }
-    if not required_roles.issubset(by_role):
-        raise ValueError("development interface roles are incomplete")
+    by_role = _interface_views(exported, required_views)
 
     expected_physical = _identity_module(
         interface.physical, "interface.physical"
@@ -344,14 +354,12 @@ def _native_oa_development_interface_check(
         cell=interface.cell,
     )
 
-    by_role = {item.role: item for item in exported.collateral}
-    required_roles = {
+    required_views = {
         "interface_contract",
         "oa_port_contract",
         "circuit_netlist",
     }
-    if not required_roles.issubset(by_role):
-        raise ValueError("native OA development interface roles are incomplete")
+    by_role = _interface_views(exported, required_views)
     expected_contract = interface_path.relative_to(root).as_posix()
     if by_role["interface_contract"].source.as_posix() != expected_contract:
         raise ValueError("interface_contract source disagrees with the native OA interface")
@@ -462,14 +470,14 @@ def _rtl_development_interface_check(
     if not isinstance(source_value, str) or not source_value:
         raise ValueError("RTL interface module.source must be a project-relative path")
 
-    by_role = {item.role: item for item in exported.collateral}
-    required_roles = {"interface_contract", interface.source_role}
-    if not required_roles.issubset(by_role):
+    by_role = _interface_views(exported, {"interface_contract"})
+    by_name = {item.name: item for item in exported.collateral}
+    if "interface_contract" not in by_role or interface.source_view not in by_name:
         raise ValueError("RTL development interface roles are incomplete")
     expected_contract = interface_path.relative_to(root).as_posix()
     if by_role["interface_contract"].source.as_posix() != expected_contract:
         raise ValueError("interface_contract source disagrees with the RTL interface")
-    rtl_view = by_role[interface.source_role]
+    rtl_view = by_name[interface.source_view]
     if (
         rtl_view.module != interface.module
         or rtl_view.source.as_posix() != source_value
@@ -495,13 +503,13 @@ def _rtl_development_interface_check(
     )
 
 
-def _missing_roles(contract: IpContract, level: str) -> list[str]:
+def _missing_views(contract: IpContract, level: str) -> list[str]:
     missing: list[str] = []
     for exported in contract.exports:
-        present = {item.role for item in exported.collateral}
+        present = {item.name for item in exported.collateral}
         missing.extend(
             f"{exported.name}:{role}"
-            for role in sorted(set(exported.required_roles[level]) - present)
+            for role in sorted(set(exported.required_views[level]) - present)
         )
     return missing
 
@@ -513,9 +521,9 @@ def _release_semantics(
 
     assessments = {}
     for exported in contract.exports:
-        by_role = {item.role: item for item in exported.collateral}
+        by_name = {item.name: item for item in exported.collateral}
         def read_receipt(role: str):
-            source = _project_path(contract.project_root, Path(by_role[role].source), f"{role} source")
+            source = _project_path(contract.project_root, Path(by_name[role].source), f"{role} source")
             return read_json_object(source, f"{role} receipt")
         assessments[exported.name] = ExportSemantics.from_source(exported, level, collateral).assess(
             level, read_receipt,

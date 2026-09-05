@@ -23,7 +23,7 @@ ports = [{ name = "a", direction = "input", width = 1 }]
 ''')
     availability = {"simulation": True, "synthesis": False, "physical_implementation": False}
     manifest = {
-        "schema": 2,
+        "schema": 3,
         "contract_kind": "ip-release-manifest",
         "release_kind": "source-package",
         "ip_name": "fixture",
@@ -31,14 +31,14 @@ ports = [{ name = "a", direction = "input", width = 1 }]
         "source_commit": "a" * 40,
         "exports": [{
             "name": "fixture",
-            "interface": {"kind": "rtl", "contract": "interface.toml", "module": "fixture", "source_role": "payload"},
-            "maturity": {"required_roles": ["interface_contract", "payload"], "missing_items": []},
+            "interface": {"kind": "rtl", "contract": "interface.toml", "module": "fixture", "source_view": "payload"},
+            "maturity": {"required_views": ["interface_contract", "payload"], "missing_items": []},
             "availability": availability,
         }],
         "maturity": {"level": "development", "checks": [{"name": "interface", "passed": True}], "missing_items": []},
         "availability": availability,
         "views": [{
-            "export": "fixture", "role": role, "path": path.name, "source": path.name,
+            "export": "fixture", "name": role, "role": role, "path": path.name, "source": path.name,
             "size": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             "format": view_format, "module": "fixture" if role == "payload" else None,
             "capabilities": ["simulation"] if role == "payload" else [],

@@ -68,7 +68,7 @@ filesets = ["flow"]
         _write(
             root,
             f"ip/{owner}/component.toml",
-            f'''schema = 4
+            f'''schema = 5
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "{owner}"
@@ -86,7 +86,7 @@ source = ["manifest"]
     _write(
         root,
         "ip/example/component.toml",
-        '''schema = 4
+        '''schema = 5
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "example"

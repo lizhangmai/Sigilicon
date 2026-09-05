@@ -24,7 +24,7 @@ contract = "{contract.relative_to(root).as_posix()}"
 def _component(root: Path, name: str, children: tuple[str, ...] = ()) -> Path:
     path = root / f"ip/graph/{name}.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f'''schema = 4
+    path.write_text(f'''schema = 5
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "graph"
@@ -85,7 +85,7 @@ def test_source_library_is_a_first_class_component_kind(tmp_path: Path) -> None:
     source.write_text("VALUE = 1\n", encoding="utf-8")
     contract = tmp_path / "ip/shared/ip.toml"
     contract.write_text(
-        '''schema = 4
+        '''schema = 5
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "shared"
@@ -119,7 +119,7 @@ def test_component_lifecycle_is_typed_and_frozen(tmp_path: Path) -> None:
     source.write_text("VALUE = 1\n", encoding="utf-8")
     contract = tmp_path / "ip/shared/ip.toml"
     contract.write_text(
-        '''schema = 4
+        '''schema = 5
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "shared"
@@ -160,7 +160,7 @@ def test_component_filesets_only_compose_unique_source_identities(
     source.write_text("VALUE = 1\n", encoding="utf-8")
     contract = tmp_path / "ip/shared/ip.toml"
     contract.write_text(
-        '''schema = 4
+        '''schema = 5
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "shared"
@@ -199,7 +199,7 @@ def test_component_roles_reference_source_identities(tmp_path: Path) -> None:
     operations.write_text("operations\n", encoding="utf-8")
     contract = owner / "ip.toml"
     contract.write_text(
-        '''schema = 4
+        '''schema = 5
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "shared"
@@ -235,7 +235,7 @@ def test_component_snapshot_rejects_current_document_drift(tmp_path: Path) -> No
     source.write_text("VALUE = 1\n", encoding="utf-8")
     contract = tmp_path / "ip/shared/ip.toml"
     contract.write_text(
-        '''schema = 4
+        '''schema = 5
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "shared"
@@ -274,7 +274,7 @@ def test_owner_identity_captures_uncataloged_transitive_component(
     source.write_text("module leaf; endmodule\n", encoding="utf-8")
     leaf = tmp_path / "ip/leaf/component.toml"
     leaf.write_text(
-        '''schema = 4
+        '''schema = 5
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "leaf"
@@ -295,7 +295,7 @@ rtl = ["rtl"]
     top_source.write_text("module top; leaf child(); endmodule\n", encoding="utf-8")
     top = tmp_path / "ip/top/component.toml"
     top.write_text(
-        '''schema = 4
+        '''schema = 5
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "top"

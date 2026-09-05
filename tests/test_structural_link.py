@@ -50,13 +50,13 @@ def _fixture(
     link_script = _write(owner / "implementation/link.tcl", "exit\n")
     variant = _write(
         owner / "configs/variants/no_recovery.toml",
-        '''schema = 1
+        '''schema = 2
 contract_kind = "ip-operating-variant"
 path_scope = "variant"
 owner = "consumer"
 [filesets.synthesis]
 top_module = "consumer_top"
-[filesets.synthesis.dependency_roles]
+[filesets.synthesis.dependency_views]
 macro-provider = ["raw_macro_liberty_or_db"]
 [integration]
 variant = "no-recovery"
@@ -107,7 +107,7 @@ A = "input"
     views = [
         {
             "export": "macro-top",
-            "role": "interface_contract",
+            "name": "interface_contract", "role": "interface_contract",
             "path": "exports/native/interface.toml",
             "source": "ip/macro_provider/configs/interface.toml",
             "format": "toml",
@@ -116,7 +116,7 @@ A = "input"
         },
         {
             "export": "macro-top",
-            "role": "oa_port_contract",
+            "name": "oa_port_contract", "role": "oa_port_contract",
             "path": "exports/native/ports.toml",
             "source": "ip/macro_provider/configs/ports.toml",
             "format": "toml",
@@ -125,7 +125,7 @@ A = "input"
         },
         {
             "export": "macro-top",
-            "role": "circuit_netlist",
+            "name": "circuit_netlist", "role": "circuit_netlist",
             "path": "exports/native/circuit.scs",
             "format": "spectre-source",
             "composition": "reachable-spectre-hierarchy",
@@ -136,13 +136,13 @@ A = "input"
         },
         {
             "export": "macro-top",
-            "role": "raw_macro_liberty_or_db",
+            "name": "raw_macro_liberty_or_db", "role": "raw_macro_liberty_or_db",
             "path": "exports/native/synthesis/native.lib",
             "format": "liberty",
             "library": "native_macro",
             "cell": "NATIVE_TOP",
             "view": "structural_liberty",
-            "corner": "structural-uncharacterized",
+            "condition": {"corner": "structural-uncharacterized"},
             "capabilities": ["synthesis"],
             "size": liberty.stat().st_size,
             "sha256": hashlib.sha256(liberty.read_bytes()).hexdigest(),
@@ -153,7 +153,7 @@ A = "input"
     manifest.write_text(
         json.dumps(
             {
-                "schema": 2,
+                "schema": 3,
                 "contract_kind": "ip-release-manifest",
                 "release_kind": "source-package",
                 "release_id": "development-0123456789ab",
@@ -173,7 +173,7 @@ A = "input"
                             "kind": "oa-native",
                             "contract": "ip/macro_provider/configs/interface.toml",
                         },
-                        "maturity": {"required_roles": [
+                        "maturity": {"required_views": [
                             "interface_contract",
                             "oa_port_contract",
                             "circuit_netlist",
@@ -234,7 +234,7 @@ maturity = "development"
         expected_unresolved_references=0,
         library_compiler_version=_COMPAT_LC_VERSION,
         release_export="macro-top",
-        liberty_role="raw_macro_liberty_or_db",
+        liberty_view="raw_macro_liberty_or_db",
         resources=Resources(
             destinations={
                 "release-store.fixture": str(
