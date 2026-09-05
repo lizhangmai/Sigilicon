@@ -9,7 +9,6 @@ from sigilicon.execution._values import ContractError, ExecutionError
 from sigilicon.execution._io import ExecutionIO
 from sigilicon.execution._plan import PreflightCheck, Step
 from sigilicon.execution._resources import ResourceBinding, Resources
-from sigilicon.execution._source import Source
 from sigilicon.execution._result import StepResult
 from collections.abc import Mapping
 from pathlib import Path
@@ -76,7 +75,7 @@ class _StructuralLinkAction:
 
     def validate(self, context: ExecutionIO) -> None:
         for source in (*self.rtl_sources, self.compile_script, self.link_script):
-            context.owner_source_path(source)
+            context.source_path(source)
         context.resource_path(self.release_manifest_resource)
         context.resource_path(self.release_liberty_resource)
 
@@ -85,10 +84,10 @@ class _StructuralLinkAction:
         return replace(
             self.plan,
             rtl_sources=tuple(
-                context.owner_source_path(name) for name in self.rtl_sources
+                context.source_path(name) for name in self.rtl_sources
             ),
-            compile_script=context.owner_source_path(self.compile_script),
-            link_script=context.owner_source_path(self.link_script),
+            compile_script=context.source_path(self.compile_script),
+            link_script=context.source_path(self.link_script),
             release_liberty=context.resource_path(self.release_liberty_resource),
             release_sources=(
                 context.resource_path(self.release_manifest_resource),
@@ -198,8 +197,7 @@ class StructuralLinkAdapter:
         initial = step
         config = self._config(initial)
         owner = _text(config, "owner")
-        owner_root = project.owner(owner).root
-        project_root = project.project_root
+        project.owner(owner)
         lock_name = _safe_relative(
             _text(config, "dependency_lock"), "dependency lock"
         )
@@ -221,22 +219,27 @@ class StructuralLinkAdapter:
             variant_name,
             compile_name,
             link_name,
-            *rtl_names,
         )
-        captured_sources = [
-            ("owner", Source.capture(owner_root / name, root=owner_root, scope="owner"))
-            for name in owner_names
-        ]
-        by_location = {source.location: source for _scope, source in captured_sources}
+        by_name = {source.path: source for source in initial.source_closure}
+        missing = tuple(name for name in (*owner_names, *rtl_names) if name not in by_name)
+        if missing:
+            raise ContractError(
+                "structural-link source closure is missing declared sources: "
+                f"{sorted(set(missing))}"
+            )
+        if any(by_name[name].scope != "owner" for name in owner_names):
+            raise ContractError(
+                "structural-link configuration sources must belong to the owner"
+            )
         planning = plan_structural_link(
             owner=owner,
             dependency=_text(config, "dependency"),
-            dependency_lock_path=by_location[owner_root / lock_name].location,
-            variant_path=by_location[owner_root / variant_name].location,
+            dependency_lock_path=by_name[lock_name].location,
+            variant_path=by_name[variant_name].location,
             variant=_text(config, "variant"),
-            rtl_sources=tuple(by_location[owner_root / name].location for name in rtl_names),
-            compile_script=by_location[owner_root / compile_name].location,
-            link_script=by_location[owner_root / link_name].location,
+            rtl_sources=tuple(by_name[name].location for name in rtl_names),
+            compile_script=by_name[compile_name].location,
+            link_script=by_name[link_name].location,
             library_name=_text(config, "library_name"),
             macro_cell=_text(config, "macro_cell"),
             parameter_overrides=_mapping(config, "parameter_overrides"),
@@ -267,7 +270,8 @@ class StructuralLinkAdapter:
                 ),
             ),
         )
-        if any(not source.current() for _scope, source in captured_sources):
+        captured_sources = tuple(by_name[name] for name in (*owner_names, *rtl_names))
+        if any(not source.current() for source in captured_sources):
             raise ContractError(
                 "structural-link input changed while its Step was being prepared"
             )
@@ -289,7 +293,7 @@ class StructuralLinkAdapter:
         )
         return AdapterPreparation(
             action=structural_link,
-            sources=tuple(source for _scope, source in captured_sources),
+            sources=captured_sources,
             resources=external,
         )
 

@@ -54,14 +54,14 @@ contract = "ip/example/component.toml"
     _write(
         root,
         "ip/example/configs/operations.toml",
-        '''schema = 4
+        '''schema = 5
 contract_kind = "owner-operations"
 path_scope = "owner"
 owner = "example"
 
 [operations.check]
 uses = "fake.check"
-filesets = ["flow"]
+filesets = [{ component = "example", fileset = "flow" }]
 ''',
     )
     for owner in ("alpha", "beta", "compute"):

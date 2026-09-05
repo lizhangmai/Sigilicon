@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import tomllib
 from typing import TYPE_CHECKING, Any
 
@@ -13,6 +13,7 @@ from sigilicon.execution._values import ContractError, adapter_identity
 from sigilicon.execution._plan import Evidence, ExecutionPlan, RuntimeEnvironment, Step
 from sigilicon.execution._source import Source
 from sigilicon.paths import validate_artifact_component
+from sigilicon.source import ComponentFilesetReference
 
 if TYPE_CHECKING:
     from sigilicon.project import Project
@@ -66,6 +67,37 @@ def _strings(value: object, field: str, *, required: bool = False) -> tuple[str,
     result = tuple(value)
     if len(result) != len(set(result)):
         raise ContractError(f"{field} contains duplicates")
+    return result
+
+
+def _fileset_references(
+    value: object,
+    field: str,
+) -> tuple[ComponentFilesetReference, ...]:
+    if not isinstance(value, list) or not value:
+        raise ContractError(f"{field} must be a non-empty array of component filesets")
+    references: list[ComponentFilesetReference] = []
+    for index, raw in enumerate(value):
+        if not isinstance(raw, Mapping):
+            raise ContractError(
+                f"{field}[{index}] must be a component/fileset table"
+            )
+        if set(raw) != {"component", "fileset"}:
+            raise ContractError(
+                f"{field}[{index}] must contain exactly component and fileset"
+            )
+        try:
+            references.append(
+                ComponentFilesetReference(
+                    _name(raw.get("component"), f"{field}[{index}].component"),
+                    _name(raw.get("fileset"), f"{field}[{index}].fileset"),
+                )
+            )
+        except ValueError as exc:
+            raise ContractError(str(exc)) from exc
+    result = tuple(references)
+    if len(result) != len(set(result)):
+        raise ContractError(f"{field} contains duplicate component filesets")
     return result
 
 
@@ -164,53 +196,24 @@ def _operation_identity(value: object, field: str) -> tuple[str, str | None]:
 
 
 def _fileset_sources(
-    fileset_names: tuple[str, ...],
+    project: Project,
+    owner: str,
+    fileset_references: tuple[ComponentFilesetReference, ...],
     *,
-    component_filesets: Mapping[str, tuple[PurePosixPath, ...]],
-    owner_root: Path,
-    project_root: Path,
     field: str,
 ) -> tuple[Source, ...]:
-    selected: list[Source] = []
-    seen: set[str] = set()
-    for index, raw_name in enumerate(fileset_names):
-        name = _name(raw_name, f"{field}[{index}]")
-        try:
-            paths = component_filesets[name]
-        except KeyError as exc:
-            raise ContractError(
-                f"{field} references unknown component fileset {name!r}; "
-                f"available: {sorted(component_filesets)}"
-            ) from exc
-        if not isinstance(paths, tuple) or not paths:
-            raise ContractError(f"component fileset {name!r} is empty or malformed")
-        for relative in paths:
-            if not isinstance(relative, PurePosixPath):
-                raise ContractError(f"component fileset {name!r} is malformed")
-            path = project_root.joinpath(*relative.parts)
-            resolved = path.resolve()
-            if (
-                path.absolute() != resolved
-                or not resolved.is_relative_to(owner_root)
-                or not resolved.is_file()
-            ):
-                raise ContractError(
-                    f"component fileset {name!r} contains unsafe owner source: {relative}"
-                )
-            source = Source.capture(resolved, root=owner_root, scope="owner")
-            if source.path not in seen:
-                selected.append(source)
-                seen.add(source.path)
-    return tuple(selected)
+    try:
+        return project.resolve_source_filesets(owner, fileset_references)
+    except (ContractError, ValueError) as exc:
+        raise ContractError(f"{field} contains an invalid component fileset: {exc}") from exc
 
 
 def _step(
+    project: Project,
+    owner: str,
     raw: Mapping[str, Any],
     *,
     field: str,
-    component_filesets: Mapping[str, tuple[PurePosixPath, ...]],
-    owner_root: Path,
-    project_root: Path,
     runtime_profiles: Mapping[str, RuntimeEnvironment],
     runtime_defaults: Mapping[str, str],
     config_profiles: Mapping[str, Mapping[str, Any]],
@@ -223,12 +226,11 @@ def _step(
     uses = raw.get("uses")
     if not isinstance(uses, str):
         raise ContractError(f"{field}.uses must be an adapter identity")
-    filesets = _strings(raw.get("filesets"), f"{field}.filesets", required=True)
+    filesets = _fileset_references(raw.get("filesets"), f"{field}.filesets")
     sources = _fileset_sources(
+        project,
+        owner,
         filesets,
-        component_filesets=component_filesets,
-        owner_root=owner_root,
-        project_root=project_root,
         field=f"{field}.filesets",
     )
     step = Step(
@@ -269,8 +271,6 @@ def _compile_operation(
         raise ValueError(f"owner {selected_owner.name!r} has no operation catalog")
     path = project.project_root.joinpath(*relative.parts).absolute()
     root = selected_owner.root.resolve()
-    repository_root = project.project_root.resolve()
-    component_filesets = selected_owner.component.filesets
     if path.resolve() != path or not path.is_relative_to(root):
         raise ContractError("operation catalog must be a non-symlink owner source")
     try:
@@ -356,6 +356,8 @@ def _compile_operation(
             )
         compiled.append(
             _step(
+                project,
+                owner,
                 {
                     "uses": uses,
                     "filesets": definition.get("filesets"),
@@ -365,9 +367,6 @@ def _compile_operation(
                     "evidence": definition.get("evidence"),
                 },
                 field=f"operations.{identity}",
-                component_filesets=component_filesets,
-                owner_root=root,
-                project_root=repository_root,
                 runtime_profiles=runtime_profiles,
                 runtime_defaults=runtime_defaults,
                 config_profiles=config_profiles,
@@ -385,11 +384,10 @@ def _compile_operation(
             raise ContractError(f"operations.{identity}.steps must be a non-empty array")
         compiled.extend(
             _step(
+                project,
+                owner,
                 _table(value, f"operations.{identity}.steps[{index}]"),
                 field=f"operations.{identity}.steps[{index}]",
-                component_filesets=component_filesets,
-                owner_root=root,
-                project_root=repository_root,
                 runtime_profiles=runtime_profiles,
                 runtime_defaults=runtime_defaults,
                 config_profiles=config_profiles,
@@ -400,10 +398,12 @@ def _compile_operation(
     catalog_source = Source.capture(path, root=root, scope="owner")
     if catalog_source.read_text() != record_text:
         raise ContractError("operation catalog changed while it was being parsed")
-    unique_sources: dict[str, Source] = {catalog_source.path: catalog_source}
+    unique_sources: dict[tuple[Path, str], Source] = {
+        (catalog_source.root, catalog_source.path): catalog_source
+    }
     for _step_value, sources in compiled:
         for source in sources:
-            unique_sources.setdefault(source.path, source)
+            unique_sources.setdefault((source.root, source.path), source)
     return ExecutionPlan(
         project_identity=project.operation_identity(selected_owner.name),
         owner=owner,

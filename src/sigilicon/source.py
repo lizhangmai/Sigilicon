@@ -23,3 +23,15 @@ class SourceReference:
     @property
     def record(self) -> dict[str, str | None]:
         return {"component": self.component, "source": self.source}
+
+
+@dataclass(frozen=True)
+class ComponentFilesetReference:
+    """One explicitly qualified fileset selected by an owner operation."""
+
+    component: str
+    fileset: str
+
+    def __post_init__(self) -> None:
+        validate_artifact_component(self.component, "fileset component")
+        validate_artifact_component(self.fileset, "fileset name")

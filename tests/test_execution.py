@@ -265,7 +265,7 @@ value = ["value"]
     (owner / "configs/value.txt").write_text("hello\n", encoding="utf-8")
     operations = owner / "configs/operations.toml"
     operations.write_text(
-        """schema = 4
+        """schema = 5
 contract_kind = "owner-operations"
 path_scope = "owner"
 owner = "example"
@@ -281,14 +281,14 @@ text = "profile"
 
 [operations.check]
 uses = "fake.copy"
-filesets = ["value"]
+filesets = [{ component = "example", fileset = "value" }]
 config_profile = "copy"
 config = { text = "hello" }
 evidence = { role = "regression", level = "l0", scope = "source" }
 
 [operations."check@fast"]
 uses = "fake.copy"
-filesets = ["value"]
+filesets = [{ component = "example", fileset = "value" }]
 config_profile = "copy"
 evidence = { role = "regression", level = "l0", scope = "source" }
 
@@ -297,14 +297,14 @@ evidence = { role = "regression", level = "l0", scope = "source" }
 [[operations.all.steps]]
 id = "source"
 uses = "fake.copy"
-filesets = ["value"]
+filesets = [{ component = "example", fileset = "value" }]
 config = { text = "hello" }
 
 [[operations.all.steps]]
 id = "transform"
 uses = "fake.upper"
 needs = ["source"]
-filesets = ["value"]
+filesets = [{ component = "example", fileset = "value" }]
 """,
         encoding="utf-8",
     )
@@ -375,7 +375,7 @@ def test_large_chain_execution_does_not_rescan_the_global_source_set(
             "[[operations.scale.steps]]\n"
             f'id = "step-{index}"\n'
             'uses = "fake.noop"\n'
-            'filesets = ["value"]\n'
+            'filesets = [{ component = "example", fileset = "value" }]\n'
             + (f'needs = ["step-{index - 1}"]\n' if index else "")
         )
         for index in range(250)
@@ -512,14 +512,14 @@ operation_catalog = ["operations"]
     )
     operations = foreign / "configs/operations.toml"
     operations.write_text(
-        '''schema = 4
+        '''schema = 5
 contract_kind = "owner-operations"
 path_scope = "owner"
 owner = "foreign"
 
 [operations.check]
 uses = "fake.copy"
-filesets = ["operation_catalog"]
+filesets = [{ component = "foreign", fileset = "operation_catalog" }]
 ''',
         encoding="utf-8",
     )
@@ -725,13 +725,13 @@ def test_resource_binding_includes_its_configured_location(tmp_path: Path) -> No
 def test_execution_plan_is_stable_across_project_processes(tmp_path: Path) -> None:
     from sigilicon.adapters.cadence.rtl_adapter import SpectreAdapter
     operations = _write_project(tmp_path)
-    operations.write_text('''schema = 4
+    operations.write_text('''schema = 5
 contract_kind = "owner-operations"
 path_scope = "owner"
 owner = "example"
 [operations.check]
 uses = "cadence.spectre"
-filesets = ["value"]
+filesets = [{ component = "example", fileset = "value" }]
 config = { deck = "configs/value.txt", outputs = ["wave.prn"], timeout_seconds = 1 }
 ''')
     manifest = tmp_path / "sigilicon.toml"
@@ -1015,9 +1015,9 @@ def test_operation_rejects_source_globs(tmp_path: Path) -> None:
     operations = _write_project(tmp_path)
     operations.write_text(
         operations.read_text(encoding="utf-8").replace(
-            'filesets = ["value"]\nconfig_profile = "copy"\n'
+            'filesets = [{ component = "example", fileset = "value" }]\nconfig_profile = "copy"\n'
             'config = { text = "hello" }',
-            'filesets = ["value"]\nconfig_profile = "copy"\n'
+            'filesets = [{ component = "example", fileset = "value" }]\nconfig_profile = "copy"\n'
             'source_globs = ["rtl/**/*.sv"]\n'
             'config = { text = "hello" }',
             1,

@@ -111,7 +111,7 @@ def _allowed_files(
     for dependency_name, source_fileset in fileset.source_filesets.items():
         allowed.update(
             (root / Path(relative)).resolve()
-            for relative in graph[dependency_name].filesets[source_fileset]
+            for relative in graph[dependency_name].fileset_paths(source_fileset)
         )
     return allowed
 

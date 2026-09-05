@@ -149,7 +149,7 @@ def _verification_project(root: Path, *, origin: str, check: str = "drc") -> Pat
         "ip/example/policy.toml", "ip/example/layout.gds", "ip/example/source.cdl",
     )})
     component.write_text(component.read_text().replace('[sources]', 'operation_catalog = "operations"\n\n[sources]\noperations = "ip/example/operations.toml"'))
-    prefix = '''schema = 4
+    prefix = '''schema = 5
 contract_kind = "owner-operations"
 path_scope = "owner"
 owner = "example"
@@ -159,7 +159,7 @@ owner = "example"
     emit = '''[[operations.verify.steps]]
 id = "export"
 uses = "fake.stream"
-filesets = ["verify"]
+filesets = [{ component = "example", fileset = "verify" }]
 config = {}
 
 ''' if origin != "source" else ""
@@ -168,7 +168,7 @@ config = {}
 id = "verify"
 uses = "mentor.calibre"
 needs = {['export'] if origin != 'source' else []}
-filesets = ["verify"]
+filesets = [{{ component = "example", fileset = "verify" }}]
 evidence = {{ role = "diagnostic", level = "l1", scope = "offline" }}
 config = {{ owner = "example", cell = "TOP", check = "{check}", platform = "testpdk", policy = "policy.toml", layout = {{ {selection} }}, source = {{ source = "source.cdl" }}, timeout_seconds = 10 }}
 ''')
@@ -370,7 +370,7 @@ layout = "ip/example/cells/TOP/layout.toml"''').replace("[filesets]", '[filesets
         stream.write('''
 [operations.export]
 uses = "cadence.oa-export"
-filesets = ["oa_source"]
+filesets = [{ component = "example", fileset = "oa_source" }]
 config = { owner = "example", cell = "TOP", view = "layout", timeout_seconds = 60 }
 ''')
     manifest = tmp_path / "sigilicon.toml"

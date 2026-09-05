@@ -22,13 +22,13 @@ def test_graph_owned_generator_dependencies_enter_managed_plan(tmp_path: Path, m
     component.write_text(component.read_text().replace(
         'kind = "rtl-ip"', 'kind = "rtl-ip"\noperation_catalog = "operations"'
     ).replace('[sources]', '[sources]\noperations = "ip/example/operations.toml"'))
-    (root / "ip/example/operations.toml").write_text('''schema = 4
+    (root / "ip/example/operations.toml").write_text('''schema = 5
 contract_kind = "owner-operations"
 path_scope = "owner"
 owner = "example"
 [operations.layout]
 uses = "cadence.layout"
-filesets = ["layout_generation"]
+filesets = [{ component = "example", fileset = "layout_generation" }]
 config = { owner = "example", spec = "cell/layout.toml", timeout_seconds = 30 }
 ''')
     with (root / "sigilicon.toml").open("a") as stream:

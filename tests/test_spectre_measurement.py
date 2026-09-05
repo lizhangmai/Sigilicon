@@ -33,13 +33,13 @@ def measurement(request):
     return {"measurements": {"passed": mode == "pass", "samples": 1},
             "normalized_csv": "time,value\n0,1\n"}
 ''')
-    write_file(owner / "operations.toml", f'''schema = 4
+    write_file(owner / "operations.toml", f'''schema = 5
 contract_kind = "owner-operations"
 path_scope = "owner"
 owner = "fixture"
 [operations.measure]
 uses = "cadence.spectre"
-filesets = ["measurement"]
+filesets = [{{ component = "fixture", fileset = "measurement" }}]
 config = {{ program = "measure.py", spec = "spec.toml", circuit = "circuit.scs", inputs = {json.dumps(inputs)}, platform = "testpdk", model_set = "nominal", parameters = {{ mode = "{mode}" }}, timeout_seconds = 10 }}
 evidence = {{ role = "regression", level = "l1", scope = "fixture" }}
 ''')

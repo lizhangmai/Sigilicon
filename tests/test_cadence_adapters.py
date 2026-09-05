@@ -26,13 +26,13 @@ def test_xcelium_static_contract_fails_during_plan_and_check(
     tmp_path: Path, config: str, hdl: bool, error: str,
 ) -> None:
     _file(tmp_path / "ip/fixture/top.sv", "module top; endmodule\n")
-    _file(tmp_path / "ip/fixture/operations.toml", f'''schema = 4
+    _file(tmp_path / "ip/fixture/operations.toml", f'''schema = 5
 contract_kind = "owner-operations"
 path_scope = "owner"
 owner = "fixture"
 [operations.rtl]
 uses = "cadence.xcelium"
-filesets = ["rtl"]
+filesets = [{{ component = "fixture", fileset = "rtl" }}]
 config = {{ {config} }}
 ''')
     component = write_component_owner(tmp_path, "fixture", filesets={
@@ -110,13 +110,13 @@ def test_xcelium_backend_requires_explicit_sources_and_completion_marker(
     root = tmp_path
     _file(root / "ip/example/rtl/design.sv", "module design; endmodule\n")
     _file(root / "ip/example/dv/testbench.sv", "module testbench; endmodule\n")
-    _file(root / "ip/example/operations.toml", f'''schema = 4
+    _file(root / "ip/example/operations.toml", f'''schema = 5
 contract_kind = "owner-operations"
 path_scope = "owner"
 owner = "example"
 [operations.rtl]
 uses = "cadence.xcelium"
-filesets = ["rtl"]
+filesets = [{{ component = "example", fileset = "rtl" }}]
 config = {{ success_marker = "{marker}", timeout_seconds = 10 }}
 ''')
     component = write_component_owner(root, "example", filesets={

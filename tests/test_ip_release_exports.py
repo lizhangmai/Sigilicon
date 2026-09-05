@@ -103,14 +103,14 @@ def _write_release_operation(configs: Path, owner: str) -> None:
         exist_ok=True,
     )
     (configs / "operations.toml").write_text(
-        f'''schema = 4
+        f'''schema = 5
 contract_kind = "owner-operations"
 path_scope = "owner"
 owner = "{owner}"
 
 [operations.release]
 uses = "sigilicon.ip-release"
-filesets = ["release"]
+filesets = [{{ component = "{owner}", fileset = "release" }}]
 config = {{ owner = "{owner}", maturity = "development" }}
 ''',
         encoding="utf-8",

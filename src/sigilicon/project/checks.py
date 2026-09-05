@@ -39,7 +39,7 @@ def _architecture_source_documents(
         owner = context.require_owner(component.path)
         if component.owner != owner.name:
             raise ValueError("architecture component owner identity drift")
-        for relative in component.filesets.get("architecture", ()):
+        for relative in component.fileset_paths("architecture"):
             path = (root / relative).resolve()
             if path.suffix != ".toml":
                 continue

@@ -150,7 +150,7 @@ class SpectreAdapter:
             staged[f"source:{name}"] = workspace.copy_file(
                 "inputs",
                 destination,
-                context.owner_source_path(name),
+                context.source_path(name),
             )
         if step.runtime.files:
             workspace.directory("inputs", "runtime")
@@ -276,7 +276,7 @@ class XceliumAdapter:
         if not isinstance(action, _XceliumAction):
             raise ExecutionError("Xcelium Step has no typed action")
         source_names = action.sources
-        sources = tuple(context.owner_source_path(source) for source in source_names)
+        sources = tuple(context.source_path(source) for source in source_names)
         timeout, marker = action.timeout_seconds, action.success_marker
         with owned_scratch_directory(
             prefix=f"sigilicon-xcelium-{context.run_id}-"

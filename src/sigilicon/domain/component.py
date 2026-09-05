@@ -8,6 +8,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
 
 from sigilicon.paths import validate_artifact_component
+from sigilicon.source import ComponentFilesetReference, SourceReference
 
 from sigilicon.contracts import (
     DocumentStore,
@@ -83,7 +84,7 @@ class ComponentContract:
     lifecycle: str
     public_interface: PurePosixPath | None
     sources: Mapping[str, PurePosixPath]
-    filesets: Mapping[str, tuple[PurePosixPath, ...]]
+    filesets: Mapping[str, tuple[str, ...]]
     components: tuple[ComponentDependency, ...]
     variants: Mapping[str, PurePosixPath]
     implementations: Mapping[str, PurePosixPath]
@@ -91,6 +92,11 @@ class ComponentContract:
     operation_catalog: PurePosixPath | None = None
     release_contract: PurePosixPath | None = None
     dependency_lock: PurePosixPath | None = None
+
+    def fileset_paths(self, name: str) -> tuple[PurePosixPath, ...]:
+        """Resolve one fileset's source identities to its declared paths."""
+
+        return tuple(self.sources[source] for source in self.filesets.get(name, ()))
 
 
 def _source_role(
@@ -218,7 +224,7 @@ def _parse_component_contract(
     filesets_raw = document.get("filesets", {})
     if not isinstance(filesets_raw, Mapping):
         raise ValueError("filesets must be a TOML table")
-    filesets: dict[str, tuple[PurePosixPath, ...]] = {}
+    filesets: dict[str, tuple[str, ...]] = {}
     for name, values in filesets_raw.items():
         if not isinstance(name, str) or not name:
             raise ValueError("fileset names must be non-empty strings")
@@ -235,7 +241,7 @@ def _parse_component_contract(
                 f"filesets.{name} references unknown sources: "
                 f"{sorted(unknown_sources)}"
             )
-        filesets[name] = tuple(sources[identity] for identity in identities)
+        filesets[name] = identities
 
     dependencies_raw = document.get("component", [])
     if not isinstance(dependencies_raw, (list, tuple)):
@@ -516,3 +522,57 @@ def resolve_component_source(
         raise ValueError(
             f"component {component!r} has no source {source!r}"
         ) from exc
+
+
+def resolve_component_fileset(
+    graph: Mapping[str, ComponentContract],
+    root_component: str,
+    reference: ComponentFilesetReference,
+) -> tuple[tuple[SourceReference, PurePosixPath], ...]:
+    """Resolve one source-level graph fileset to qualified source identities."""
+
+    if root_component not in graph:
+        raise ValueError(f"unknown root component: {root_component!r}")
+    reachable: set[str] = set()
+    pending = [root_component]
+    while pending:
+        component_name = pending.pop()
+        if component_name in reachable:
+            continue
+        try:
+            component = graph[component_name]
+        except KeyError as exc:
+            raise ValueError(
+                f"component graph is missing dependency {component_name!r}"
+            ) from exc
+        reachable.add(component_name)
+        pending.extend(
+            dependency.name
+            for dependency in component.components
+            if dependency.release is None
+        )
+    if reference.component not in reachable:
+        raise ValueError(
+            f"component {reference.component!r} is not a source-level dependency "
+            f"of {root_component!r}"
+        )
+    try:
+        component = graph[reference.component]
+        source_ids = component.filesets[reference.fileset]
+    except KeyError as exc:
+        raise ValueError(
+            f"component {reference.component!r} has no fileset "
+            f"{reference.fileset!r}"
+        ) from exc
+    if not source_ids:
+        raise ValueError(
+            f"component {reference.component!r} fileset "
+            f"{reference.fileset!r} is empty"
+        )
+    return tuple(
+        (
+            SourceReference(reference.component, source_id),
+            component.sources[source_id],
+        )
+        for source_id in source_ids
+    )

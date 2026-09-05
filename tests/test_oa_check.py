@@ -316,13 +316,13 @@ def test_managed_oa_plan_uses_the_owner_selected_assembly_path(tmp_path: Path) -
     component.write_text(component.read_text().replace(
         "configs/oa.toml", "configs/native_assembly.toml"
     ).replace("[sources]", '\noperation_catalog = "operations"\n\n[sources]\noperations = "ip/fixture/configs/operations.toml"'))
-    (owner / "configs/operations.toml").write_text('''schema = 4
+    (owner / "configs/operations.toml").write_text('''schema = 5
 contract_kind = "owner-operations"
 path_scope = "owner"
 owner = "fixture"
 [operations.check]
 uses = "cadence.oa-check"
-filesets = ["oa_source"]
+filesets = [{ component = "fixture", fileset = "oa_source" }]
 config = { owner = "fixture", timeout_seconds = 30 }
 ''')
     project = Project.open(tmp_path)
@@ -354,13 +354,13 @@ def test_oa_rebuild_captures_text_import_compiler_dependency(
         'operations = "ip/fixture/configs/operations.toml"\n'
         f'model = "ip/fixture/cells/MODEL/{source_name}"'
     ).replace('oa_source = [', 'oa_source = ["model", '))
-    (owner / "configs/operations.toml").write_text('''schema = 4
+    (owner / "configs/operations.toml").write_text('''schema = 5
 contract_kind = "owner-operations"
 path_scope = "owner"
 owner = "fixture"
 [operations.rebuild]
 uses = "cadence.oa-rebuild"
-filesets = ["oa_source"]
+filesets = [{ component = "fixture", fileset = "oa_source" }]
 config = { owner = "fixture", timeout_seconds = 30 }
 ''')
     project_contract = tmp_path / "sigilicon.toml"
@@ -425,13 +425,13 @@ views = [
         "[sources]", '\noperation_catalog = "operations"\n\n[sources]\n'
         'operations = "ip/fixture/configs/operations.toml"\n' + declarations
     ).replace('oa_source = [', 'oa_source = ["tb_0", "tb_1", "tb_2", "tb_3", '))
-    (owner / "configs/operations.toml").write_text('''schema = 4
+    (owner / "configs/operations.toml").write_text('''schema = 5
 contract_kind = "owner-operations"
 path_scope = "owner"
 owner = "fixture"
 [operations.simulate]
 uses = "cadence.native-oa"
-filesets = ["oa_source"]
+filesets = [{ component = "fixture", fileset = "oa_source" }]
 config = { owner = "fixture", testbench = "tb", timeout_seconds = 30 }
 ''')
     with (tmp_path / "sigilicon.toml").open("a") as stream:

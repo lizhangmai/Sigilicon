@@ -108,7 +108,8 @@ python = ["library"]
     assert loaded.kind == "source-library"
     assert loaded.lifecycle == "active"
     assert loaded.sources["library"].as_posix() == "ip/shared/library.py"
-    assert loaded.filesets["python"] == (loaded.sources["library"],)
+    assert loaded.filesets["python"] == ("library",)
+    assert loaded.fileset_paths("python") == (loaded.sources["library"],)
     with pytest.raises(TypeError):
         loaded.filesets["python"] = ()
 

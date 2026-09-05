@@ -28,9 +28,10 @@ from sigilicon.domain.component import (
     ComponentContract,
     _parse_component_contract,
     load_component_graph,
+    resolve_component_fileset,
     resolve_component_graph,
 )
-from sigilicon.source import SourceReference
+from sigilicon.source import ComponentFilesetReference, SourceReference
 from sigilicon.paths import ProjectContext, validate_artifact_component
 from sigilicon.execution._values import ContractError, resource_identity
 from sigilicon.execution._resources import Resources
@@ -138,7 +139,7 @@ class RepositoryOwner:
     def files(self, fileset: str) -> tuple[Path, ...]:
         return tuple(
             (self.component.project_root / Path(path)).resolve()
-            for path in self.component.filesets.get(fileset, ())
+            for path in self.component.fileset_paths(fileset)
         )
 
     @property
@@ -384,6 +385,77 @@ class Project:
 
         visit(graph[selected.component.name])
         return MappingProxyType(inventory)
+
+    def resolve_source_filesets(
+        self,
+        owner: str,
+        references: tuple[ComponentFilesetReference, ...],
+    ) -> tuple[Source, ...]:
+        """Capture explicitly selected source-level component filesets."""
+
+        selected = self.owner(owner)
+        graph = self._require_owner_snapshot(selected)
+        inventory = self.source_inventory(selected.name)
+        project_root = self.project_root.resolve()
+        owner_root = selected.root.resolve()
+        captured: list[Source] = []
+        seen_locations: dict[Path, SourceReference] = {}
+        seen_sources: set[tuple[Path, str]] = set()
+        for reference in references:
+            try:
+                resolved_sources = resolve_component_fileset(
+                    graph,
+                    selected.component.name,
+                    reference,
+                )
+            except ValueError as exc:
+                raise ContractError(
+                    f"{reference.component}:{reference.fileset}: {exc}"
+                ) from exc
+            component = graph[reference.component]
+            for source_reference, relative in resolved_sources:
+                configured = project_root.joinpath(*relative.parts)
+                resolved = configured.resolve()
+                if (
+                    configured.absolute() != resolved
+                    or not resolved.is_relative_to(component.root)
+                    or not resolved.is_file()
+                ):
+                    raise ContractError(
+                        "component fileset source is missing or outside its owner: "
+                        f"{source_reference.component}:{source_reference.source}"
+                    )
+                previous_reference = seen_locations.get(resolved)
+                if (
+                    previous_reference is not None
+                    and previous_reference != source_reference
+                ):
+                    raise ContractError(
+                        f"component source path has multiple identities: {resolved}"
+                    )
+                seen_locations[resolved] = source_reference
+                declared = inventory.get(resolved)
+                if declared != source_reference:
+                    raise ContractError(
+                        "component source identity disagrees with the project graph: "
+                        f"{resolved}"
+                    )
+                actual_owner = self.owner_for(resolved)
+                if actual_owner is selected:
+                    source_root, scope = owner_root, "owner"
+                elif resolved.is_relative_to(project_root):
+                    source_root, scope = project_root, "project"
+                else:
+                    raise ContractError(
+                        f"component fileset source escapes the project: {resolved}"
+                    )
+                source = Source.capture(resolved, root=source_root, scope=scope)
+                source = replace(source, reference=source_reference)
+                key = (source.root, source.path)
+                if key not in seen_sources:
+                    captured.append(source)
+                    seen_sources.add(key)
+        return tuple(captured)
 
     def configuration_documents(self) -> DocumentStore:
         """Return the immutable TOML closure captured when this Project opened."""

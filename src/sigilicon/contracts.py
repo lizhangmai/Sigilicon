@@ -22,7 +22,7 @@ _CONFIG_SCHEMAS = {
     "ip-release": 3,
     "ip-operating-variant": 2,
     "verification-cell": 2,
-    "owner-operations": 4,
+    "owner-operations": 5,
 }
 PATH_SCOPES = frozenset(
     {"repository", "owner", "cell", "verification", "platform", "variant"}
