@@ -169,5 +169,5 @@ def test_architecture_inventory_rejects_cross_owner_sources(
         },
     )
 
-    with pytest.raises(ValueError, match="cataloged root|architecture fileset source"):
+    with pytest.raises(ValueError, match="declared owner root|architecture fileset source"):
         repository_checks.inspect_repository_designs(Project.open(tmp_path))

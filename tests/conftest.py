@@ -78,7 +78,7 @@ artifact_root = "artifacts"
     catalogs = root / "catalogs"
     catalogs.mkdir(exist_ok=True)
     (catalogs / "ip.toml").write_text(
-        '''schema = 1
+        '''schema = 2
 contract_kind = "ip-catalog"
 path_scope = "repository"
 owner = "test"
@@ -125,10 +125,11 @@ def write_component_owner(
         rendered = ", ".join(f'"{source_ids[value]}"' for value in values)
         fileset_lines.append(f"{name} = [{rendered}]")
     component.write_text(
-        f'''schema = 3
+        f'''schema = 4
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "{owner}"
+root = "ip/{owner}"
 
 name = "{owner}"
 kind = "rtl-ip"
@@ -147,7 +148,6 @@ kind = "rtl-ip"
         source
         + f'''\n[components.{owner}]
 contract = "ip/{owner}/component.toml"
-root = "ip/{owner}"
 ''',
         encoding="utf-8",
     )

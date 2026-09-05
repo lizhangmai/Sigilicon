@@ -131,10 +131,11 @@ def _contract_fixture(root: Path) -> Path:
             f"name = '{name}'\n", encoding="utf-8"
         )
     (configs / "ip.toml").write_text(
-        """schema = 3
+        """schema = 4
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "fixture-ip"
+root = "ip/fixture"
 
 name = "fixture-ip"
 kind = "composite-ip"
@@ -227,7 +228,6 @@ format = "toml"
         + '''
 [components.fixture-ip]
 contract = "ip/fixture/configs/ip.toml"
-root = "ip/fixture"
 ''',
         encoding="utf-8",
     )
@@ -266,10 +266,11 @@ ports = [
         encoding="utf-8",
     )
     (configs / "ip.toml").write_text(
-        '''schema = 3
+        '''schema = 4
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "rtl-fixture"
+root = "ip/rtl_fixture"
 
 name = "rtl-fixture"
 kind = "rtl-ip"
@@ -344,7 +345,6 @@ capabilities = ["simulation", "synthesis", "physical_implementation"]
         + '''
 [components.rtl-fixture]
 contract = "ip/rtl_fixture/configs/ip.toml"
-root = "ip/rtl_fixture"
 ''',
         encoding="utf-8",
     )
@@ -487,10 +487,11 @@ views = [
             encoding="utf-8",
         )
     (configs / "ip.toml").write_text(
-        '''schema = 3
+        '''schema = 4
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "native-fixture"
+root = "ip/native_fixture"
 
 name = "native-fixture"
 kind = "hard-macro"
@@ -573,7 +574,6 @@ capabilities = ["circuit_simulation"]
         + '''
 [components.native-fixture]
 contract = "ip/native_fixture/configs/ip.toml"
-root = "ip/native_fixture"
 ''',
         encoding="utf-8",
     )

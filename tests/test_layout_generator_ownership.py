@@ -28,8 +28,9 @@ def _write_component(
         for value in values:
             source_ids.setdefault(value, f"source_{len(source_ids)}")
     rows = [
-        "schema = 3",
+        "schema = 4",
         'contract_kind = "ip-component"',
+        f'root = "ip/{name}"',
         'path_scope = "owner"',
         f'owner = "{name}"',
         "",
@@ -60,7 +61,6 @@ def _write_component(
         stream.write(
             f'\n[components.{name}]\n'
             f'contract = "ip/{name}/component.toml"\n'
-            f'root = "ip/{name}"\n'
         )
     return contract
 

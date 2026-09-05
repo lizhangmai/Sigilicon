@@ -433,10 +433,11 @@ def _write_ip_fixture(project_root: Path, release_id: str, manifest: str) -> Pat
     (owner_root / "rtl").mkdir()
     (dependency_root / "configs").mkdir(parents=True)
     (dependency_root / "configs/ip.toml").write_text(
-        '''schema = 3
+        '''schema = 4
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "fixture-ip"
+root = "ip/fixture"
 
 name = "fixture-ip"
 kind = "rtl-ip"
@@ -520,10 +521,11 @@ manifest_sha256 = "{manifest_sha256}"
     )
     contract = owner_root / "configs/ip.toml"
     contract.write_text(
-        """schema = 3
+        """schema = 4
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "demo"
+root = "ip/demo"
 
 name = "demo"
 kind = "composite-ip"
@@ -564,18 +566,16 @@ owner = "repository"
         encoding="utf-8",
     )
     (project_root / "ip/catalog.toml").write_text(
-        '''schema = 1
+        '''schema = 2
 contract_kind = "ip-catalog"
 path_scope = "repository"
 owner = "repository"
 
 [components.demo]
 contract = "ip/demo/configs/ip.toml"
-root = "ip/demo"
 
 [components.fixture-ip]
 contract = "ip/fixture/configs/ip.toml"
-root = "ip/fixture"
 ''',
         encoding="utf-8",
     )
@@ -624,10 +624,11 @@ def _write_source_component_fixture(project_root: Path) -> Path:
         "module leaf(input logic clk); endmodule\n", encoding="utf-8"
     )
     (dependency / "configs/ip.toml").write_text(
-        '''schema = 3
+        '''schema = 4
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "leaf"
+root = "ip/leaf"
 
 name = "leaf"
 kind = "rtl-ip"
@@ -677,10 +678,11 @@ owner = "composite"
     )
     contract = owner / "configs/ip.toml"
     contract.write_text(
-        '''schema = 3
+        '''schema = 4
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "composite"
+root = "ip/composite"
 
 name = "composite"
 kind = "composite-ip"
@@ -707,18 +709,16 @@ contract = "ip/leaf/configs/ip.toml"
         encoding="utf-8",
     )
     (project_root / "catalogs/ip.toml").write_text(
-        '''schema = 1
+        '''schema = 2
 contract_kind = "ip-catalog"
 path_scope = "repository"
 owner = "test"
 
 [components.leaf]
 contract = "ip/leaf/configs/ip.toml"
-root = "ip/leaf"
 
 [components.composite]
 contract = "ip/composite/configs/ip.toml"
-root = "ip/composite"
 ''',
         encoding="utf-8",
     )

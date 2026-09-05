@@ -31,23 +31,19 @@ owner = "test"
     _write(
         root,
         "catalogs/ip.toml",
-        header.format(kind="ip-catalog")
+        header.format(kind="ip-catalog").replace("schema = 1", "schema = 2")
         + '''
 [components.alpha]
 contract = "ip/alpha/component.toml"
-root = "ip/alpha"
 
 [components.beta]
 contract = "ip/beta/component.toml"
-root = "ip/beta"
 
 [components.compute]
 contract = "ip/compute/component.toml"
-root = "ip/compute"
 
 [components.example]
 contract = "ip/example/component.toml"
-root = "ip/example"
 ''',
     )
     _write(
@@ -72,10 +68,11 @@ filesets = ["flow"]
         _write(
             root,
             f"ip/{owner}/component.toml",
-            f'''schema = 3
+            f'''schema = 4
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "{owner}"
+root = "ip/{owner}"
 name = "{owner}"
 kind = "rtl-ip"
 
@@ -89,10 +86,11 @@ source = ["manifest"]
     _write(
         root,
         "ip/example/component.toml",
-        '''schema = 3
+        '''schema = 4
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "example"
+root = "ip/example"
 name = "example"
 kind = "rtl-ip"
 

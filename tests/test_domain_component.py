@@ -4,6 +4,7 @@ import pytest
 
 from sigilicon.domain.component import resolve_component_contract
 from sigilicon.project import Project
+from sigilicon.project.checks import inspect_repository_designs
 
 
 def _catalog_component(root: Path, owner: str, contract: Path) -> None:
@@ -12,7 +13,6 @@ def _catalog_component(root: Path, owner: str, contract: Path) -> None:
         catalog.read_text(encoding="utf-8")
         + f'''\n[components.{owner}]
 contract = "{contract.relative_to(root).as_posix()}"
-root = "{contract.parent.relative_to(root).as_posix()}"
 ''',
         encoding="utf-8",
     )
@@ -24,10 +24,11 @@ def test_source_library_is_a_first_class_component_kind(tmp_path: Path) -> None:
     source.write_text("VALUE = 1\n", encoding="utf-8")
     contract = tmp_path / "ip/shared/ip.toml"
     contract.write_text(
-        '''schema = 3
+        '''schema = 4
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "shared"
+root = "ip/shared"
 name = "shared"
 kind = "source-library"
 
@@ -57,10 +58,11 @@ def test_component_lifecycle_is_typed_and_frozen(tmp_path: Path) -> None:
     source.write_text("VALUE = 1\n", encoding="utf-8")
     contract = tmp_path / "ip/shared/ip.toml"
     contract.write_text(
-        '''schema = 3
+        '''schema = 4
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "shared"
+root = "ip/shared"
 name = "shared"
 kind = "source-library"
 lifecycle = "legacy"
@@ -97,10 +99,11 @@ def test_component_filesets_only_compose_unique_source_identities(
     source.write_text("VALUE = 1\n", encoding="utf-8")
     contract = tmp_path / "ip/shared/ip.toml"
     contract.write_text(
-        '''schema = 3
+        '''schema = 4
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "shared"
+root = "ip/shared"
 name = "shared"
 kind = "source-library"
 
@@ -135,10 +138,11 @@ def test_component_roles_reference_source_identities(tmp_path: Path) -> None:
     operations.write_text("operations\n", encoding="utf-8")
     contract = owner / "ip.toml"
     contract.write_text(
-        '''schema = 3
+        '''schema = 4
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "shared"
+root = "ip/shared"
 name = "shared"
 kind = "rtl-ip"
 operation_catalog = "operations"
@@ -170,10 +174,11 @@ def test_component_snapshot_rejects_current_document_drift(tmp_path: Path) -> No
     source.write_text("VALUE = 1\n", encoding="utf-8")
     contract = tmp_path / "ip/shared/ip.toml"
     contract.write_text(
-        '''schema = 3
+        '''schema = 4
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "shared"
+root = "ip/shared"
 name = "shared"
 kind = "source-library"
 
@@ -208,10 +213,11 @@ def test_owner_identity_captures_uncataloged_transitive_component(
     source.write_text("module leaf; endmodule\n", encoding="utf-8")
     leaf = tmp_path / "ip/leaf/component.toml"
     leaf.write_text(
-        '''schema = 3
+        '''schema = 4
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "leaf"
+root = "ip/leaf"
 name = "leaf"
 kind = "rtl-ip"
 
@@ -228,10 +234,11 @@ rtl = ["rtl"]
     top_source.write_text("module top; leaf child(); endmodule\n", encoding="utf-8")
     top = tmp_path / "ip/top/component.toml"
     top.write_text(
-        '''schema = 3
+        '''schema = 4
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "top"
+root = "ip/top"
 name = "top"
 kind = "composite-ip"
 
@@ -251,6 +258,11 @@ contract = "ip/leaf/component.toml"
 
     project = Project.open(tmp_path)
     identity = project.operation_identity("top")
+    repository_identity = project.identity
+    report = inspect_repository_designs(project)
+    assert report["passed"] is True
+    assert "leaf" in report["configuration"]["owners"]
+    assert project.require_owner(leaf).name == "leaf"
     leaf.write_text(
         leaf.read_text(encoding="utf-8").replace(
             'kind = "rtl-ip"',
@@ -262,3 +274,4 @@ contract = "ip/leaf/component.toml"
     with pytest.raises(ValueError, match="component snapshot source document drift"):
         project.operation_identity("top")
     assert Project.open(tmp_path).operation_identity("top") != identity
+    assert Project.open(tmp_path).identity != repository_identity

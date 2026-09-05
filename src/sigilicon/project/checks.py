@@ -28,41 +28,6 @@ from sigilicon.adapters.cadence.oa_library import plan_oa_library_rebuild
 from sigilicon.adapters.release.ip_integration import plan_ip_integration_contract
 
 
-def _contract_entries(
-    context: Project,
-    catalog: str,
-    rows: Mapping[str, Any],
-    *,
-    owner_roots: bool = False,
-) -> dict[str, Path]:
-    root = context.project_root
-    result: dict[str, Path] = {}
-    for name, row in rows.items():
-        if not isinstance(name, str) or not name:
-            raise ValueError(f"{catalog} catalog names must be non-empty strings")
-        expected = {"contract", "root"} if owner_roots else {"contract"}
-        if not isinstance(row, Mapping) or set(row) != expected:
-            raise ValueError(
-                f"{catalog} catalog entry {name!r} must contain {sorted(expected)}"
-            )
-        value = row.get("contract")
-        if not isinstance(value, str) or not value:
-            raise ValueError(f"{catalog} catalog entry {name!r} needs a contract")
-        relative = Path(value)
-        path = (root / relative).resolve()
-        if (
-            relative.is_absolute()
-            or ".." in relative.parts
-            or not path.is_relative_to(root)
-            or not path.is_file()
-        ):
-            raise ValueError(
-                f"{catalog} catalog entry {name!r} must name a project-owned file"
-            )
-        result[name] = path
-    return result
-
-
 def _architecture_source_documents(
     context: Project,
 ) -> Mapping[Path, Mapping[str, Any]]:
@@ -157,22 +122,11 @@ def inspect_repository_designs(
             for path in operation_catalog_inventory.values()
         },
     )
-    ip_catalog = (
-        None
-        if context.find_catalog("ip") is None
-        else context.ip_catalog_snapshot()
-    )
-    component_rows = (
-        {} if ip_catalog is None else ip_catalog.document.get("components", {})
-    )
-    if not isinstance(component_rows, Mapping):
-        raise ValueError("ip catalog components must be a table")
-    component_paths = _contract_entries(
-        context,
-        "ip.components",
-        component_rows,
-        owner_roots=True,
-    )
+    if context.find_catalog("ip") is not None:
+        context.ip_catalog_snapshot()
+    component_paths = {
+        owner.name: owner.component.path for owner in context.owners
+    }
 
     platform_inventory = (
         {}

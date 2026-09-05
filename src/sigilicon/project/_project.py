@@ -14,6 +14,7 @@ from sigilicon.artifacts import read_nofollow_text
 from sigilicon.canonical import canonical_digest, canonical_json
 from sigilicon.contracts import (
     ContractReader,
+    contract_schema,
     DocumentStore,
     freeze_toml_document,
     is_frozen_toml_document,
@@ -135,7 +136,7 @@ def _project_file(root: Path, value: object, field: str) -> Path:
 
 @dataclass(frozen=True)
 class RepositoryOwner:
-    """One cataloged owner root and its canonical component contract."""
+    """One reachable owner root and its canonical component contract."""
 
     name: str
     root: Path
@@ -264,7 +265,7 @@ class Project:
         )
         composition_sources = tuple(
             Source.capture(path, root=self.project_root, scope="project")
-            for path in self._operation_composition_paths(owner)
+            for path in (*self._operation_composition_paths(owner), self.catalog("ip"))
         )
         return plan_execution(
             draft,
@@ -327,6 +328,7 @@ class Project:
         expected_composition = set(
             self._operation_composition_paths(self.owner(plan.owner))
         )
+        expected_composition.add(self.catalog("ip"))
         actual_composition = {
             source.location for source in plan._composition_sources
         }
@@ -390,8 +392,8 @@ class Project:
             expected: dict[Path, Mapping[str, Any]] = {
                 self.manifest_path: self.manifest_document,
                 **{
-                    owner.component.path: owner.component.document
-                    for owner in self.owners
+                    component.path: component.document
+                    for component in self.component_inventory.values()
                 },
             }
             if self._ip_catalog is not None:
@@ -465,6 +467,7 @@ class Project:
                 ip_catalog,
                 contract_kind="ip-catalog",
                 path_scope="repository",
+                schema=contract_schema("ip-catalog"),
             )
             unknown = set(ip_raw) - _HEADER_FIELDS - {"components"}
             if unknown:
@@ -476,95 +479,21 @@ class Project:
                 raise ValueError(f"{ip_catalog}: components must be a table")
             components = raw_components
         owners: list[RepositoryOwner] = []
-        roots: set[Path] = set()
         for name, value in components.items():
             owner = validate_artifact_component(name, "component owner")
-            if not isinstance(value, Mapping) or set(value) != {"contract", "root"}:
-                raise ValueError(
-                    f"{ip_catalog}: components.{name} must contain contract and root"
-                )
+            if not isinstance(value, Mapping) or set(value) != {"contract"}:
+                raise ValueError(f"{ip_catalog}: components.{name} must contain contract")
             component_path = _project_file(
-                project.project_root,
-                value.get("contract"),
+                project.project_root, value.get("contract"),
                 f"{ip_catalog}: components.{name}.contract",
             )
-            root_value = value.get("root")
-            if not isinstance(root_value, str) or not root_value:
-                raise ValueError(f"{ip_catalog}: components.{name}.root must be a path")
-            relative_root = Path(root_value)
-            owner_root = (project.project_root / relative_root).resolve()
-            if (
-                relative_root.is_absolute()
-                or ".." in relative_root.parts
-                or not owner_root.is_relative_to(project.project_root)
-                or not owner_root.is_dir()
-            ):
-                raise ValueError(
-                    f"{ip_catalog}: components.{name}.root must be a project-owned directory"
-                )
-            if owner_root in roots:
-                raise ValueError(f"repository owner roots must be unique: {owner_root}")
-            roots.add(owner_root)
-            if not component_path.is_relative_to(owner_root):
-                raise ValueError(
-                    f"{ip_catalog}: components.{name}.contract must stay inside its root"
-                )
             component = _parse_component_contract(
-                component_path,
-                project_root=project.project_root,
+                component_path, project_root=project.project_root,
                 document=read_toml(component_path),
             )
+            owner_root = component.root
             if component.name != owner or component.owner != owner:
-                raise ValueError(
-                    f"{ip_catalog}: component {name!r} identity disagrees with its contract"
-                )
-            if component.operation_catalog is not None:
-                operation_catalog = project.project_root.joinpath(
-                    *component.operation_catalog.parts
-                )
-                resolved_operation_catalog = operation_catalog.resolve()
-                if operation_catalog != resolved_operation_catalog:
-                    raise ValueError(
-                        f"{component.path}: operation_catalog must not be a symlink"
-                    )
-                if not resolved_operation_catalog.is_relative_to(owner_root):
-                    raise ValueError(
-                        f"{component.path}: operation_catalog must stay inside its "
-                        f"owner root: {component.operation_catalog}"
-                    )
-                if not resolved_operation_catalog.is_file():
-                    raise FileNotFoundError(
-                        f"{component.path}: operation_catalog is missing: "
-                        f"{component.operation_catalog}"
-                    )
-            if component.release_contract is not None:
-                configured_release = project.project_root.joinpath(
-                    *component.release_contract.parts
-                )
-                release_contract = configured_release.resolve()
-                if (
-                    configured_release != release_contract
-                    or release_contract.suffix != ".toml"
-                ):
-                    raise ValueError(
-                        f"{component.path}: release_contract must name a direct "
-                        "TOML source"
-                    )
-                if not release_contract.is_relative_to(owner_root):
-                    raise ValueError(
-                        f"{component.path}: release_contract must stay inside its "
-                        f"owner root: {component.release_contract}"
-                    )
-            owned_sources = list(component.sources.values())
-            if component.public_interface is not None:
-                owned_sources.append(component.public_interface)
-            for relative in owned_sources:
-                source = (project.project_root / Path(relative)).resolve()
-                if not source.is_relative_to(owner_root):
-                    raise ValueError(
-                        f"{component.path}: component source escapes its cataloged root: "
-                        f"{relative}"
-                    )
+                raise ValueError(f"{ip_catalog}: component {name!r} owner identity disagrees with its contract")
             owners.append(RepositoryOwner(component.owner, owner_root, component))
         owner_names = [item.name for item in owners]
         if len(set(owner_names)) != len(owner_names):
@@ -607,6 +536,37 @@ class Project:
             )
             for owner in result.owners
         }
+        inventory: dict[str, ComponentContract] = {}
+        for graph in graphs.values():
+            for name, component in graph.items():
+                previous = inventory.get(name)
+                if previous is not None and previous.path != component.path:
+                    raise ValueError(f"component identity {name!r} has multiple owners")
+                inventory[name] = component
+        owner_components = {
+            component.owner: component for component in inventory.values()
+            if component.name == component.owner
+        }
+        for component in inventory.values():
+            owner_component = owner_components.get(component.owner)
+            if owner_component is None or component.root != owner_component.root:
+                raise ValueError(f"component {component.name!r} has no matching owner root")
+        reachable = tuple(
+            RepositoryOwner(name, component.root, component)
+            for name, component in sorted(owner_components.items())
+        )
+        for left in reachable:
+            for right in reachable:
+                if left.name != right.name and left.root.is_relative_to(right.root):
+                    raise ValueError("repository owner roots must not overlap")
+        object.__setattr__(result, "owners", reachable)
+        def closure(component: ComponentContract) -> Mapping[str, ComponentContract]:
+            selected = {component.name: component}
+            for child in component.components:
+                selected.update(closure(inventory[child.name]))
+            return MappingProxyType(selected)
+        graphs = {name: closure(component) for name, component in owner_components.items()}
+        object.__setattr__(result, "_composition_documents", None)
         object.__setattr__(result, "_component_graphs", MappingProxyType(graphs))
         return result
 
@@ -672,10 +632,12 @@ class Project:
     def identity(self) -> str:
         """Return the deterministic identity of this Project composition."""
 
+        for owner in self.owners:
+            self._require_owner_snapshot(owner)
         paths = {
             self.manifest_path,
             *(path for _, path in self.catalog_paths),
-            *(owner.component.path for owner in self.owners),
+            *self.component_inventory,
             *(
                 self.project_root.joinpath(*owner.component.operation_catalog.parts)
                 for owner in self.owners
@@ -743,7 +705,7 @@ class Project:
     ) -> Mapping[str, ComponentContract]:
         """Fail when cached catalog/component facts no longer match source."""
 
-        catalog = self.ip_catalog_snapshot()
+        self.ip_catalog_snapshot()
         documents = self._composition_snapshot()
         try:
             snapshot = self._component_graphs[owner.name]
@@ -757,8 +719,6 @@ class Project:
         documents.verify(
             "component snapshot", {owner.component.path: owner.component.document}
         )
-        if owner.name not in catalog.document.get("components", {}):
-            raise ValueError("IP catalog snapshot owner mapping drift")
         return graph
 
     def _operation_composition_paths(
@@ -772,7 +732,6 @@ class Project:
         )
         paths = [
             self.manifest_path,
-            self.catalog("ip"),
             *(component.path for component in selected_graph.values()),
         ]
         if owner.component.operation_catalog is not None:
@@ -834,6 +793,7 @@ class Project:
             contract_kind="ip-catalog",
             path_scope="repository",
             owner=self.manifest_owner,
+            schema=contract_schema("ip-catalog"),
         )
         documents = self._composition_snapshot()
         documents.verify("IP catalog snapshot", {snapshot.path: snapshot.document})
@@ -865,18 +825,18 @@ class Project:
     def require_owner(self, path: Path | str) -> RepositoryOwner:
         owner = self.owner_for(path)
         if owner is None:
-            raise ValueError(f"repository path has no cataloged owner: {Path(path).resolve()}")
+            raise ValueError(f"repository path has no reachable owner: {Path(path).resolve()}")
         return owner
 
     def owner(self, name: str) -> RepositoryOwner:
-        """Select one cataloged owner by its canonical identity."""
+        """Select one reachable owner by its canonical identity."""
 
         identity = validate_artifact_component(name, "project owner")
         try:
             return next(owner for owner in self.owners if owner.name == identity)
         except StopIteration as exc:
             raise ValueError(
-                f"unknown cataloged project owner: {identity!r}"
+                f"unknown project owner: {identity!r}"
             ) from exc
 
     def resolve_owner_file(

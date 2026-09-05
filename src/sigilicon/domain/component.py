@@ -39,6 +39,7 @@ _COMPONENT_FIELDS = {
     "path_scope",
     "owner",
     "name",
+    "root",
     "kind",
     "lifecycle",
     "public_interface",
@@ -73,6 +74,7 @@ class ComponentDependency:
 class ComponentContract:
     path: Path
     project_root: Path
+    root: Path
     owner: str
     name: str
     kind: str
@@ -160,6 +162,9 @@ def _parse_component_contract(
     reader = ContractReader(document, "component")
     reader.consume(*_COMPONENT_FIELDS)
     reader.finish()
+    owner_root = root.joinpath(*require_relative_path(document.get("root"), "root").parts)
+    if owner_root != owner_root.resolve() or not contract_path.is_relative_to(owner_root):
+        raise ValueError("component contract must stay inside its declared owner root")
     kind = require_text(document.get("kind"), "kind")
     if kind not in COMPONENT_KINDS:
         raise ValueError(f"unsupported component kind: {kind}")
@@ -263,6 +268,7 @@ def _parse_component_contract(
     result = ComponentContract(
         path=contract_path,
         project_root=root,
+        root=owner_root,
         owner=header.owner,
         name=require_text(document.get("name"), "name"),
         kind=kind,
@@ -279,6 +285,9 @@ def _parse_component_contract(
         document=freeze_toml_document(document),
     )
     referenced = list(result.sources.values())
+    for relative in referenced:
+        if not (root / relative).resolve().is_relative_to(owner_root):
+            raise ValueError(f"component source escapes its declared owner root: {relative}")
     referenced.extend(item.contract for item in result.components)
     for relative in referenced:
         resolved = (root / Path(relative)).resolve()
@@ -295,6 +304,10 @@ def _parse_component_contract(
             raise FileNotFoundError(
                 f"component operation catalog is missing: {result.operation_catalog}"
             )
+    if result.release_contract is not None:
+        release = root / result.release_contract
+        if release != release.resolve() or release.suffix != ".toml":
+            raise ValueError("release_contract must name a direct TOML source")
     return result
 
 

@@ -228,14 +228,13 @@ PATH = "/usr/bin:/bin"
         encoding="utf-8",
     )
     (root / "catalogs/ip.toml").write_text(
-        """schema = 1
+        """schema = 2
 contract_kind = "ip-catalog"
 path_scope = "repository"
 owner = "test"
 
 [components.example]
 contract = "ip/example/component.toml"
-root = "ip/example"
 """,
         encoding="utf-8",
     )
@@ -250,10 +249,11 @@ owner = "test"
         encoding="utf-8",
     )
     (owner / "component.toml").write_text(
-        """schema = 3
+        """schema = 4
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "example"
+root = "ip/example"
 name = "example"
 kind = "rtl-ip"
 operation_catalog = "operations"
@@ -499,10 +499,11 @@ def test_plan_identity_excludes_unselected_owner_changes(tmp_path: Path) -> None
     foreign = tmp_path / "ip/foreign"
     (foreign / "configs").mkdir(parents=True)
     (foreign / "component.toml").write_text(
-        '''schema = 3
+        '''schema = 4
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "foreign"
+root = "ip/foreign"
 name = "foreign"
 kind = "rtl-ip"
 operation_catalog = "operations"
@@ -534,7 +535,6 @@ filesets = ["operation_catalog"]
         + '''
 [components.foreign]
 contract = "ip/foreign/component.toml"
-root = "ip/foreign"
 ''',
         encoding="utf-8",
     )
@@ -562,7 +562,7 @@ def test_project_catalog_identity_matches_component_owner(tmp_path: Path) -> Non
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="identity disagrees"):
+    with pytest.raises(ValueError, match="owner identity"):
         Project.open(tmp_path)
 
 
@@ -911,17 +911,17 @@ def test_backend_cannot_discover_another_owners_source(tmp_path: Path) -> None:
         + """
 [components.foreign]
 contract = "ip/foreign/component.toml"
-root = "ip/foreign"
 """,
         encoding="utf-8",
     )
     foreign = tmp_path / "ip/foreign"
     foreign.mkdir()
     (foreign / "component.toml").write_text(
-        """schema = 3
+        """schema = 4
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "foreign"
+root = "ip/foreign"
 name = "foreign"
 kind = "rtl-ip"
 
