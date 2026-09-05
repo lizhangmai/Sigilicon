@@ -465,6 +465,21 @@ def test_spectre_measurement_rejects_truthy_non_boolean_passed(
         )
 
 
+def test_confirmed_process_uses_bound_executable_with_logical_argv(tmp_path: Path) -> None:
+    with (
+        owned_directory(tmp_path) as owned_root,
+        owned_output_file(owned_root, "worker.stdout") as owned_stdout,
+    ):
+        result = run_process_group_until_confirmed(
+            ["logical-launcher", "-c", "printf selected-executable"],
+            executable="/bin/sh", cwd=tmp_path, env={}, timeout=5,
+            stdout_fd=owned_stdout.fd, confirmation_probe=lambda: False,
+            pass_fds=(owned_stdout.fd,),
+        )
+        assert result.completed.returncode == 0
+        assert owned_stdout.read_bytes() == b"selected-executable"
+
+
 def test_confirmed_process_group_can_clean_its_own_lingering_worker(
     tmp_path: Path,
 ) -> None:

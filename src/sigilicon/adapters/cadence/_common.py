@@ -174,6 +174,11 @@ def _oa_runtime_executables(planning: Any, operation: str) -> tuple[str, ...]:
             for item in getattr(planning, "views", ())
         ):
             required.append(CADENCE_TEXT_IMPORT_TOOL)
+        if any(
+            item.view.kind in {"system_verilog", "veriloga"}
+            for item in getattr(planning, "views", ())
+        ):
+            required.append(_XRUN)
     return tuple(required)
 
 

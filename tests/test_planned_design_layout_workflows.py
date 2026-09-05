@@ -3,12 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 from contextlib import nullcontext
+import json
 
 import pytest
 
 from sigilicon.project import Project
 from sigilicon.adapters.cadence import layout_generation
+from sigilicon.adapters.cadence import oa_library_execution
+from sigilicon.adapters.cadence.oa_library import LayoutRebuildStep, OALibraryRebuildPlan
 from sigilicon.adapters.cadence.layout_generation import LayoutPlanningResult
+from sigilicon.execution._model import Resources
 from sigilicon.execution._workspace import ExecutionWorkspace
 
 from conftest import write_component_owner
@@ -19,9 +23,11 @@ def _project(tmp_path: Path) -> Project:
     return Project.open(tmp_path)
 
 
+@pytest.mark.parametrize("through_rebuild", (False, True))
 def test_managed_layout_generation_reuses_parent_artifacts_and_operation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    through_rebuild: bool,
 ) -> None:
     project = _project(tmp_path)
     source = SimpleNamespace(text="subckt\n", source_path=tmp_path / "source.scs")
@@ -73,12 +79,13 @@ def test_managed_layout_generation_reuses_parent_artifacts_and_operation(
         def __exit__(self, exc_type, exc, traceback):
             if exc_type is None:
                 for deferred in self.commits:
-                    deferred.result = deferred.callback()
-                    deferred.completed = True
+                    if not deferred.completed:
+                        deferred.result = deferred.callback()
+                        deferred.completed = True
             return False
 
         def view_lease(self, *args, **kwargs):
-            assert bound == [self]
+            assert bound[-1] is self
             return nullcontext()
 
         def mutation_scope(self, *args, **kwargs):
@@ -93,12 +100,10 @@ def test_managed_layout_generation_reuses_parent_artifacts_and_operation(
             self.commits.append(deferred)
             return deferred
 
-        def register_artifact(self, record):
-            pytest.fail("managed generation cannot register a nested artifact")
-
     operation = Operation()
     client = SimpleNamespace(
         library=SimpleNamespace(
+            list=lambda **kwargs: ["example"],
             get=lambda library, timeout: SimpleNamespace(
                 technology_library="example-tech"
             )
@@ -114,14 +119,33 @@ def test_managed_layout_generation_reuses_parent_artifacts_and_operation(
     monkeypatch.setattr(
         layout_generation, "validate_layout_plan", lambda *a, **k: None
     )
-    result = layout_generation.generate_layout(
-        planning,
-        client,
-        artifacts=artifacts,
-        operation_id="operation-1",
-        bind_operation=bound.append,
-    )
+    if through_rebuild:
+        monkeypatch.setattr(oa_library_execution, "list_cells", lambda *a, **k: {
+            "cells": [{"name": "leaf", "views": ["layout"]}],
+        })
+        monkeypatch.setattr(oa_library_execution, "cell_view_exists", lambda *a, **k: True)
+        monkeypatch.setattr(oa_library_execution, "workspace_operation", lambda *a, **k: operation)
+        monkeypatch.setattr(oa_library_execution, "validate_layout_plan", lambda *a, **k: None)
+        assembly = OALibraryRebuildPlan(
+            source=SimpleNamespace(workspace_root=project.workspace_root),
+            library="example", cells=("leaf",), designs=(), testbenches=(), views=(),
+            layouts=(LayoutRebuildStep(planning, ()),),
+            expected_views={"leaf": ("layout",)},
+        )
+        result = oa_library_execution.rebuild_oa_library(
+            assembly, client, source_paths={}, resource_paths={}, resources=Resources(),
+            artifacts=artifacts, operation_id="operation-1", bind_operation=bound.append,
+        )
+        assert result["passed"] is True
+    else:
+        result = layout_generation.generate_layout(
+            planning, client, artifacts=artifacts, operation_id="operation-1",
+            bind_operation=bound.append,
+        )
+        assert result.instance_count == 2
 
-    assert bound == [operation]
-    assert result.instance_count == 2
-    assert artifacts.path("outputs", "completion.json").is_file()
+    completions = list(artifacts.output_root.rglob("completion.json"))
+    assert len(completions) == 1
+    completion = json.loads(completions[0].read_text())
+    assert completion["cell"] == "leaf"
+    assert completion["instance_count"] == 2

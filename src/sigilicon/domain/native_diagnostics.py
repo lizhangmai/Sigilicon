@@ -71,7 +71,7 @@ class NativeDiagnosticReport:
         return cast(bool, self.payload["passed"])
 
     def as_dict(self) -> dict[str, object]:
-        return dict(self.payload)
+        return cast(dict[str, object], _json_value(self.payload))
 
 
 @dataclass(frozen=True)

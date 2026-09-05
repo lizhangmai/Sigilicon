@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -306,7 +307,7 @@ def nullable_scalar_names(diagnostic):
 
 
 def reconstruct(result, contract):
-    return {"passed": True}
+    return {"passed": True, "contexts": [{"passed": True}]}
 
 
 def attestation_requirements(diagnostic, tests):
@@ -364,6 +365,8 @@ kind = "fixture"
     ) == contract.support_sources
     report = contract.reconstruct_diagnostic({"outputs": []})
     assert report is not None and report.passed
+    persisted = json.loads(json.dumps(report.as_dict()))
+    assert persisted["contexts"] == [{"passed": True}]
     assert os.environ.get("SIGILICON_OWNER_PROGRAM_EXECUTED") is None
     with pytest.raises(ValueError, match="architecture source inventory"):
         load_oa_simulation_spec(

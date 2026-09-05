@@ -63,10 +63,15 @@ def _run_with_fake_process(
     xrun.parent.mkdir(parents=True)
     xrun.write_text("tool\n", encoding="utf-8")
     xrun.chmod(0o755)
+    spectre = tmp_path / "spectre-install/tools/bin/spectre"
+    spectre.parent.mkdir(parents=True)
+    spectre.write_text("#!/bin/sh\nprintf 'configured-spectre\\n'\n")
+    spectre.chmod(0o755)
     runtime = Resources(
         tools={
             "cadence.virtuoso": str(executable),
             "cadence.xrun": str(xrun),
+            "cadence.spectre": str(spectre),
         },
         environment={
             "XCELIUM_HOME": "/ambient/xcelium",
@@ -76,6 +81,9 @@ def _run_with_fake_process(
 
     def fake_process(command, **kwargs):
         kwargs["before_spawn"]()
+        assert subprocess.check_output(
+            ["/bin/sh", "-c", "spectre"], env=kwargs["env"], text=True,
+        ).strip() == "configured-spectre"
         for descriptor in kwargs["pass_fds"]:
             assert Path(f"{PROC_FD_PREFIX}{descriptor}").exists()
         Path(command[command.index("-log") + 1]).write_text(

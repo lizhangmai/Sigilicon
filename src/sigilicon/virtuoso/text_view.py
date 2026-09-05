@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 import os
 from pathlib import Path
 import re
 from typing import Any
 
 from sigilicon.domain.source import TextSourceSnapshot, load_text_source_snapshot
-from sigilicon.virtuoso.bridge import decode_skill_output
 
 from sigilicon.external_tools import (
     CADENCE_TEXT_IMPORT_TOOL,
@@ -17,8 +17,8 @@ from sigilicon.external_tools import (
     cadence_ic_env,
     managed_process,
     owned_directory,
+    owned_input_file,
     owned_output_file,
-    owned_sealed_input,
 )
 from sigilicon.virtuoso.capability import (
     dispatch_oa_mutation,
@@ -45,6 +45,26 @@ _TEXT_VIEW_ADAPTERS = {
 # Data Registry.  ``text.txt`` is the native master for the generic ``text``
 # view type used by source-owned SKILL measurement views.
 _SKILL_OA_MASTER = "text.txt"
+
+
+def _native_master_name(directory: Path) -> str:
+    with owned_input_file(directory / "master.tag") as tag:
+        lines = os.pread(tag.fd, os.fstat(tag.fd).st_size, 0).decode("utf-8").splitlines()
+    master = lines[-1].strip() if lines else ""
+    if not master or Path(master).name != master or master in {".", ".."}:
+        raise RuntimeError("invalid native text-view master name")
+    return master
+
+
+def check_oa_text_view_source(directory: Path, source: TextSourceSnapshot) -> None:
+    """Verify that a native master persists the exact canonical text locally."""
+
+    with owned_directory(directory) as view:
+        master = _native_master_name(view.path)
+        with owned_input_file(view.path / master) as native:
+            actual = os.pread(native.fd, os.fstat(native.fd).st_size, 0)
+            if actual != source.text.encode("utf-8"):
+                raise RuntimeError("native text-view master differs from its source")
 
 
 def _import_skill_view(
@@ -192,17 +212,21 @@ def import_oa_text_view(
     library_path = operation.require_project_library_target(client, library)
     with (
         resources.owned_tool(CADENCE_TEXT_IMPORT_TOOL) as owned_launcher,
-        owned_sealed_input(
-            snapshot.text.encode("utf-8"),
-            name=snapshot.source_path.name,
-        ) as owned_source,
         owned_directory(workdir) as owned_workdir,
         owned_directory(library_path) as owned_library,
         owned_directory(work_dir, create_missing=True) as owned_tool_work,
+        owned_output_file(owned_tool_work, "source" + snapshot.source_path.suffix) as staged_source,
         owned_output_file(owned_tool_work, "cds.lib") as owned_cds_lib,
         owned_directory(log_dir) as owned_logs,
         owned_output_file(owned_logs, "cdsTextTo5x.log") as owned_tool_log,
+        ExitStack() as source_lifetime,
     ):
+        # Cadence canonicalizes the source path and reopens it in its parser.
+        # Keep the planned bytes in a private named file, watched throughout
+        # the invocation; an anonymous memfd cannot satisfy that protocol.
+        staged_source.write_bytes(snapshot.text.encode("utf-8"))
+        os.fchmod(staged_source.fd, 0o444)
+        owned_source = source_lifetime.enter_context(owned_input_file(staged_source.path))
         owned_cds_lib.write_bytes(
             f"DEFINE {library} {owned_library.child_path}\n".encode("utf-8")
         )
@@ -221,11 +245,12 @@ def import_oa_text_view(
             native_view,
             "-LOG",
             owned_tool_log.child_path,
-            owned_source.child_path,
+            owned_source.child_named_path,
         )
 
         def validate_spawn() -> None:
             owned_launcher.require_visible()
+            owned_source.require_visible()
             operation.require_active_mutation(
                 client,
                 library,
@@ -237,11 +262,16 @@ def import_oa_text_view(
             argv=tuple(command),
             executable=owned_launcher.executable,
             cwd=Path(owned_workdir.child_path),
-            environment=cadence_ic_env(executable, resources.environment),
+            environment=cadence_ic_env(
+                executable,
+                resources.environment,
+                xrun=resources.configured_tool("cadence.xrun"),
+            ),
             timeout_seconds=timeout,
             before_spawn=validate_spawn,
             pass_fds=(
                 owned_source.fd,
+                owned_source.directory_fd,
                 owned_cds_lib.fd,
                 owned_workdir.fd,
                 owned_library.fd,
@@ -270,3 +300,17 @@ def import_oa_text_view(
                 f"cdsTextTo5x failed for {library}/{cell}/{native_view}\n"
                 f"{diagnostics[-6000:]}"
             )
+        # cdsTextTo5x links the registered master to its input.  The source
+        # scope is temporary, so materialize the planned bytes in the native
+        # view before releasing that scope.
+        with owned_directory(library_path / cell / native_view) as native_directory:
+            master = _native_master_name(native_directory.path)
+            target = os.readlink(master, dir_fd=native_directory.fd)
+            if target != str(staged_source.path):
+                raise RuntimeError("cdsTextTo5x native master does not link its planned source")
+            operation.require_active_mutation(
+                client, library, cell, phase="persist native text-view master",
+            )
+            os.unlink(master, dir_fd=native_directory.fd)
+            with owned_output_file(native_directory, master) as native_source:
+                native_source.write_bytes(snapshot.text.encode("utf-8"))

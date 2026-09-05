@@ -1552,8 +1552,9 @@ def cadence_ic_env(
     base: Mapping[str, str] = _EMPTY_ENVIRONMENT,
     *,
     xrun: Path | None = None,
+    spectre: Path | None = None,
 ) -> dict[str, str]:
-    """Derive Cadence IC and optional Xcelium homes from configured tools."""
+    """Derive IC and its selected simulator environment from configured tools."""
 
     env = cadence_subprocess_env(base)
     installation = _cadence_ic_home(executable)
@@ -1573,6 +1574,8 @@ def cadence_ic_env(
         )
     if xrun is not None:
         _add_xrun_environment(env, xrun)
+    if spectre is not None:
+        _add_spectre_environment(env, spectre)
     return env
 
 
@@ -1582,11 +1585,16 @@ def spectre_env(
 ) -> dict[str, str]:
     """Build a child environment from one configured Spectre launcher."""
 
-    absolute = Path(os.path.abspath(spectre))
     env = cadence_subprocess_env(base)
+    _add_spectre_environment(env, spectre)
+    return env
+
+
+def _add_spectre_environment(env: dict[str, str], spectre: Path) -> None:
+    absolute = Path(os.path.abspath(spectre))
     if absolute.name != "spectre" or absolute.parent.name != "bin":
         _prepend_environment_paths(env, "PATH", (absolute.parent,))
-        return env
+        return
     installation = (
         absolute.parents[2]
         if absolute.parent.parent.name in {"tools", "tools.lnx86"}
@@ -1608,7 +1616,6 @@ def spectre_env(
     )
     env["SPECTRE_HOME"] = str(installation)
     env["MMSIM"] = str(installation)
-    return env
 
 
 def _spawn_process_supervisor(
@@ -1974,6 +1981,7 @@ def _run_process_group_until_confirmed_owned(
 def run_process_group_until_confirmed(
     command: Sequence[str],
     *,
+    executable: str | None = None,
     cwd: Path,
     env: Mapping[str, str],
     timeout: int,
@@ -1987,6 +1995,7 @@ def run_process_group_until_confirmed(
 
     return _run_process_group_until_confirmed_owned(
         command,
+        executable=executable,
         cwd=cwd,
         env=env,
         timeout=timeout,

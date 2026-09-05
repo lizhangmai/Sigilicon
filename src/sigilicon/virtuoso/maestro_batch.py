@@ -11,6 +11,7 @@ import stat
 from typing import Any, Callable, Mapping
 
 from sigilicon.external_tools import (
+    CADENCE_SPECTRE_TOOL,
     CADENCE_VIRTUOSO_TOOL,
     ProcessGroupCleanupUncertainError,
     cadence_ic_env,
@@ -325,6 +326,7 @@ def run_isolated_maestro(
                     executable,
                     resources.environment,
                     xrun=xrun,
+                    spectre=resources.require_tool(CADENCE_SPECTRE_TOOL),
                 )
                 command = (
                     *owned_launcher.command,

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 import sigilicon.adapters.cadence.oa_check as oa_check
-from conftest import write_component_owner, write_test_platform
+from conftest import managed_execution_workspace, write_component_owner, write_test_platform
 from sigilicon.project import Project
 from sigilicon.execution._model import Resources
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
@@ -15,12 +17,45 @@ from sigilicon.adapters.cadence.oa_check import (
 )
 from sigilicon.adapters.cadence.oa_library import (
     OALibraryRebuildPlan,
+    ViewRebuildStep,
     plan_oa_library_rebuild,
 )
 from sigilicon.adapters.cadence.oa_library_execution import rebuild_oa_library
+from sigilicon.adapters.cadence.oa_testbench import materialize_oa_models
+from sigilicon.domain.platform import load_platform
+from sigilicon.domain.oa_library import OACellViewSource
+from sigilicon.domain.source import load_text_source_snapshot
+from sigilicon.adapters.cadence.oa_library_execution import check_oa_parity
 
 
 OA_RESOURCES = Resources()
+
+
+def test_native_oa_models_keep_sealed_bytes_names_and_relative_includes(tmp_path: Path) -> None:
+    write_test_platform(tmp_path)
+    platform_root = tmp_path / "configs/platform/testpdk"
+    contract = platform_root / "simulation.toml"
+    contract.write_text(contract.read_text() + 'support_files = ["devices/core.scs"]\n')
+    top = platform_root / "model.scs"
+    top.write_text('include "devices/core.scs"\n')
+    support = platform_root / "devices/core.scs"
+    support.parent.mkdir()
+    support.write_text("// selected model bytes\n")
+    model_set = load_platform(Project.open(tmp_path), "testpdk").simulation.default
+    sealed = tmp_path / "sealed"
+    sealed.mkdir()
+    paths = {}
+    for i, source in enumerate(model_set.paths):
+        captured = sealed / f"resource-{i}"
+        captured.write_bytes(source.read_bytes())
+        paths[source] = captured
+        source.write_text("changed after planning\n")
+
+    staged = materialize_oa_models(model_set, paths, managed_execution_workspace(tmp_path))
+
+    assert staged.name == "model.scs"
+    assert staged.read_text() == 'include "devices/core.scs"\n'
+    assert (staged.parent / "devices/core.scs").read_text() == "// selected model bytes\n"
 
 
 def test_read_only_check_workspace_does_not_create_flow_lock(
@@ -63,7 +98,7 @@ def test_oa_check_rejects_pure_layout_snapshot() -> None:
         check_oa_library(plan, client=SimpleNamespace())
 
 
-def test_oa_rebuild_rejects_pure_layout_snapshot_before_live_access() -> None:
+def test_oa_rebuild_rejects_pure_layout_snapshot_before_live_access(tmp_path: Path) -> None:
     step = SimpleNamespace(
         spec=SimpleNamespace(cell="CELL", view="layout"),
         planning=SimpleNamespace(plan=None),
@@ -85,6 +120,7 @@ def test_oa_rebuild_rejects_pure_layout_snapshot_before_live_access() -> None:
             source_paths={},
             resource_paths={},
             resources=OA_RESOURCES,
+            artifacts=managed_execution_workspace(tmp_path),
         )
 
 
@@ -169,6 +205,38 @@ primitive_masters = []
     plan = plan_oa_library_rebuild(manifest, project=Project.open(root))
     plan.source.oa_library.mkdir()
     return plan
+
+
+@pytest.mark.parametrize("state", ("local", "temporary-link", "modified"))
+def test_oa_parity_checks_native_master_content_and_persistence(
+    monkeypatch, tmp_path: Path, state: str,
+) -> None:
+    plan = _typed_oa_plan(tmp_path)
+    source = tmp_path / "ip/fixture/cells/MODEL/circuit.scs"
+    snapshot = load_text_source_snapshot(source)
+    view = OACellViewSource("spectre", "spectre_model", source, ())
+    plan = replace(
+        plan, designs=(), expected_views={"MODEL": ("spectre",)},
+        views=(ViewRebuildStep("MODEL", "fixture", view, snapshot),),
+    )
+    directory = plan.source.oa_library / "MODEL/spectre"
+    directory.mkdir(parents=True)
+    (directory / "master.tag").write_text("-- Master.tag File, Rev:1.0\nspectre.scs\n")
+    master = directory / "spectre.scs"
+    if state == "temporary-link":
+        master.symlink_to(tmp_path / "deleted-tool-input.scs")
+    else:
+        master.write_text(snapshot.text if state == "local" else "modified model\n")
+    monkeypatch.setattr(
+        "sigilicon.adapters.cadence.oa_library_execution.list_cells",
+        lambda *a, **k: {"cells": [{"name": "MODEL", "views": ["spectre"]}]},
+    )
+
+    result = check_oa_parity(plan, object())
+
+    assert result["passed"] is (state == "local")
+    if state != "local":
+        assert "MODEL/spectre" in result["stale_or_modified_views"]
 
 
 @pytest.mark.parametrize(
@@ -260,3 +328,122 @@ config = { owner = "fixture", timeout_seconds = 30 }
     plan = project.plan("fixture:check")
     assert renamed in {source.location for source in plan.sources}
     assert project.preflight(plan).status in {"ready", "blocked"}
+
+
+@pytest.mark.parametrize(("kind", "view", "suffix"), (
+    ("system_verilog", "systemVerilog", "sv"),
+    ("veriloga", "veriloga", "va"),
+    ("spectre_model", "spectre", "scs"),
+))
+def test_oa_rebuild_captures_text_import_compiler_dependency(
+    tmp_path: Path, kind: str, view: str, suffix: str,
+) -> None:
+    _typed_oa_plan(tmp_path)
+    owner = tmp_path / "ip/fixture"
+    cell = owner / "cells/MODEL"
+    source_name = f"model.{suffix}"
+    (cell / source_name).write_text("module MODEL; endmodule\n")
+    manifest = cell / "cell.toml"
+    manifest.write_text(manifest.read_text().replace(
+        "views = [", f'views = [\n  {{ name = "{view}", kind = "{kind}", source = "{source_name}" }},'
+    ))
+    component = owner / "component.toml"
+    component.write_text(component.read_text().replace(
+        "[sources]", '\noperation_catalog = "operations"\n\n[sources]\n'
+        'operations = "ip/fixture/configs/operations.toml"\n'
+        f'model = "ip/fixture/cells/MODEL/{source_name}"'
+    ).replace('oa_source = [', 'oa_source = ["model", '))
+    (owner / "configs/operations.toml").write_text('''schema = 4
+contract_kind = "owner-operations"
+path_scope = "owner"
+owner = "fixture"
+[operations.rebuild]
+uses = "cadence.oa-rebuild"
+filesets = ["oa_source"]
+config = { owner = "fixture", timeout_seconds = 30 }
+''')
+    project_contract = tmp_path / "sigilicon.toml"
+    with project_contract.open("a") as stream:
+        stream.write(f'''\n[runtime.tools]
+"runtime.python" = "{sys.executable}"
+"cadence.spice-in" = "/bin/true"
+"cadence.cds-text-to-5x" = "/bin/true"
+"cadence.xrun" = "/bin/true"
+''')
+    plan = Project.open(tmp_path).plan("fixture:rebuild")
+    identities = {resource.identity for resource in plan.resources}
+    assert "cadence.cds-text-to-5x" in identities
+    assert ("cadence.xrun" in identities) is (kind != "spectre_model")
+
+
+@pytest.mark.parametrize("simulator", ("spectre", "ams"))
+def test_native_maestro_plan_captures_its_simulator_dependencies(
+    tmp_path: Path, simulator: str,
+) -> None:
+    _typed_oa_plan(tmp_path)
+    owner = tmp_path / "ip/fixture"
+    tb = owner / "cells/tb"
+    tb.mkdir()
+    (tb / "testbench.scs").write_text("subckt tb\nXD (a y vdd vss) MODEL\nends tb\n")
+    (tb / "setup.il").write_text(
+        "procedure(fixtureConfig(lib cell dut sourceView refs) t)\n"
+        "procedure(fixtureMaestro(session lib cell modelFile modelSection) t)\n"
+    )
+    (tb / "simulation.toml").write_text(f'''schema = 3
+[testbench]
+library = "fixture_lib"
+cell = "tb"
+dut = "MODEL"
+source_view = "schematic"
+simulator = "{simulator}"
+[platform]
+pdk = "testpdk"
+[setup]
+source = "setup.il"
+config_procedure = "fixtureConfig"
+maestro_procedure = "fixtureMaestro"
+''')
+    (tb / "cell.toml").write_text('''schema = 1
+contract_kind = "oa-cell"
+path_scope = "cell"
+owner = "fixture"
+cell = "tb"
+role = "testbench"
+canonical_source = "testbench.scs"
+views = [
+  { name = "netlist", kind = "spectre_netlist", source = "testbench.scs" },
+  { name = "schematic", kind = "schematic", source = "testbench.scs", dependencies = ["tb/netlist"] },
+  { name = "config", kind = "config", source = "simulation.toml", dependencies = ["tb/schematic"] },
+  { name = "measurement", kind = "skill", source = "setup.il", dependencies = ["tb/config"] },
+  { name = "maestro", kind = "maestro", source = "simulation.toml", dependencies = ["tb/config", "tb/measurement"] },
+]
+''')
+    component = owner / "component.toml"
+    filenames = ("cell.toml", "testbench.scs", "simulation.toml", "setup.il")
+    declarations = "\n".join(
+        f'tb_{i} = "ip/fixture/cells/tb/{name}"' for i, name in enumerate(filenames)
+    )
+    component.write_text(component.read_text().replace(
+        "[sources]", '\noperation_catalog = "operations"\n\n[sources]\n'
+        'operations = "ip/fixture/configs/operations.toml"\n' + declarations
+    ).replace('oa_source = [', 'oa_source = ["tb_0", "tb_1", "tb_2", "tb_3", '))
+    (owner / "configs/operations.toml").write_text('''schema = 4
+contract_kind = "owner-operations"
+path_scope = "owner"
+owner = "fixture"
+[operations.simulate]
+uses = "cadence.native-oa"
+filesets = ["oa_source"]
+config = { owner = "fixture", testbench = "tb", timeout_seconds = 30 }
+''')
+    with (tmp_path / "sigilicon.toml").open("a") as stream:
+        stream.write(f'''\n[runtime.tools]
+"runtime.python" = "{sys.executable}"
+"cadence.virtuoso" = "/bin/true"
+"cadence.spectre" = "/bin/true"
+"cadence.xrun" = "/bin/true"
+''')
+    plan = Project.open(tmp_path).plan("fixture:simulate")
+    identities = {resource.identity for resource in plan.resources}
+    assert "cadence.spectre" in identities
+    assert ("cadence.xrun" in identities) is (simulator == "ams")

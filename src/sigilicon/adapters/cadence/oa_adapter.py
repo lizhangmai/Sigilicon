@@ -5,11 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sigilicon.adapters.cadence._common import (
-    AdapterPreparation, Any, Artifact, CADENCE_SPICEIN_TOOL,
+    AdapterPreparation, Any, CADENCE_SPICEIN_TOOL, CADENCE_SPECTRE_TOOL,
     CADENCE_TEXT_IMPORT_TOOL, CADENCE_VIRTUOSO_TOOL, ContractError,
     ExecutionError, ExecutionIO, Mapping, PreflightCheck, Resources, Step,
     StepResult, _BRIDGE_RESOURCES, _CadenceInputs, Project,
-    _OA_CAPABILITIES, _PYTHON, _bridge_check, _capability_checks,
+    _OA_CAPABILITIES, _PYTHON, _XRUN, _bridge_check, _capability_checks,
     _executable_check, _oa_resource_identities, _oa_runtime_executables,
     _positive_integer, _prepare_cadence_inputs, _strict_config, _text,
     _validate_oa_plan_sources, canonical_digest, find_oa_assembly,
@@ -47,10 +47,18 @@ class NativeOaAdapter:
         _text(config, "owner")
         _text(config, "testbench")
         _positive_integer(config, "timeout_seconds")
+        compiler = (
+            (_XRUN,)
+            if isinstance(step.action, _NativeOaAction)
+            and _XRUN in step.action.inputs.runtime_identities
+            else ()
+        )
         return (
             _bridge_check(resources),
             _executable_check(resources, CADENCE_VIRTUOSO_TOOL),
             _executable_check(resources, _PYTHON),
+            _executable_check(resources, CADENCE_SPECTRE_TOOL),
+            *(_executable_check(resources, name) for name in compiler),
             *_capability_checks(resources, _OA_CAPABILITIES),
         )
 
@@ -106,6 +114,8 @@ class NativeOaAdapter:
                 *_BRIDGE_RESOURCES,
                 CADENCE_VIRTUOSO_TOOL,
                 _PYTHON,
+                CADENCE_SPECTRE_TOOL,
+                *((_XRUN,) if matches[0].simulation.simulator == "ams" else ()),
             ),
         )
         return prepared.bind(_NativeOaAction(planning, prepared.inputs))
@@ -274,7 +284,7 @@ def _oa_preflight(
         else tuple(
             name
             for name in action.inputs.runtime_identities
-            if name in {CADENCE_SPICEIN_TOOL, CADENCE_TEXT_IMPORT_TOOL, _PYTHON}
+            if name in {CADENCE_SPICEIN_TOOL, CADENCE_TEXT_IMPORT_TOOL, _PYTHON, _XRUN}
         )
     )
     return (
@@ -347,12 +357,12 @@ def _publish_oa_result(
     passed = payload.get("passed")
     if type(passed) is not bool:
         raise ExecutionError("OA evidence must contain a boolean 'passed' field")
-    output = context.write_text(
+    context.write_text(
         "oa",
         f"{operation}.json",
         json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
     )
-    artifacts = (Artifact("oa", "evidence.cadence-oa", output),)
+    artifacts = context.output_artifacts("oa", "evidence.cadence-oa", required=True)
     return (
         StepResult.succeeded(artifacts=artifacts)
         if passed
@@ -493,6 +503,7 @@ class OaRebuildAdapter:
             source_paths=action.inputs.source_paths(context),
             resource_paths=action.inputs.resource_paths(context),
             resources=context.runtime,
+            artifacts=context.workspace("oa", {}).scoped("layouts"),
             timeout=_positive_integer(config, "timeout_seconds"),
             operation_id=context.operation_id,
             bind_operation=context.register_mutation,

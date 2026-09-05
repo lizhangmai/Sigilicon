@@ -255,12 +255,14 @@ def test_native_oa_preflight_requires_explicit_virtuoso_executable(
     )
 
     executable = _file(tmp_path / "tools/virtuoso", executable=True)
+    spectre = _file(tmp_path / "tools/spectre", executable=True)
     ready = NativeOaAdapter().preflight(
         step,
         Resources(
             capabilities=capabilities,
             tools={
                 "cadence.virtuoso": str(executable),
+                "cadence.spectre": str(spectre),
                 "runtime.python": sys.executable,
             },
             values=values,

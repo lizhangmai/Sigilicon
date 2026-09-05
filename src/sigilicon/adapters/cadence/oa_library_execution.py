@@ -12,6 +12,7 @@ from sigilicon.virtuoso.attestation import attest_native_setup
 from sigilicon.virtuoso.discovery import list_cells
 from sigilicon.virtuoso.layout_generation import validate_layout_plan
 from sigilicon.virtuoso.oa import cell_view_exists, delete_cell, delete_cell_view
+from sigilicon.virtuoso.text_view import check_oa_text_view_source
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 from sigilicon.adapters.cadence.design_lifecycle import (
     attest_oa_design,
@@ -26,7 +27,7 @@ from sigilicon.adapters.cadence.oa_library import (
     OALibraryRebuildPlan,
     TestbenchRebuildStep,
 )
-from sigilicon.adapters.cadence.oa_testbench import sync_oa_testbench
+from sigilicon.adapters.cadence.oa_testbench import materialize_oa_models, sync_oa_testbench
 from sigilicon.adapters.cadence.oa_text_view import sync_oa_text_view
 
 
@@ -296,6 +297,15 @@ def check_oa_parity(
             continue
         if step.cell not in actual or step.view.name not in actual[step.cell]:
             continue
+        try:
+            if step.source_snapshot is None:
+                raise ValueError("native text view requires its canonical source snapshot")
+            check_oa_text_view_source(
+                plan.source.oa_library / step.cell / step.view.name, step.source_snapshot,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            stale_or_modified[f"{step.cell}/{step.view.name}"] = str(exc)
+            continue
         text_view_reports.append(
             {
                 "cell": step.cell,
@@ -461,6 +471,7 @@ def rebuild_oa_library(
     source_paths: Mapping[Path, Path],
     resource_paths: Mapping[Path, Path],
     resources: Any,
+    artifacts: ExecutionWorkspace,
     cell: str | None = None,
     testbench: str | None = None,
     timeout: int = 300,
@@ -600,6 +611,7 @@ def rebuild_oa_library(
                 client,
                 overwrite=True,
                 timeout=timeout,
+                artifacts=artifacts.scoped(f"{index:03d}-{step.spec.cell}-{step.spec.view}"),
                 operation_id=operation_id,
                 bind_operation=bind_operation,
             )
@@ -608,14 +620,11 @@ def rebuild_oa_library(
             f"testbench {index}/{len(selected_testbenches)}: rebuild "
             f"{plan.library}/{step.cell}"
         )
-        model_path = (
-            step.simulation.native_setup.pdk.simulation.default.file.require_path()
+        model_file = materialize_oa_models(
+            step.simulation.native_setup.pdk.simulation.default,
+            {**source_paths, **resource_paths},
+            artifacts.scoped(f"testbench-{step.cell}"),
         )
-        model_file = resource_paths.get(model_path, source_paths.get(model_path))
-        if model_file is None:
-            raise ValueError(
-                "OA testbench PDK model is outside the sealed input closure"
-            )
         sync_oa_testbench(
             step.simulation,
             step.source_snapshot,
