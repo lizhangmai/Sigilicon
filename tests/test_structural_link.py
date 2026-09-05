@@ -236,7 +236,7 @@ maturity = "development"
         release_export="macro-top",
         liberty_role="raw_macro_liberty_or_db",
         resources=Resources(
-            directories={
+            destinations={
                 "release-store.fixture": str(
                     tmp_path / "artifacts/release-store"
                 )

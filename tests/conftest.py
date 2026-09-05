@@ -66,7 +66,7 @@ artifact_root = "artifacts"
 "virtuoso-bridge.host" = "127.0.0.1"
 "virtuoso-bridge.port" = "50051"
 
-[runtime.directories]
+[runtime.destinations]
 "release-store.fixture" = "{root / 'artifacts/release-store'}"
 "release-store.fixture-ip" = "{root / 'artifacts/release-store'}"
 "release-store.native-fixture" = "{root / 'artifacts/release-store'}"

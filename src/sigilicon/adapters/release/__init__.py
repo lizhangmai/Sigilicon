@@ -129,7 +129,7 @@ class IpReleaseAdapter:
         action = _ReleaseAction(
             release,
             sources,
-            _resources.require_directory(store_identity),
+            _resources.require_destination(store_identity),
         )
         return AdapterPreparation(
             action=action,

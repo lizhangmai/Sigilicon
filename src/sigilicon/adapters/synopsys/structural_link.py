@@ -218,7 +218,7 @@ def plan_structural_link(
     )
     ref = ReleaseRef(pinned.store, pinned.manifest_sha256)
     release_store_root = Path(
-        resources.require_directory(release_store_resource(ref.store))
+        resources.require_destination(release_store_resource(ref.store))
     )
     audited = ReleaseStore(release_store_root).open(
         ref,

@@ -28,6 +28,7 @@ from sigilicon.execution._model import (
 )
 from sigilicon.execution.adapter import AdapterRegistry
 from sigilicon.external_tools import (
+    owned_directory,
     owned_input_closure,
     process_group_cleanup_uncertainty,
 )
@@ -67,6 +68,14 @@ def _held_step_inputs(
 
     monitor = ExitStack()
     try:
+        for identity in step.resources:
+            binding = bindings[identity]
+            if binding.kind == "destination":
+                assert binding.location is not None
+                held = monitor.enter_context(owned_directory(binding.location))
+                metadata = os.fstat(held.fd)
+                if binding._fingerprint != ((metadata.st_dev, metadata.st_ino),):
+                    raise RuntimeError(f"publication destination changed: {identity}")
         monitor.enter_context(
             owned_input_closure(source_root, files=source_paths)
         )
@@ -81,6 +90,7 @@ def _held_step_inputs(
                 )
             )
     except (OSError, RuntimeError) as exc:
+        monitor.close()
         raise InputIntegrityError(
             "could not bind the sealed adapter input closure"
         ) from exc
@@ -374,7 +384,7 @@ def _run(
             "inputs",
             ("runtime-bindings.json",),
             {
-                "schema": 6,
+                "schema": 7,
                 "contract_kind": "runtime-bindings",
                 "capabilities": sorted(resources.capabilities),
                 "inherit_environment": list(resources.inherit_environment),
@@ -393,6 +403,7 @@ def _run(
                         ("tools", "tool", resources.tools),
                         ("files", "file", resources.files),
                         ("directories", "directory", resources.directories),
+                        ("destinations", "destination", resources.destinations),
                         ("values", "value", resources.values),
                     )
                 },

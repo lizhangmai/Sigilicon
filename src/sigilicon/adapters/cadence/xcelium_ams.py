@@ -181,7 +181,7 @@ def _locked_native_release(
     ref = ReleaseRef(selected["store"], selected["manifest_sha256"])
     try:
         store_root = Path(
-            resources.require_directory(release_store_resource(ref.store))
+            resources.require_destination(release_store_resource(ref.store))
         )
         audited = ReleaseStore(store_root).open(
             ref,

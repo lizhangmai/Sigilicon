@@ -107,6 +107,7 @@ def _runtime_resources(raw: Mapping[str, Any], contract: Path) -> Resources:
             tools=table("tools"),
             files=table("files"),
             directories=table("directories"),
+            destinations=table("destinations"),
             values=table("values"),
             inherit_environment=tuple(inherit_environment),
             environment=environment,

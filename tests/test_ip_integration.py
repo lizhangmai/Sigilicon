@@ -589,7 +589,7 @@ contract_kind = "sigilicon-project"
 path_scope = "repository"
 owner = "repository"
 
-[runtime.directories]
+[runtime.destinations]
 "release-store.fixture" = "{project_root.parent / 'artifacts/release-store'}"
 
 [catalogs]

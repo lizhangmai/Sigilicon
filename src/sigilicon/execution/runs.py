@@ -255,7 +255,7 @@ class RunStore:
         ):
             raise RunStoreError("execution manifest identity or closure drift")
         if (
-            plan.get("schema") != 14
+            plan.get("schema") != 15
             or plan.get("contract_kind") != "execution-plan"
             or plan.get("owner") != selected.owner
             or plan.get("operation") != selected.operation
@@ -341,7 +341,7 @@ class RunStore:
             "inherit_environment",
             "environment",
             "configuration",
-        } or value.get("schema") != 6 or value.get("contract_kind") != (
+        } or value.get("schema") != 7 or value.get("contract_kind") != (
             "runtime-bindings"
         ):
             raise RunStoreError("persisted runtime bindings have an invalid shape")
@@ -375,11 +375,12 @@ class RunStore:
             "tools",
             "files",
             "directories",
+            "destinations",
             "values",
         }:
             raise RunStoreError("persisted runtime configuration is malformed")
         configured_identities: set[str] = set()
-        for label in ("tools", "files", "directories", "values"):
+        for label in ("tools", "files", "directories", "destinations", "values"):
             table = configuration[label]
             if not isinstance(table, Mapping) or list(table) != sorted(table):
                 raise RunStoreError("persisted runtime configuration is not canonical")

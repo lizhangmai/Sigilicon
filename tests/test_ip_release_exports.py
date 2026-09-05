@@ -1465,7 +1465,6 @@ format = "json"
     assert not project.preflight(project.plan("rtl-fixture:release")).ready
 
 
-@pytest.mark.xfail(strict=True, reason="publication destination is captured as input")
 def test_release_publication_does_not_change_its_input_identity(tmp_path: Path) -> None:
     contract = _rtl_contract_fixture(tmp_path)
     _commit_release_source(tmp_path, "RTL release source")
@@ -1475,6 +1474,21 @@ def test_release_publication_does_not_change_its_input_identity(tmp_path: Path) 
     assert ip_packaging.audit_ip_release_manifest(_built_manifest(project, built))["source_commit"]
     after = Project.open(tmp_path).plan("rtl-fixture:release")
     assert after.identity == before.identity
+    store = project.resources().require_destination("release-store.rtl-fixture")
+    (store / "unrelated").symlink_to(tmp_path / "missing-payload")
+    assert Project.open(tmp_path).plan("rtl-fixture:release").identity == before.identity
+    assert project.run(before).status == "succeeded"
+
+
+def test_release_rejects_replaced_destination(tmp_path: Path) -> None:
+    _rtl_contract_fixture(tmp_path)
+    _commit_release_source(tmp_path, "RTL release source")
+    project = Project.open(tmp_path)
+    plan = project.plan("rtl-fixture:release")
+    store = project.resources().require_destination("release-store.rtl-fixture")
+    store.rename(store.with_name("replaced-store"))
+    store.mkdir()
+    assert not project.preflight(plan).ready
 
 
 @pytest.mark.xfail(strict=True, reason="release roles cannot select multiple corners")

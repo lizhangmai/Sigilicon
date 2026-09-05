@@ -457,7 +457,7 @@ def check_ip_integration(
         assert release is not None
         pinned = locked_by_name[dependency.name]
         store_root = Path(
-            runtime.require_directory(release_store_resource(pinned.store))
+            runtime.require_destination(release_store_resource(pinned.store))
         )
         audited = _locked_release_manifest(
             contract=contract,
@@ -561,7 +561,7 @@ def resolve_ip_integration_fileset(
             manifest_sha256=dependency["manifest_sha256"],
         )
         store_root = Path(
-            runtime.require_directory(release_store_resource(pinned.store))
+            runtime.require_destination(release_store_resource(pinned.store))
         )
         package = resolve_locked_ip_release(
             release_store_root=store_root,

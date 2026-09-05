@@ -351,7 +351,7 @@ class ResourceBinding:
 
     def __post_init__(self) -> None:
         resource_identity(self.identity)
-        if self.kind not in {"tool", "file", "directory", "value"}:
+        if self.kind not in {"tool", "file", "directory", "value", "destination"}:
             raise ContractError("unsupported resource binding kind")
         location = (
             None if self.location is None else Path(self.location).absolute()
@@ -377,6 +377,12 @@ class ResourceBinding:
             raise ContractError("resource binding must not traverse a symlink")
         if self.value is not None:
             raise ContractError("path resource binding cannot contain a value")
+        if self.kind == "destination":
+            if self.files or self.directories or self.sha256 != hashlib.sha256(
+                f"destination:{self.identity}".encode()
+            ).hexdigest():
+                raise ContractError("destination binding cannot contain input content")
+            return
         if not isinstance(self.files, tuple) or any(
             not isinstance(item, ResourceFile) for item in self.files
         ):
@@ -446,6 +452,15 @@ class ResourceBinding:
             raise ContractError(f"resource binding must not traverse a symlink: {path}")
         selected = resolved if kind == "tool" else location
         metadata = selected.stat(follow_symlinks=False)
+        if kind == "destination":
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise ContractError("publication destination must be a directory")
+            return cls(
+                resource_identity(identity), kind,
+                hashlib.sha256(f"destination:{identity}".encode()).hexdigest(),
+                location, (),
+                _fingerprint=((metadata.st_dev, metadata.st_ino),),
+            )
         if stat.S_ISREG(metadata.st_mode):
             selected_kind = "file" if kind is None else kind
             if selected_kind not in {"tool", "file"}:
@@ -701,7 +716,7 @@ class ResourceBinding:
             common["value"] = self.value
         elif self.kind in {"tool", "file"}:
             common["executable"] = self.files[0].executable
-        else:
+        elif self.kind == "directory":
             common["directories"] = list(self.directories)
             common["files"] = [item.record for item in self.files]
         return common
@@ -793,13 +808,17 @@ def validate_resource_record(record: Mapping[str, Any]) -> str:
     size = record.get("size")
     if (
         not isinstance(identity, str)
-        or kind not in {"tool", "file", "directory", "value"}
+        or kind not in {"tool", "file", "directory", "value", "destination"}
         or not isinstance(digest, str)
         or type(size) is not int
         or size < 0
     ):
         raise ContractError("resource record header is invalid")
-    if kind == "value":
+    if kind == "destination":
+        if set(record) != common or size != 0:
+            raise ContractError("destination resource record is invalid")
+        binding = ResourceBinding(identity, kind, digest, Path("/"), ())
+    elif kind == "value":
         value = record.get("value")
         if set(record) != common | {"value"} or not isinstance(value, str):
             raise ContractError("value resource record is invalid")
@@ -1130,7 +1149,7 @@ class ExecutionPlan:
     @property
     def record(self) -> dict[str, Any]:
         return {
-            "schema": 14,
+            "schema": 15,
             "contract_kind": "execution-plan",
             "project_identity": self.project_identity,
             "owner": self.owner,
@@ -1171,6 +1190,7 @@ class Resources:
     tools: Mapping[str, str] = field(default_factory=dict)
     files: Mapping[str, str] = field(default_factory=dict)
     directories: Mapping[str, str] = field(default_factory=dict)
+    destinations: Mapping[str, str] = field(default_factory=dict)
     values: Mapping[str, str] = field(default_factory=dict)
     inherit_environment: tuple[str, ...] = ()
     environment: Mapping[str, str] = field(default_factory=dict)
@@ -1190,6 +1210,7 @@ class Resources:
             "tools": self.tools,
             "files": self.files,
             "directories": self.directories,
+            "destinations": self.destinations,
             "values": self.values,
         }
         identities: set[str] = set()
@@ -1328,10 +1349,25 @@ class Resources:
             raise ContractError(f"required runtime value is missing: {identity}")
         return value
 
+    def require_destination(self, name: str) -> Path:
+        """Resolve a mutable store root without traversing or capturing its contents."""
+        identity = resource_identity(name)
+        value = self.destinations.get(identity)
+        if value is None:
+            raise ContractError(f"required runtime destination is missing: {identity}")
+        path = Path(value).absolute()
+        if path.resolve() != path or not path.is_dir():
+            raise ContractError(f"runtime destination is missing or unsafe: {identity}")
+        return path
+
     def capture(self, name: str) -> ResourceBinding:
         """Capture one configured identity without guessing its resource kind."""
 
         identity = resource_identity(name)
+        if identity in self.destinations:
+            return ResourceBinding.capture(
+                self.require_destination(identity), identity=identity, kind="destination"
+            )
         if identity in self.tools:
             return ResourceBinding.capture(
                 self.require_tool(identity), identity=identity, kind="tool"
@@ -1370,6 +1406,7 @@ class Resources:
             *self.tools,
             *self.files,
             *self.directories,
+            *self.destinations,
             *self.values,
         }
         if binding.identity not in configured:
@@ -1395,9 +1432,16 @@ class Resources:
             "tools": {},
             "files": {},
             "directories": {},
+            "destinations": {},
             "values": {},
         }
         for binding in bindings:
+            if binding.kind == "destination":
+                assert binding.location is not None
+                if not binding.current():
+                    raise ExecutionError(f"publication destination changed: {binding.identity}")
+                tables["destinations"][binding.identity] = str(binding.location)
+                continue
             if binding.kind == "value":
                 assert binding.value is not None
                 tables["values"][binding.identity] = binding.value
@@ -1416,6 +1460,7 @@ class Resources:
             tools=tables["tools"],
             files=tables["files"],
             directories=tables["directories"],
+            destinations=tables["destinations"],
             values=tables["values"],
             inherit_environment=self.inherit_environment,
             environment=self.environment,
@@ -1661,7 +1706,7 @@ class ExecutionIO:
             not isinstance(self._resource_kinds, Mapping)
             or set(self._resource_kinds) != set(self.step.resources)
             or any(
-                kind not in {"tool", "file", "directory", "value"}
+                kind not in {"tool", "file", "directory", "value", "destination"}
                 for kind in self._resource_kinds.values()
             )
         ):
@@ -1784,7 +1829,7 @@ class ExecutionIO:
         """Return one sealed external resource selected by this Step."""
 
         name = resource_identity(resource)
-        if self._resource_kinds.get(name) in {"tool", "value"}:
+        if self._resource_kinds.get(name) in {"tool", "value", "destination"}:
             raise ExecutionError(f"external resource is not sealed data: {name!r}")
         result = self._resource_paths.get(name)
         if result is None:
