@@ -14,6 +14,8 @@ from sigilicon.artifacts import read_nofollow_text
 
 CONFIG_SCHEMA = 1
 _CONFIG_SCHEMAS = {
+    "platform-layout": 2,
+    "platform-verification": 2,
     "ip-dependency-lock": 3,
     "ip-component": 5,
     "ip-catalog": 2,

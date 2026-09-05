@@ -9,6 +9,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Iterator, Mapping, Protocol, runtime_checkable
 
 from sigilicon.contracts import (
+    contract_schema,
     freeze_toml_document,
     is_frozen_toml_document,
     read_toml,
@@ -16,6 +17,7 @@ from sigilicon.contracts import (
 )
 from sigilicon.domain.layout_technology import LayoutTechnology, parse_layout_technology
 from sigilicon.domain.context import RepositoryIdentity
+from sigilicon.domain.physical_verification import DeckSubstitution
 
 if TYPE_CHECKING:
     from sigilicon.project import Project
@@ -156,19 +158,34 @@ class OaMaterializationMapping:
 
 @dataclass(frozen=True)
 class LayoutPlatform:
-    """Layout and physical-verification capability of one platform."""
+    """Geometry and optional OA stream export capability of one platform."""
 
     layout_path: Path
-    verification_path: Path
     dbu_per_micron: int
-    layermap: PlatformAsset
-    drc_deck: PlatformAsset
-    lvs_deck: PlatformAsset
-    qrc_tech_file: PlatformAsset | None
+    layermap: PlatformAsset | None = None
     xstream_flatten_pcells: bool = True
     xstream_suppressed_warnings: tuple[str, ...] = ()
     oa_materialization: OaMaterializationMapping | None = None
     technology: LayoutTechnology | None = None
+
+
+@dataclass(frozen=True)
+class VerificationDeck:
+    asset: PlatformAsset
+    substitutions: tuple[DeckSubstitution, ...]
+
+
+@dataclass(frozen=True)
+class VerificationPlatform:
+    path: Path
+    checks: Mapping[str, VerificationDeck]
+    qrc_tech_file: PlatformAsset | None = None
+
+    def require_check(self, name: str) -> VerificationDeck:
+        try:
+            return self.checks[name]
+        except KeyError as exc:
+            raise ValueError(f"platform verification does not support {name}") from exc
 
 
 _PLATFORM_AUTHORITY = object()
@@ -186,6 +203,7 @@ class Platform:
     simulation: SimulationPlatform | None
     oa: OaPlatformConfig | None
     layout: LayoutPlatform | None
+    verification: VerificationPlatform | None
     source_paths: tuple[Path, ...]
     catalog_document: Mapping[str, Any] = field(
         default_factory=lambda: MappingProxyType({})
@@ -219,17 +237,12 @@ class Platform:
                 for model_set in self.simulation.model_sets.values()
                 for asset in model_set.files
             )
-        if self.layout is not None:
-            selected.extend(
-                asset
-                for asset in (
-                    self.layout.layermap,
-                    self.layout.drc_deck,
-                    self.layout.lvs_deck,
-                    self.layout.qrc_tech_file,
-                )
-                if asset is not None
-            )
+        if self.layout is not None and self.layout.layermap is not None:
+            selected.append(self.layout.layermap)
+        if self.verification is not None:
+            selected.extend(deck.asset for deck in self.verification.checks.values())
+            if self.verification.qrc_tech_file is not None:
+                selected.append(self.verification.qrc_tech_file)
         return tuple(selected)
 
     @property
@@ -249,13 +262,14 @@ def platform_resource_identities(platform: Platform) -> Mapping[Path, str]:
                 selected[path.absolute()] = (
                     f"pdk:{platform.key}:simulation/{name}/{index}-{path.name}"
                 )
-    layout = getattr(platform, "layout", None)
-    if layout is not None:
-        for role in ("layermap", "drc_deck", "lvs_deck", "qrc_tech_file"):
-            asset = getattr(layout, role, None)
-            if asset is not None:
-                path = asset.require_path()
-                selected[path.absolute()] = f"pdk:{platform.key}:layout/{role}"
+    if platform.layout is not None and platform.layout.layermap is not None:
+        selected[platform.layout.layermap.require_path()] = f"pdk:{platform.key}:layout/layermap"
+    if platform.verification is not None:
+        for name, deck in platform.verification.checks.items():
+            selected[deck.asset.require_path()] = f"pdk:{platform.key}:verification/{name}"
+        asset = platform.verification.qrc_tech_file
+        if asset is not None:
+            selected[asset.require_path()] = f"pdk:{platform.key}:verification/qrc"
     return MappingProxyType(selected)
 
 
@@ -410,6 +424,8 @@ def _validate_immutable_platform_snapshot(snapshot: Platform) -> None:
     typed_mappings: list[Mapping[str, object]] = []
     if snapshot.simulation is not None:
         typed_mappings.append(snapshot.simulation.model_sets)
+    if snapshot.verification is not None:
+        typed_mappings.append(snapshot.verification.checks)
     if snapshot.oa is not None:
         typed_mappings.append(snapshot.oa.primitive_subcircuits)
     if (
@@ -639,6 +655,7 @@ def _contract(
         raw,
         path,
         contract_kind=f"platform-{name}",
+        schema=contract_schema(f"platform-{name}"),
         path_scope="platform",
         owner=owner,
     )
@@ -781,96 +798,61 @@ def _parse_oa_materialization(
 
 
 def _load_layout(
-    layout_path: Path,
-    layout_raw: Mapping[str, Any],
-    verification_path: Path,
-    verification_raw: Mapping[str, Any],
-    *,
-    asset_root: Path | None,
-    require_assets: bool = True,
+    layout_path: Path, layout_raw: Mapping[str, Any], *,
+    asset_root: Path | None, require_assets: bool = True,
 ) -> LayoutPlatform:
-    _reject_unknown(
-        layout_raw,
-        _HEADER_FIELDS | {"dbu_per_micron", "oa_materialization", "custom_layout"},
-        "platform layout contract",
-    )
-    _reject_unknown(
-        verification_raw,
-        _HEADER_FIELDS
-        | {
-            "layermap",
-            "drc_deck",
-            "lvs_deck",
-            "qrc_tech_file",
-            "xstream_flatten_pcells",
-            "xstream_suppressed_warnings",
-        },
-        "platform verification contract",
-    )
+    _reject_unknown(layout_raw, _HEADER_FIELDS | {
+        "dbu_per_micron", "oa_materialization", "custom_layout", "layermap",
+        "xstream_flatten_pcells", "xstream_suppressed_warnings",
+    }, "platform layout contract")
     dbu = layout_raw.get("dbu_per_micron")
-    if isinstance(dbu, bool) or not isinstance(dbu, int) or dbu <= 0:
+    if type(dbu) is not int or dbu <= 0:
         raise ValueError("layout.dbu_per_micron must be a positive integer")
-    oa_materialization = _parse_oa_materialization(
-        layout_raw.get("oa_materialization")
-    )
-    xstream_flatten = verification_raw.get("xstream_flatten_pcells", True)
-    if not isinstance(xstream_flatten, bool):
-        raise ValueError("verification.xstream_flatten_pcells must be boolean")
-    warnings = _strings(
-        verification_raw.get("xstream_suppressed_warnings", []),
-        "verification.xstream_suppressed_warnings",
-    )
-    if any(
-        not warning.startswith("XSTRM-")
-        or not warning.removeprefix("XSTRM-").isdigit()
-        for warning in warnings
-    ):
+    flatten = layout_raw.get("xstream_flatten_pcells", True)
+    if not isinstance(flatten, bool):
+        raise ValueError("layout.xstream_flatten_pcells must be boolean")
+    warnings = _strings(layout_raw.get("xstream_suppressed_warnings", []), "layout.xstream_suppressed_warnings")
+    if any(re.fullmatch(r"XSTRM-[0-9]+", warning) is None for warning in warnings):
         raise ValueError("xstream warnings must use XSTRM-<number> identities")
     return LayoutPlatform(
-        layout_path=layout_path,
-        verification_path=verification_path,
-        dbu_per_micron=dbu,
-        layermap=_platform_asset(
-            asset_root,
-            verification_raw.get("layermap"),
-            "layermap",
-            require_asset=require_assets,
-        ),
-        drc_deck=_platform_asset(
-            asset_root,
-            verification_raw.get("drc_deck"),
-            "drc_deck",
-            require_asset=require_assets,
-        ),
-        lvs_deck=_platform_asset(
-            asset_root,
-            verification_raw.get("lvs_deck"),
-            "lvs_deck",
-            require_asset=require_assets,
-        ),
-        qrc_tech_file=(
-            _platform_asset(
-                asset_root,
-                verification_raw["qrc_tech_file"],
-                "qrc_tech_file",
-                require_asset=require_assets,
-            )
-            if "qrc_tech_file" in verification_raw
-            else None
-        ),
-        xstream_flatten_pcells=xstream_flatten,
-        xstream_suppressed_warnings=warnings,
-        oa_materialization=oa_materialization,
-        technology=(
-            None
-            if "custom_layout" not in layout_raw
-            else parse_layout_technology(
-                layout_raw,
-                owner=_text(layout_raw.get("owner"), "layout.owner"),
-                payload_key="custom_layout",
-            )
-        ),
+        layout_path=layout_path, dbu_per_micron=dbu,
+        layermap=(_platform_asset(asset_root, layout_raw["layermap"], "layermap", require_asset=require_assets)
+                  if "layermap" in layout_raw else None),
+        xstream_flatten_pcells=flatten, xstream_suppressed_warnings=warnings,
+        oa_materialization=_parse_oa_materialization(layout_raw.get("oa_materialization")),
+        technology=(parse_layout_technology(layout_raw, owner=_text(layout_raw.get("owner"), "layout.owner"),
+                                           payload_key="custom_layout") if "custom_layout" in layout_raw else None),
     )
+
+
+def _load_verification(
+    path: Path, raw: Mapping[str, Any], *, asset_root: Path | None, require_assets: bool,
+) -> VerificationPlatform:
+    _reject_unknown(raw, _HEADER_FIELDS | {"drc", "lvs", "qrc_tech_file"}, "platform verification contract")
+    checks = {}
+    for name in ("drc", "lvs"):
+        if name not in raw:
+            continue
+        row = _table(raw[name], f"verification.{name}")
+        _reject_unknown(row, {"deck", "substitutions"}, f"verification.{name}")
+        substitutions = row.get("substitutions")
+        if not isinstance(substitutions, (list, tuple)) or not substitutions:
+            raise ValueError("verification deck requires explicit substitutions")
+        edits = tuple(DeckSubstitution.from_record(item) for item in substitutions)
+        parameters = set().union(*(edit.parameters for edit in edits))
+        required = {"layout_path", "primary"} | (
+            {"results_path", "summary_path"} if name == "drc" else {"source_path", "work_dir"})
+        if not required.issubset(parameters):
+            raise ValueError(f"verification {name} template must bind {sorted(required)}")
+        checks[name] = VerificationDeck(
+            _platform_asset(asset_root, row.get("deck"), f"{name}.deck", require_asset=require_assets),
+            edits,
+        )
+    if not checks:
+        raise ValueError("verification requires at least one DRC or LVS check")
+    return VerificationPlatform(path, MappingProxyType(checks),
+        _platform_asset(asset_root, raw["qrc_tech_file"], "qrc_tech_file", require_asset=require_assets)
+        if "qrc_tech_file" in raw else None)
 
 
 def _platform_catalog_document(
@@ -997,8 +979,6 @@ def _load_platform(
         raise ValueError(
             "platform contracts must declare at least one supported capability"
         )
-    if ("layout" in contracts) != ("verification" in contracts):
-        raise ValueError("platform layout and verification contracts must be paired")
     simulation_contract = _contract(
         manifest,
         contracts,
@@ -1026,30 +1006,17 @@ def _load_platform(
         if selected is not None:
             source_paths.append(selected[0])
             source_documents[selected[0]] = selected[1]
-    layout: LayoutPlatform | None = None
-    if "layout" in contracts:
-        layout_contract = _contract(
-            manifest, contracts, "layout", root=root, owner=header.owner
-        )
-        verification_contract = _contract(
-            manifest, contracts, "verification", root=root, owner=header.owner
-        )
-        assert layout_contract is not None and verification_contract is not None
-        layout_path, layout_raw = layout_contract
-        verification_path, verification_raw = verification_contract
-        layout = _load_layout(
-            layout_path,
-            layout_raw,
-            verification_path,
-            verification_raw,
-            asset_root=asset_root,
-            require_assets=asset_root is not None,
-        )
-        source_paths.extend((layout_path, verification_path))
+    layout_contract = _contract(manifest, contracts, "layout", root=root, owner=header.owner, required=False)
+    verification_contract = _contract(manifest, contracts, "verification", root=root, owner=header.owner, required=False)
+    layout = None if layout_contract is None else _load_layout(
+        *layout_contract, asset_root=asset_root, require_assets=asset_root is not None)
+    verification = None if verification_contract is None else _load_verification(
+        *verification_contract, asset_root=asset_root, require_assets=asset_root is not None)
+    for selected in (layout_contract, verification_contract):
+        if selected is not None:
+            source_paths.append(selected[0])
+            source_documents[selected[0]] = selected[1]
     sources = tuple(source_paths)
-    if layout is not None:
-        source_documents[layout.layout_path] = layout_raw
-        source_documents[layout.verification_path] = verification_raw
     return Platform(
         _authority=_PLATFORM_AUTHORITY,
         key=key,
@@ -1059,6 +1026,7 @@ def _load_platform(
         simulation=simulation,
         oa=oa,
         layout=layout,
+        verification=verification,
         source_paths=sources,
         catalog_document=freeze_toml_document(catalog_document),
         source_documents=MappingProxyType(

@@ -1,0 +1,1 @@
+"""Physical-verification tool adapters."""

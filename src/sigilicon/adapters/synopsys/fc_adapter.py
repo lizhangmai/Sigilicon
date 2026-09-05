@@ -180,7 +180,7 @@ class FcAdapter(RunnerAdapter):
                     copied.extend(
                         context.copy_output(
                             role=role,
-                            kind="result.synopsys-fc",
+                            kind="layout.gds" if role == "layout-stream" else "result.synopsys-fc",
                             source=path,
                             filename=path.relative_to(role_root).as_posix(),
                         )

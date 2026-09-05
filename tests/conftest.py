@@ -227,23 +227,33 @@ def write_test_layout_platform(root: Path, key: str = "testpdk") -> None:
         encoding="utf-8",
     )
     (platform / "layout.toml").write_text(
-        f'''schema = 1
+        f'''schema = 2
 contract_kind = "platform-layout"
 path_scope = "platform"
 owner = "{key}"
 dbu_per_micron = 1000
+layermap = "layermap"
 ''',
         encoding="utf-8",
     )
     (platform / "verification.toml").write_text(
-        f'''schema = 1
+        f'''schema = 2
 contract_kind = "platform-verification"
 path_scope = "platform"
 owner = "{key}"
-layermap = "layermap"
-drc_deck = "drc.deck"
-lvs_deck = "lvs.deck"
 qrc_tech_file = "qrc.tech"
+[drc]
+deck = "drc.deck"
+[[drc.substitutions]]
+match = "test"
+replacement = "fixture ${{primary}} ${{layout_path}} ${{results_path}} ${{summary_path}}"
+count = 1
+[lvs]
+deck = "lvs.deck"
+[[lvs.substitutions]]
+match = "test"
+replacement = "fixture ${{primary}} ${{layout_path}} ${{source_path}} ${{work_dir}}"
+count = 1
 ''',
         encoding="utf-8",
     )

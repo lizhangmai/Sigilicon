@@ -189,6 +189,23 @@ def test_platform_manifest_rejects_unknown_table(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize("capability", ["layout", "verification"])
+def test_platform_capabilities_are_independent(tmp_path: Path, capability: str) -> None:
+    write_test_layout_platform(tmp_path)
+    manifest = tmp_path / "configs/platform/testpdk/platform.toml"
+    source = manifest.read_text().split("[contracts]")[0]
+    manifest.write_text(source + f'[contracts]\n{capability} = "{capability}.toml"\n')
+    platform = load_platform(Project.open(tmp_path), "testpdk", resources=Resources())
+    assert platform.simulation is None
+    assert platform.oa is None
+    if capability == "verification":
+        assert platform.layout is None
+        assert platform.verification.require_check("drc").asset.require_path().name == "drc.deck"
+    else:
+        assert platform.verification is None
+        assert platform.layout.dbu_per_micron == 1000
+
+
 def test_layout_platform_resolves_optional_and_materialization_capabilities(
     tmp_path: Path,
 ) -> None:
@@ -222,7 +239,7 @@ routing1_routing2 = "M2_M1c"
     )
 
     assert platform.layout is not None
-    assert platform.layout.qrc_tech_file is None
+    assert platform.verification.qrc_tech_file is None
     mapping = platform.layout.oa_materialization
     assert mapping is not None
     assert mapping.layers["routing1"].layer == "M1"

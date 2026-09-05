@@ -689,6 +689,7 @@ done
     assert result.status == "failed"
     report = next(artifact for artifact in result.artifacts if artifact.role == "timing-report")
     assert report.read_text() == "generated report\n"
+    assert next(artifact for artifact in result.artifacts if artifact.role == "layout-stream").kind == "layout.gds"
     if failure == "runner":
         checkpoint = next(artifact for artifact in result.artifacts if artifact.role == "checkpoint")
         import tarfile

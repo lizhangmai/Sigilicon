@@ -455,7 +455,7 @@ def load_layout_spec(
     pdk = resolve_platform_snapshot(repository, pdk_key, snapshot=platform)
     if pdk.layout is None:
         raise ValueError(
-            f"platform {pdk_key!r} does not declare layout and verification contracts"
+            f"platform {pdk_key!r} does not declare a layout capability"
         )
     layout_pdk = pdk.layout
     assembly = _owner_oa_assembly(

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
+from string import Template
 from typing import Any, Mapping
 
 from sigilicon.canonical import canonical_json
@@ -17,6 +18,43 @@ from sigilicon.contracts import (
 
 
 _HEADER_FIELDS = {"schema", "contract_kind", "path_scope", "owner"}
+
+
+@dataclass(frozen=True)
+class DeckSubstitution:
+    """Platform-owned exact edit of a particular foundry deck revision."""
+
+    match: str
+    replacement: str
+    count: int
+
+    @property
+    def parameters(self) -> frozenset[str]:
+        return frozenset(Template(self.replacement).get_identifiers())
+
+    @classmethod
+    def from_record(cls, value: object) -> DeckSubstitution:
+        if not isinstance(value, Mapping) or set(value) != {"match", "replacement", "count"}:
+            raise ValueError("deck substitution requires match, replacement and count")
+        if not isinstance(value["match"], str) or not value["match"] or not isinstance(value["replacement"], str):
+            raise ValueError("deck substitution text is invalid")
+        if type(value["count"]) is not int or value["count"] < 1:
+            raise ValueError("deck substitution count must be positive")
+        template = Template(value["replacement"])
+        if not template.is_valid() or set(template.get_identifiers()) - {
+            "layout_path", "source_path", "primary", "work_dir", "results_path", "summary_path",
+        }:
+            raise ValueError("deck substitution has unsupported template parameters")
+        return cls(value["match"], value["replacement"], value["count"])
+
+    def apply(self, source: str, parameters: Mapping[str, str]) -> str:
+        count = source.count(self.match)
+        if count != self.count:
+            raise ValueError(f"foundry deck identity changed: expected {self.count} occurrences, got {count}: {self.match!r}")
+        for value in parameters.values():
+            if any(character in value for character in ('"', '\n', '\r', '\x00')):
+                raise ValueError("unsafe deck template parameter")
+        return source.replace(self.match, Template(self.replacement).substitute(parameters))
 
 
 @dataclass(frozen=True)

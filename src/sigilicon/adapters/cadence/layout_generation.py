@@ -9,6 +9,7 @@ from typing import Any, Callable, Mapping
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.domain.platform import PlatformSnapshot
+from sigilicon.domain.netlist import render_canonical_cdl, resolve_netlist_hierarchy
 from sigilicon.domain.source import SourceExecutionContext
 from sigilicon.project import Project
 from sigilicon.layout.generator import (
@@ -377,4 +378,27 @@ def _generate_layout_impl(
         raise RuntimeError("layout generation completed without committing its artifact")
     return LayoutGenerationResult(
         instance_count=len(execution_plan.instances),
+    )
+
+
+def render_canonical_source_cdl(spec: LayoutSpec) -> str:
+    """Render LVS source only from the layout spec's canonical source closure."""
+
+    hierarchy = resolve_netlist_hierarchy(
+        spec.source_snapshots,
+        top=spec.cell,
+        primitive_masters=spec.primitive_masters,
+    )
+    if hierarchy.definitions[spec.cell].ports != spec.ports:
+        raise RuntimeError("resolved LVS hierarchy changed the canonical top interface")
+    primitive_interfaces: list[str] = []
+    for master in sorted(hierarchy.primitive_counts):
+        terminals = spec.pdk.oa.primitive_subcircuits.get(master)
+        if terminals is not None:
+            primitive_interfaces.extend(
+                (f".SUBCKT {master} {' '.join(terminals)}", f".ENDS {master}", "")
+            )
+    return "\n".join(primitive_interfaces) + render_canonical_cdl(
+        hierarchy,
+        primitive_subcircuit_masters=spec.pdk.oa.primitive_subcircuits,
     )

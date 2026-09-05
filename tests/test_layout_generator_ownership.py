@@ -15,7 +15,8 @@ from sigilicon.layout.spec import (
 )
 
 
-def test_graph_owned_generator_dependencies_enter_managed_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("fault", [None, "source-drift", "missing-oa"])
+def test_graph_owned_generator_dependencies_enter_managed_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str | None) -> None:
     root, layout = _write_fixture(tmp_path)
     component = root / "ip/example/component.toml"
     component.write_text(component.read_text().replace(
@@ -50,13 +51,25 @@ def build_layout_plan(spec):
 
     monkeypatch.setattr("sigilicon.adapters.cadence.oa_client.get_client", lambda _resources: object())
     monkeypatch.setattr("sigilicon.adapters.cadence.layout_generation.generate_layout", fake_oa_write)
+    if fault == "missing-oa":
+        platform = root / "configs/platform/testpdk/platform.toml"
+        platform.write_text(platform.read_text().replace('oa = "oa.toml"\n', ''))
     project = Project.open(root)
     assert load_layout_spec(layout, project=project).generator_dependencies
+    if fault == "missing-oa":
+        with pytest.raises(ValueError, match="platform OA capability"):
+            project.plan("example:layout")
+        return
     plan = project.plan("example:layout")
     shared = next(source for source in plan.sources if source.location == root / "ip/shared/recipe.py")
     assert shared.reference.component == "shared"
     assert shared.reference.source == "source_1"
     assert project.preflight(plan).ready
+    if fault == "source-drift":
+        (root / "ip/shared/recipe.py").write_text("VALUE = 11\n")
+        with pytest.raises((ValueError, RuntimeError), match="drift|changed"):
+            project.run(plan)
+        return
     result = project.run(plan)
     assert result.status == "succeeded"
     artifact = next(artifact for step in result.outcomes for artifact in step.result.artifacts if artifact.path.name == "layout.json")

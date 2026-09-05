@@ -3,12 +3,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import sys
-from types import SimpleNamespace
 
 import pytest
 
 from sigilicon.adapters.cadence import cadence_adapters
-from sigilicon.adapters.cadence.layout_adapter import LayoutAdapter
 from sigilicon.adapters.cadence.oa_adapter import NativeOaAdapter
 from sigilicon.adapters.cadence.rtl_adapter import XceliumAdapter
 from sigilicon.execution import Step
@@ -270,52 +268,3 @@ def test_native_oa_preflight_requires_explicit_virtuoso_executable(
     )
 
     assert all(check.status == "ready" for check in ready)
-
-
-def test_layout_backend_rejects_typed_source_snapshot_drift(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    step = Step(
-        "layout",
-        "cadence.layout",
-        {
-            "owner": "example",
-            "spec": "design/CELL/layout.toml",
-            "timeout_seconds": 10,
-        },
-        sources=("design/CELL/layout.toml",),
-    )
-    context = _oa_context(tmp_path, step, registered=[])
-    project_root = tmp_path / "source-project"
-    owner_root = project_root / "ip/example"
-    workspace_root = tmp_path / "oa-workspace"
-    source = owner_root / "design/CELL/layout.toml"
-    project = SimpleNamespace(
-        project_root=project_root,
-        artifact_root=project_root / "artifacts",
-        workspace_root=workspace_root,
-        owner=lambda _name: SimpleNamespace(root=owner_root),
-    )
-    planning = SimpleNamespace(
-        source_records={source: "stale typed snapshot\n"},
-        spec=SimpleNamespace(
-            library="FIXTURE",
-            cell="CELL",
-            view="layout",
-            generator="fixture",
-            stage="source",
-            pdk=object(),
-        ),
-    )
-    monkeypatch.setattr(
-        "sigilicon.domain.platform.load_platforms",
-        lambda _project, *, resources: object(),
-    )
-    monkeypatch.setattr(
-        "sigilicon.adapters.cadence.layout_generation.plan_layout_spec",
-        lambda _spec, *, project, platform: planning,
-    )
-
-    with pytest.raises(ContractError, match="typed adapter source snapshot drift"):
-        LayoutAdapter().prepare(project, step, context.runtime)

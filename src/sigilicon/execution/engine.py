@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack, contextmanager
+from dataclasses import replace
 import hashlib
 import os
 from pathlib import Path, PurePosixPath
@@ -184,7 +185,7 @@ def _validate_artifact(
     *,
     output_root: Path,
     run_root: Path,
-) -> None:
+) -> Artifact:
     path = artifact.path.absolute()
     try:
         metadata = path.stat(follow_symlinks=False)
@@ -203,6 +204,11 @@ def _validate_artifact(
         raise ExecutionError(
             f"adapter published an unsafe or missing artifact: {artifact.path}"
         )
+
+    captured = SafeTree(output_root).file(path.relative_to(output_root).as_posix(), "published artifact")
+    if artifact.size is not None and (artifact.size, artifact.sha256) != (captured.size, captured.sha256):
+        raise ExecutionError("published artifact content disagrees with its declared identity")
+    return replace(artifact, size=captured.size, sha256=captured.sha256)
 
 
 def _validate_output_inventory(
@@ -487,12 +493,14 @@ def _run(
                             result = adapter.run(context)
                             if not isinstance(result, StepResult):
                                 raise TypeError("adapter run must return StepResult")
-                            for artifact in result.artifacts:
+                            result = replace(result, artifacts=tuple(
                                 _validate_artifact(
                                     artifact,
                                     output_root=output_root,
                                     run_root=paths.root,
                                 )
+                                for artifact in result.artifacts
+                            ))
                         except (KeyboardInterrupt, SystemExit):
                             raise
                         except Exception as exc:
