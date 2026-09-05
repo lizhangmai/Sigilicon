@@ -16,26 +16,21 @@ from typing import Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from sigilicon.adapters.synopsys.planning import Invocation
 
-from sigilicon.artifacts import SafeTree, ensure_nofollow_directory
-from sigilicon.canonical import canonical_digest
+from sigilicon.artifacts import (
+    SafeTree,
+)
 from sigilicon.contracts import require_relative_path
-from sigilicon.execution.adapter import AdapterPreparation
 from sigilicon.execution._model import (
     Artifact,
     ContractError,
     ExecutionError,
-    ResourceBinding,
-    PreflightCheck,
     Resources,
-    Source,
     Step,
     ExecutionIO,
-    StepResult,
 )
 from sigilicon.execution.runtime import (
     BoundEnvironment,
     bind_environment,
-    preflight_environment,
 )
 from sigilicon.external_tools import (
     ProcessRequest,
@@ -45,14 +40,6 @@ from sigilicon.external_tools import (
     owned_input_closure,
     owned_input_file,
     owned_output_file,
-    owned_scratch_directory,
-    process_group_cleanup_uncertainty,
-)
-from sigilicon.project import Project
-from sigilicon.adapters.synopsys.structural_link import (
-    StructuralLinkPlan,
-    execute_structural_link,
-    plan_structural_link,
 )
 
 
@@ -149,20 +136,6 @@ class _ToolVerdict:
             checks=checks,
         )
 
-    def facts(self) -> dict[str, object]:
-        return {
-            "tool_verdict": {
-                "owner": self.owner,
-                "stage": self.stage,
-                "variant": self.variant,
-                "passed": self.passed,
-                "product_qualification_conclusion": (
-                    self.product_qualification_conclusion
-                ),
-                "checks": dict(self.checks),
-            }
-        }
-
 
 def _text(config: Mapping[str, Any], name: str) -> str:
     value = config.get(name)
@@ -186,11 +159,7 @@ def _boolean(config: Mapping[str, Any], name: str, *, default: bool = False) -> 
 
 
 def _target(config: Mapping[str, Any]) -> str:
-    value = config.get("target")
-    if isinstance(value, str) and _TARGET.fullmatch(value) is not None:
-        return value
-    source = _text(config, "target_from")
-    target = _text(config, source)
+    target = _text(config, "target")
     if _TARGET.fullmatch(target) is None:
         raise ContractError(f"invalid Synopsys runner target {target!r}")
     return target

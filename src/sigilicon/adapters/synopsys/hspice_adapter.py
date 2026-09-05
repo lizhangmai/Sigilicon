@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
-from sigilicon.adapters.synopsys._common import (
-    Artifact, ExecutionError, ExecutionIO, StepResult,
-    _logs, _run_script, _runtime_environment, owned_scratch_directory,
+from sigilicon.execution._model import (
+    Artifact,
+    ExecutionError,
+    ExecutionIO,
+    StepResult,
+)
+from sigilicon.external_tools import (
+    owned_scratch_directory,
     process_group_cleanup_uncertainty,
+)
+from sigilicon.adapters.synopsys._common import (
+    _logs,
+    _run_script,
+    _runtime_environment,
 )
 
 from sigilicon.adapters.synopsys.planning import HspiceAction, RunnerAdapter, require_action

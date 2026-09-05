@@ -363,8 +363,8 @@ class Project:
         expected: dict[Path, Mapping[str, Any]] = {
             self.manifest_path: self.manifest_document,
             **{
-                owner.component.path: owner.component.document
-                for owner in self.owners
+                component.path: component.document
+                for component in self.component_inventory.values()
             },
         }
         if self._ip_catalog is not None:

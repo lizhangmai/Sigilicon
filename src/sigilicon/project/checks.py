@@ -17,7 +17,6 @@ from sigilicon.contracts import (
     read_toml,
     require_config_header,
 )
-from sigilicon.execution.operations import _compile_operation, parse_selector
 from sigilicon.domain.ip_integration import load_ip_integration_contract
 from sigilicon.domain.ip_release import load_ip_contract
 from sigilicon.domain.oa_library import load_oa_library_source
@@ -358,9 +357,6 @@ def inspect_repository_designs(
         for identity in rows:
             if not isinstance(identity, str):
                 raise ValueError(f"{catalog_path}: operation identities must be text")
-            _selected_owner, operation, variant = parse_selector(
-                f"{owner.name}:{identity}"
-            )
             plan = context.plan(f"{owner.name}:{identity}")
             owner_operations[identity] = {
                 "steps": [

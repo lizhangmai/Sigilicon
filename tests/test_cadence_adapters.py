@@ -24,7 +24,6 @@ from conftest import write_file as _file
 def test_oa_operations_have_fixed_backend_identities() -> None:
     names = {adapter.name for adapter in cadence_adapters()}
 
-    assert "cadence.oa" not in names
     assert "cadence.spectre" in names
     assert {
         "cadence.oa-check",

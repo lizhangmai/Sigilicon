@@ -2,15 +2,38 @@
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 from types import MappingProxyType
-from typing import ClassVar
+from typing import ClassVar, Self
 
+from sigilicon.execution.adapter import (
+    AdapterPreparation,
+)
+from sigilicon.execution._model import (
+    ContractError,
+    PreflightCheck,
+    Resources,
+    Step,
+)
+from sigilicon.project import (
+    Project,
+)
 from sigilicon.adapters.synopsys._common import (
-    AdapterPreparation, ContractError, PreflightCheck, Project, Resources,
-    Step, _ENVIRONMENT, _ENVIRONMENT_PREFIX, _PYTHON,
-    _RUNNER_SHELL, _boolean, _mapping, _positive_integer, _runner,
-    _safe_relative, _source_members, _strict_config, _strings, _target, _text,
+    _ENVIRONMENT,
+    _ENVIRONMENT_PREFIX,
+    _PYTHON,
+    _RUNNER_SHELL,
+    _boolean,
+    _mapping,
+    _positive_integer,
+    _runner,
+    _safe_relative,
+    _source_members,
+    _strict_config,
+    _strings,
+    _target,
+    _text,
 )
 from sigilicon.execution.runtime import preflight_environment
 
@@ -37,9 +60,16 @@ class Output:
     required: bool = True
 
 
-class Action:
+@dataclass(frozen=True)
+class Action(ABC):
     kind: ClassVar[str]
     invocation: Invocation
+
+    @classmethod
+    @abstractmethod
+    def compile(cls, step: Step) -> Self:
+        """Validate an owner configuration before any tool starts."""
+        ...
 
     @property
     def record(self) -> dict[str, object]:

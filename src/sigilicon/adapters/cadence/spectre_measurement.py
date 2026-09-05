@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from types import MappingProxyType
 from typing import Mapping
 
 from sigilicon.adapters.cadence._common import (

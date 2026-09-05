@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
-from sigilicon.adapters.synopsys._common import (
-    ExecutionError, ExecutionIO, StepResult, _ToolVerdict, _logs,
-    _run_script, _runtime_environment, _write_filelist, owned_scratch_directory,
+from sigilicon.execution._model import (
+    ExecutionError,
+    ExecutionIO,
+    StepResult,
+)
+from sigilicon.external_tools import (
+    owned_scratch_directory,
     process_group_cleanup_uncertainty,
+)
+from sigilicon.adapters.synopsys._common import (
+    _ToolVerdict,
+    _logs,
+    _run_script,
+    _runtime_environment,
+    _write_filelist,
 )
 
 from sigilicon.adapters.synopsys.planning import DcAction, RunnerAdapter, require_action

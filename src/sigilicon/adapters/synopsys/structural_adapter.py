@@ -2,13 +2,58 @@
 
 from __future__ import annotations
 
+import json
+from sigilicon.execution.adapter import (
+    AdapterPreparation,
+)
+from typing import (
+    Any,
+)
+from sigilicon.execution._model import (
+    ContractError,
+    ExecutionError,
+    ExecutionIO,
+    PreflightCheck,
+    ResourceBinding,
+    Resources,
+    Source,
+    Step,
+    StepResult,
+)
+from collections.abc import (
+    Mapping,
+)
+from pathlib import (
+    Path,
+)
+from sigilicon.project import (
+    Project,
+)
+from sigilicon.adapters.synopsys.structural_link import (
+    StructuralLinkPlan,
+    execute_structural_link,
+    plan_structural_link,
+)
+from sigilicon.canonical import (
+    canonical_digest,
+)
+from dataclasses import (
+    dataclass,
+    replace,
+)
+from sigilicon.external_tools import (
+    owned_scratch_directory,
+    process_group_cleanup_uncertainty,
+)
+from sigilicon.execution.runtime import (
+    preflight_environment,
+)
 from sigilicon.adapters.synopsys._common import (
-    AdapterPreparation, Any, ContractError, ExecutionError, ExecutionIO, Mapping,
-    Path, Project, PreflightCheck, ResourceBinding, Resources, Source,
-    Step, StepResult, StructuralLinkPlan, _mapping, _positive_integer,
-    _runtime_environment, _safe_relative, _text, canonical_digest, dataclass,
-    execute_structural_link, json, owned_scratch_directory, plan_structural_link,
-    preflight_environment, process_group_cleanup_uncertainty, replace,
+    _mapping,
+    _positive_integer,
+    _runtime_environment,
+    _safe_relative,
+    _text,
 )
 
 @dataclass(frozen=True)
