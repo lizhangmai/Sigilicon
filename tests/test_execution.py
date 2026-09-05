@@ -586,6 +586,25 @@ def test_project_runtime_configuration_replaces_sigilicon_environment(
     assert plan.steps[0].runtime.values == {"SELECTED_VALUE": "test.value"}
 
 
+@pytest.mark.parametrize("slot,identity", [
+    ("tools", "test.value"), ("files", "test.tool"),
+    ("directories", "test.value"), ("values", "test.tool"),
+])
+def test_project_rejects_runtime_profile_resource_kind_mismatch(
+    tmp_path: Path, slot: str, identity: str,
+) -> None:
+    _write_project(tmp_path)
+    catalog = tmp_path / "ip/example/configs/operations.toml"
+    catalog.write_text(catalog.read_text().replace(
+        'values = { SELECTED_VALUE = "test.value" }',
+        f'{slot} = {{ SELECTED_VALUE = "{identity}" }}',
+    ))
+    project = _project(tmp_path, CopyAdapter())
+
+    with pytest.raises(ContractError, match=f"runtime {slot}.SELECTED_VALUE requires"):
+        project.plan("example:check")
+
+
 def test_project_rejects_runtime_manifest_drift(tmp_path: Path) -> None:
     _write_project(tmp_path)
     manifest = tmp_path / "sigilicon.toml"

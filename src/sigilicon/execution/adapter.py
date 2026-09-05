@@ -222,6 +222,14 @@ def plan_execution(
                     if identity in captured_resources
                     else resources.capture(identity)
                 )
+        for slot, kind in (("tools", "tool"), ("files", "file"),
+                           ("directories", "directory"), ("values", "value")):
+            for name, identity in getattr(planned.runtime, slot).items():
+                if step_resources[identity].kind != kind:
+                    raise ContractError(
+                        f"step {planned.id!r} runtime {slot}.{name} requires {kind} "
+                        f"resource {identity!r}"
+                    )
         planned = replace(
             planned,
             resources=declared_resources,
