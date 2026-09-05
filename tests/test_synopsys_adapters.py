@@ -20,6 +20,8 @@ from sigilicon.execution._model import (
     Resources,
     RuntimeEnvironment,
     ExecutionIO,
+    Artifact,
+    StepResult,
 )
 
 from conftest import write_file as _file
@@ -29,6 +31,7 @@ def _context(
     tmp_path: Path,
     step: Step,
     resources: Resources,
+    dependencies: dict[str, StepResult] | None = None,
 ) -> ExecutionIO:
     project_root = next(path for path in (tmp_path, *tmp_path.parents) if (path / "sigilicon.toml").is_file())
     adapters = {adapter.name: adapter for adapter in (VcsAdapter(), DcAdapter(), FcAdapter(), HspiceAdapter())}
@@ -48,7 +51,7 @@ def _context(
         "3" * 64,
         run_root,
         resources,
-        {},
+        dependencies or {},
         owner="fixture",
     )
 
@@ -626,7 +629,68 @@ exit 1
     failed = adapter.run(failed_context)
 
     assert failed.status == "failed"
-    assert {artifact.role for artifact in failed.artifacts} == {"log"}
-    assert {path.name for path in failed_context.output_directory.iterdir()} == {
-        "log"
+    assert {artifact.role for artifact in failed.artifacts} == {"log", "reference-library"}
+    partial = next(artifact for artifact in failed.artifacts if artifact.role == "reference-library")
+    assert partial.read_text() == "partial\n"
+
+
+@pytest.mark.parametrize("failure", ("runner", "missing-checkpoint"))
+def test_fc_failed_implementation_preserves_generated_reports(tmp_path: Path, failure: str) -> None:
+    sources = tmp_path / "run/inputs/sources"
+    outputs = {
+        "routed-netlist": "routed.v", "routed-constraints": "routed.sdc",
+        "layout-stream": "routed.gds", "checkpoint": "routed.ndm",
+        "design-check-report": "check.rpt", "structural-report": "structural.rpt",
+        "qor-report": "qor.rpt", "timing-report": "timing.rpt",
+        "area-report": "area.rpt", "power-report": "power.rpt",
+        "drc-report": "drc.rpt", "physical-completion-report": "completion.rpt",
+        "tie-off-check-report": "tie.rpt", "execution-verdict": "verdict.json",
     }
+    script = """#!/bin/bash
+set -eu
+for name in SIGILICON_FC_ROUTED_NETLIST SIGILICON_FC_ROUTED_CONSTRAINTS SIGILICON_FC_GDS \
+  SIGILICON_FC_DESIGN_CHECK_REPORT SIGILICON_FC_STRUCTURAL_REPORT SIGILICON_FC_QOR_REPORT \
+  SIGILICON_FC_TIMING_REPORT SIGILICON_FC_AREA_REPORT SIGILICON_FC_POWER_REPORT \
+  SIGILICON_FC_DRC_REPORT SIGILICON_FC_PHYSICAL_COMPLETION_REPORT \
+  SIGILICON_FC_TIE_OFF_CHECK_REPORT SIGILICON_FC_EXECUTION_VERDICT; do
+  mkdir -p "$(dirname "${!name}")"
+  printf 'generated report\n' > "${!name}"
+done
+"""
+    if failure == "runner":
+        script += 'mkdir -p "$SIGILICON_FC_CHECKPOINT"\nprintf checkpoint > "$SIGILICON_FC_CHECKPOINT/cell"\nexit 1\n'
+    _file(sources / "run.sh", script, executable=True)
+    _file(sources / "evaluate.py", "raise SystemExit(1)\n")
+    dependencies = {
+        "synthesis": StepResult.succeeded(artifacts=(
+            Artifact("mapped-netlist", "netlist.verilog", _file(tmp_path / "deps/mapped.v")),
+            Artifact("mapped-constraints", "constraints.sdc", _file(tmp_path / "deps/mapped.sdc")),
+        )),
+        "reference": StepResult.succeeded(artifacts=(
+            Artifact("reference-library", "library.synopsys-ndm", _file(tmp_path / "deps/test.ndm/lib")),
+        )),
+    }
+    step = Step("pnr", "synopsys.fc", {
+        "runner": "run.sh", "evaluator": "evaluate.py", "target": "pnr",
+        "variant": "test", "corner": "tt", "top": "top", "timeout_seconds": 10,
+        "reference_library_output": "test.ndm", "synthesis_step": "synthesis",
+        "reference_step": "reference", "outputs": outputs,
+    }, needs=("synthesis", "reference"), sources=("run.sh", "evaluate.py"),
+        runtime=RuntimeEnvironment(tools={
+            "SIGILICON_RUNNER_SHELL": "runtime.bash", "SIGILICON_SYNOPSYS_FC_SHELL": "fc.shell",
+        }))
+    context = _context(tmp_path, step, Resources(tools={
+        "runtime.bash": "/bin/bash",
+        "fc.shell": str(_file(tmp_path / "bin/fc", "#!/bin/sh\nexit 0\n", executable=True)),
+    }), dependencies)
+
+    result = FcAdapter().run(context)
+
+    assert result.status == "failed"
+    report = next(artifact for artifact in result.artifacts if artifact.role == "timing-report")
+    assert report.read_text() == "generated report\n"
+    if failure == "runner":
+        checkpoint = next(artifact for artifact in result.artifacts if artifact.role == "checkpoint")
+        import tarfile
+        with tarfile.open(checkpoint.path) as archive:
+            assert archive.extractfile("routed.ndm/cell").read() == b"checkpoint"

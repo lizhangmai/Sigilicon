@@ -123,10 +123,7 @@ class FcAdapter(RunnerAdapter):
                 held_directories=tuple(held_directories),
             )
             logs = _logs(context, completed.stdout, completed.stderr or "")
-            if completed.returncode:
-                return StepResult(
-                    "failed", logs, message=f"FC runner exited {completed.returncode}"
-                )
+            # Preserve generated evidence even when the runner or evaluator failed.
             if target == "library":
                 assert reference_name is not None
                 reference_root = (
@@ -144,29 +141,24 @@ class FcAdapter(RunnerAdapter):
                     for path in sorted(reference_root.rglob("*"))
                     if path.is_file() and not path.is_symlink()
                 )
-                if not reference_artifacts:
-                    raise ExecutionError(
-                        "FC produced an empty reference-library directory"
-                    )
-                artifacts = (
-                    *reference_artifacts,
-                    context.copy_output(
+                report = scratch.path / "library-check-report" / "check_workspace.rpt"
+                artifacts = reference_artifacts
+                if report.is_file() and not report.is_symlink():
+                    artifacts += (context.copy_output(
                         role="library-check-report",
                         kind="report.synopsys",
-                        source=(
-                            scratch.path
-                            / "library-check-report"
-                            / "check_workspace.rpt"
-                        ),
+                        source=report,
                         filename="check_workspace.rpt",
-                    ),
-                )
+                    ),)
+                required = frozenset({"reference-library", "library-check-report"})
             else:
                 copied: list[Artifact] = []
-                for role in sorted(required):
+                for role in sorted(required, key=lambda role: (role == "checkpoint", role)):
                     role_root = scratch.path / role
                     if role == "checkpoint":
                         checkpoint = role_root / output_names[role]
+                        if not checkpoint.is_dir() or checkpoint.is_symlink():
+                            continue
                         archive = scratch.path / f"{output_names[role]}.tar"
                         _archive_directory(
                             checkpoint,
@@ -196,15 +188,19 @@ class FcAdapter(RunnerAdapter):
                         if path.is_file() and not path.is_symlink()
                     )
                 artifacts = tuple(copied)
-                if {artifact.role for artifact in artifacts} != required:
-                    raise ExecutionError("FC omitted one or more physical result roles")
+            published = (*logs, *artifacts)
+            if completed.returncode:
+                return StepResult(
+                    "failed", published, message=f"FC runner exited {completed.returncode}"
+                )
+            if {artifact.role for artifact in artifacts} != required:
+                return StepResult("failed", published, message="FC omitted one or more result roles")
             if target == "pnr":
                 verdict_path = (
                     scratch.path
                     / "execution-verdict"
                     / output_names["execution-verdict"]
                 )
-                published = (*logs, *artifacts)
                 try:
                     verdict = _ToolVerdict.load(
                         verdict_path,
