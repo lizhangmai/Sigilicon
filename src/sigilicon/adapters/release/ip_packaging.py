@@ -44,7 +44,7 @@ from sigilicon.release_store import (
     _release_object_name,
     audit_release_package,
 )
-from sigilicon.adapters.release.source_control import inspect_checkout
+from sigilicon.adapters.release.source_control import inspect_checkout, verify_source_commit
 from sigilicon.adapters.release.release_contract_checks import (
     _identity_module,
     _interface_ports,
@@ -101,6 +101,7 @@ def _publish_ip_release(
         or source_state.working_tree_dirty
     ):
         raise IpReleaseError("source checkout changed during release build")
+    verify_source_commit(contract.project_root, resources, plan.source_commit, selected_sources)
     store = ReleaseStore(store_root)
     namespace = store.root / plan.store / "objects"
     with owned_directory(namespace, create_missing=True) as release_namespace:
@@ -661,18 +662,25 @@ def _packaged_maturity_check(manifest: Mapping[str, Any], manifest_path: Path) -
     maturity = manifest.get("maturity")
     if not isinstance(maturity, Mapping) or maturity.get("level") not in RELEASE_MATURITY_LEVELS:
         raise RuntimeError("IP release maturity level is invalid")
+    checks = maturity.get("checks")
+    if (maturity.get("missing_items") != [] or not isinstance(checks, list) or not checks
+            or any(not isinstance(check, Mapping) or check.get("passed") is not True for check in checks)):
+        raise RuntimeError("IP release maturity checks are incomplete or failed")
     views = manifest.get("views")
     if not isinstance(views, list):
         raise RuntimeError("IP release views must be a list")
     problems = []
     availability = []
     for name, exported in _manifest_exports(manifest).items():
+        export_maturity = exported.get("maturity")
+        if not isinstance(export_maturity, Mapping) or export_maturity.get("missing_items") != []:
+            problems.append(f"{name}:maturity-missing-items")
         def read_receipt(role: str):
             path = resolve_release_role(manifest, manifest_path, role, export=name)
             return read_json_object(path, f"{name}/{role} receipt")
         try:
             semantics = ExportSemantics.from_record(exported, views)
-            available, issues = semantics.assess(maturity["level"], manifest.get("source_commit"), read_receipt)
+            available, issues = semantics.assess(maturity["level"], read_receipt)
         except (KeyError, ValueError) as exc:
             raise RuntimeError(f"IP release qualified view semantics are invalid: {exc}") from exc
         problems.extend(issues)

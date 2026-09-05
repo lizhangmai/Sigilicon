@@ -178,11 +178,11 @@ A = "input"
                             "oa_port_contract",
                             "circuit_netlist",
                             "raw_macro_liberty_or_db",
-                        ]},
+                        ], "missing_items": []},
                         "availability": {"simulation": False, "synthesis": True, "physical_implementation": False},
                     }
                 ],
-                "maturity": {"level": "development"},
+                "maturity": {"level": "development", "checks": [{"name": "interface", "passed": True}], "missing_items": []},
                 "availability": {"simulation": False, "synthesis": True, "physical_implementation": False},
                 "views": views,
             },

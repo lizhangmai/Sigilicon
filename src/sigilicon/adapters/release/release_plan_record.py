@@ -246,6 +246,7 @@ class NativeBundleMetadata:
     subcircuits: tuple[str, ...]
     primitive_masters: tuple[str, ...]
     sha256: str
+    size: int
     composition: Literal["reachable-spectre-hierarchy"] = field(
         default="reachable-spectre-hierarchy",
         init=False,
@@ -272,6 +273,14 @@ class ReleaseCollateralRecord:
     native_bundle: NativeBundleMetadata | None = None
 
     @property
+    def size(self) -> int:
+        return self.native_bundle.size if self.native_bundle is not None else self.source_size
+
+    @property
+    def sha256(self) -> str:
+        return self.native_bundle.sha256 if self.native_bundle is not None else self.source_sha256
+
+    @property
     def record(self) -> dict[str, object]:
         value: dict[str, object] = {
             "export": self.export,
@@ -289,6 +298,8 @@ class ReleaseCollateralRecord:
             "capabilities": list(self.capabilities),
             "source_size": self.source_size,
             "source_sha256": self.source_sha256,
+            "size": self.size,
+            "sha256": self.sha256,
         }
         if self.native_bundle is not None:
             value.update(

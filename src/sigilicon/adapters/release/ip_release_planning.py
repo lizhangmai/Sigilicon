@@ -592,6 +592,7 @@ def _native_oa_spectre_bundle(
         )
     text = render_canonical_spectre(hierarchy)
     return text, NativeBundleMetadata(
+        size=len(text.encode("utf-8")),
         subcircuits=hierarchy.dependency_order,
         primitive_masters=tuple(sorted(hierarchy.primitive_counts)),
         sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
@@ -669,55 +670,6 @@ def _plan_loaded_ip_release(
             for exported in contract.exports
         ]
     )
-    semantics = _release_semantics(
-        contract,
-        level,
-        source_commit=commit,
-    )
-    semantic_missing = sorted({problem for _, problems in semantics.values() for problem in problems})
-    semantic_check = QualifiedViewSemanticsCheck(passed=not semantic_missing, problems=tuple(semantic_missing))
-    missing = sorted(set(role_missing) | set(semantic_missing))
-    export_rows: list[ReleaseExportRecord] = []
-    role_checks: list[ReleaseCheck] = []
-    for exported in contract.exports:
-        roles = {item.role for item in exported.collateral}
-        export_missing = [
-            item for item in missing if item.startswith(f"{exported.name}:")
-        ]
-        availability = semantics[exported.name][0]
-        role_checks.append(
-            RequiredRolesCheck(
-                export=exported.name,
-                passed=not any(
-                    item.startswith(f"{exported.name}:") for item in role_missing
-                ),
-                required=exported.required_roles[level],
-                present=tuple(sorted(roles)),
-            )
-        )
-        oa_identity, interface = _export_interface_manifest(contract, exported)
-        export_rows.append(
-            ReleaseExportRecord(
-                name=exported.name,
-                interface=interface,
-                maturity_required_roles=exported.required_roles[level],
-                maturity_missing_items=tuple(export_missing),
-                availability=availability,
-                oa=oa_identity,
-            )
-        )
-    availability = ReleaseAvailability(
-        simulation=all(
-            exported.availability.simulation for exported in export_rows
-        ),
-        synthesis=all(
-            exported.availability.synthesis for exported in export_rows
-        ),
-        physical_implementation=all(
-            exported.availability.physical_implementation
-            for exported in export_rows
-        ),
-    )
     native_bundle_metadata: dict[tuple[str, str], NativeBundleMetadata] = {}
     native_bundles: dict[tuple[str, str], str] = {}
     if oa_library is not None:
@@ -764,6 +716,55 @@ def _plan_loaded_ip_release(
             native_bundle=native_bundle_metadata.get((item.export, item.role)),
         )
         for item in contract.collateral
+    )
+    semantics = _release_semantics(
+        contract,
+        level,
+        collateral=collateral,
+    )
+    semantic_missing = sorted({problem for _, problems in semantics.values() for problem in problems})
+    semantic_check = QualifiedViewSemanticsCheck(passed=not semantic_missing, problems=tuple(semantic_missing))
+    missing = sorted(set(role_missing) | set(semantic_missing))
+    export_rows: list[ReleaseExportRecord] = []
+    role_checks: list[ReleaseCheck] = []
+    for exported in contract.exports:
+        roles = {item.role for item in exported.collateral}
+        export_missing = [
+            item for item in missing if item.startswith(f"{exported.name}:")
+        ]
+        availability = semantics[exported.name][0]
+        role_checks.append(
+            RequiredRolesCheck(
+                export=exported.name,
+                passed=not any(
+                    item.startswith(f"{exported.name}:") for item in role_missing
+                ),
+                required=exported.required_roles[level],
+                present=tuple(sorted(roles)),
+            )
+        )
+        oa_identity, interface = _export_interface_manifest(contract, exported)
+        export_rows.append(
+            ReleaseExportRecord(
+                name=exported.name,
+                interface=interface,
+                maturity_required_roles=exported.required_roles[level],
+                maturity_missing_items=tuple(export_missing),
+                availability=availability,
+                oa=oa_identity,
+            )
+        )
+    availability = ReleaseAvailability(
+        simulation=all(
+            exported.availability.simulation for exported in export_rows
+        ),
+        synthesis=all(
+            exported.availability.synthesis for exported in export_rows
+        ),
+        physical_implementation=all(
+            exported.availability.physical_implementation
+            for exported in export_rows
+        ),
     )
     payload = IpReleaseRecord(
         ip_name=contract.name,

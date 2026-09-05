@@ -14,6 +14,7 @@ import pytest
 import sigilicon.domain.oa_library as oa_library_domain
 import sigilicon.adapters.release.ip_packaging as ip_packaging
 import sigilicon.adapters.release.ip_release_planning as ip_release_planning
+from sigilicon.adapters.release import source_control
 from sigilicon.artifacts import SafeTree
 from sigilicon.domain.ip_release import (
     OaMixedSignalIpInterface,
@@ -33,8 +34,28 @@ def _patch_checkout(
     monkeypatch: pytest.MonkeyPatch,
     callback: Callable[..., object],
 ) -> None:
-    monkeypatch.setattr(ip_release_planning, "inspect_checkout", callback)
-    monkeypatch.setattr(ip_packaging, "inspect_checkout", callback)
+    state = None
+
+    def query(root: Path, resources, *arguments: str) -> str:
+        nonlocal state
+        if arguments == ("rev-parse", "HEAD"):
+            state = callback(root, resources)
+            return state.commit + "\n"
+        if arguments[0] == "status":
+            return " M fixture\n" if state.working_tree_dirty else ""
+        if arguments == ("rev-parse", "--show-prefix"):
+            return ""
+        if arguments[0] == "ls-tree":
+            rows = []
+            for path in sorted(root.rglob("*")):
+                if path.is_file() and not path.is_symlink():
+                    data = path.read_bytes()
+                    digest = hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
+                    rows.append(f"100644 blob {digest}\t{path.relative_to(root).as_posix()}\0")
+            return "".join(rows)
+        raise AssertionError(f"unexpected Git query: {arguments}")
+
+    monkeypatch.setattr(source_control, "_git_output", query)
 
 
 def _built_manifest(project: Project, built: dict[str, object]) -> Path:
@@ -1238,12 +1259,21 @@ def test_package_audit_recomputes_capability_from_views(tmp_path: Path, monkeypa
         ip_packaging.audit_ip_release_manifest(manifest_path)
 
 
-@pytest.mark.parametrize("receipt_fault", [None, "source-commit", "missing-receipt-role", "tool-version"])
-def test_signoff_receipt_policy_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, receipt_fault: str | None) -> None:
+def _commit_release_source(root: Path, message: str) -> str:
+    (root / ".gitignore").write_text("artifacts/\n")
+    git = shutil.which("git")
+    if not (root / ".git").exists():
+        subprocess.run([git, "init"], cwd=root, check=True, capture_output=True)
+    subprocess.run([git, "add", "."], cwd=root, check=True, capture_output=True)
+    subprocess.run([git, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                    "commit", "-m", message], cwd=root, check=True, capture_output=True)
+    return subprocess.run([git, "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True).stdout.strip()
+
+
+def _signoff_contract_fixture(tmp_path: Path) -> tuple[Path, str]:
     contract_path = _native_oa_contract_fixture(tmp_path)
     configs = contract_path.parent
     sources = configs.parent / "sources"
-    commit = "c" * 40
     oa = {"library": "native_lib", "cell": "NATIVE_TOP", "schematic_view": "schematic", "layout_view": "layout"}
     views = {
         "raw_macro_lef": ("lef", ["physical_implementation"]),
@@ -1252,16 +1282,6 @@ def test_signoff_receipt_policy_round_trip(tmp_path: Path, monkeypatch: pytest.M
         "raw_macro_cdl_or_lvs_netlist": ("cdl", ["physical_implementation"]),
         "pex_netlist": ("spectre", ["circuit_simulation"]),
     }
-    bound_roles = ["circuit_netlist", *views]
-    receipt = {"status": "passed", "source_commit": commit, "oa": oa,
-               "tool": {"name": "fixture", "version": "1"},
-               "inputs": [{"role": role} for role in bound_roles], "outputs": []}
-    if receipt_fault == "source-commit":
-        receipt["source_commit"] = "d" * 40
-    elif receipt_fault == "missing-receipt-role":
-        receipt["inputs"] = []
-    elif receipt_fault == "tool-version":
-        receipt["tool"] = {"name": "fixture"}
     receipts = ("schematic_layout_parity_receipt", "drc_receipt", "lvs_receipt", "characterization_receipt")
     views.update({role: ("json", ["signoff"]) for role in receipts})
     component = configs / "ip.toml"
@@ -1269,7 +1289,7 @@ def test_signoff_receipt_policy_round_trip(tmp_path: Path, monkeypatch: pytest.M
     collateral_rows = []
     for role, (view_format, capabilities) in views.items():
         path = sources / f"{role}.data"
-        path.write_text(json.dumps(receipt) if role in receipts else "fixture view\n")
+        path.write_text("{}" if role in receipts else "fixture view\n")
         source_rows.append(f'{role} = "{path.relative_to(tmp_path)}"')
         collateral_rows.append(f'''
 [[collateral]]
@@ -1289,18 +1309,117 @@ capabilities = {json.dumps(capabilities)}
     contract_path.write_text(contract_path.read_text() + "".join(collateral_rows))
     operation = configs / "operations.toml"
     operation.write_text(operation.read_text().replace('maturity = "development"', 'maturity = "signoff"'))
-    _patch_checkout(monkeypatch, lambda *_: SimpleNamespace(commit=commit, working_tree_dirty=False))
+    from sigilicon.adapters.release.release_semantics import ExportSemantics
+
+    design_commit = _commit_release_source(tmp_path, "design and physical collateral")
+    project = Project.open(tmp_path)
+    contract = load_ip_contract(contract_path, project=project)
+    plan = ip_release_planning.plan_ip_release_contract(contract, project=project, maturity="implementation")
+    policy = ExportSemantics.from_source(contract.get_export("native-top"), "signoff", plan.payload.collateral)
+    identities = {view.role: {"role": view.role, "size": view.size, "sha256": view.sha256}
+                  for view in plan.payload.collateral}
+    bindings = {
+        "schematic_layout_parity_receipt": (["circuit_netlist", "raw_macro_gds_or_oasis", "raw_macro_cdl_or_lvs_netlist"], []),
+        "drc_receipt": (["raw_macro_gds_or_oasis"], []),
+        "lvs_receipt": (["circuit_netlist", "raw_macro_gds_or_oasis", "raw_macro_cdl_or_lvs_netlist"], []),
+        "characterization_receipt": (["pex_netlist"], ["raw_macro_liberty_or_db"]),
+    }
+    for role, (inputs, outputs) in bindings.items():
+        receipt = {
+            "schema": 1, "contract_kind": "release-receipt", "role": role, "status": "passed",
+            "source_identity": policy.source_identity, "oa": oa, "tool": {"name": "fixture", "version": "1"},
+            "inputs": [identities[name] for name in inputs], "outputs": [identities[name] for name in outputs],
+        }
+        (sources / f"{role}.data").write_text(json.dumps(receipt))
+    return contract_path, design_commit
+
+
+def _damage_receipt(receipt: dict, fault: str) -> None:
+    if fault == "source-identity":
+        receipt["source_identity"] = "0" * 64
+    elif fault == "receipt-roles":
+        receipt["inputs"] = []
+    elif fault == "tool-version":
+        receipt["tool"] = {"name": "fixture"}
+    elif fault == "digest":
+        receipt["inputs"][0]["sha256"] = "0" * 64
+    elif fault == "size":
+        receipt["inputs"][0]["size"] += 1
+    elif fault == "direction":
+        receipt["outputs"] = receipt["inputs"]
+        receipt["inputs"] = []
+    elif fault == "duplicate":
+        receipt["inputs"].append(receipt["inputs"][0])
+
+
+@pytest.mark.parametrize("receipt_fault", [None, "source-identity", "receipt-roles", "tool-version", "digest", "size", "direction", "duplicate"])
+def test_signoff_receipt_policy_round_trip(tmp_path: Path, receipt_fault: str | None) -> None:
+    contract_path, design_commit = _signoff_contract_fixture(tmp_path)
+    receipt_path = contract_path.parent.parent / "sources/drc_receipt.data"
+    if receipt_fault:
+        receipt = json.loads(receipt_path.read_text())
+        _damage_receipt(receipt, receipt_fault)
+        receipt_path.write_text(json.dumps(receipt))
+    release_commit = _commit_release_source(tmp_path, "record evidence for the verified design")
+    assert release_commit != design_commit
     project = Project.open(tmp_path)
     contract = load_ip_contract(contract_path, project=project)
     plan = ip_release_planning.plan_ip_release_contract(contract, project=project, maturity="signoff")
     if receipt_fault:
-        assert any(receipt_fault in item for item in plan.missing_items)
+        assert plan.missing_items
         assert plan.record["availability"]["physical_implementation"] is False
+        assert project.preflight(project.plan("native-fixture:release")).ready is False
     else:
         assert plan.missing_items == ()
         built = _publish_release(contract_path, project=project, maturity="signoff")
         audited = ip_packaging.audit_ip_release_manifest(_built_manifest(project, built))
         assert audited["availability"]["physical_implementation"] is True
+        assert audited["source_commit"] == release_commit
+
+
+@pytest.mark.parametrize("fault", ["digest", "source-identity", "direction"])
+def test_package_audit_validates_receipt_content_bindings(tmp_path: Path, fault: str) -> None:
+    contract_path, _ = _signoff_contract_fixture(tmp_path)
+    _commit_release_source(tmp_path, "signoff evidence")
+    project = Project.open(tmp_path)
+    built = _publish_release(contract_path, project=project)
+    manifest_path = _built_manifest(project, built)
+    manifest = json.loads(manifest_path.read_text())
+    view = next(row for row in manifest["views"] if row["role"] == "drc_receipt")
+    path = manifest_path.parent / view["path"]
+    receipt = json.loads(path.read_text())
+    _damage_receipt(receipt, fault)
+    path.chmod(0o644)
+    path.write_text(json.dumps(receipt))
+    view["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    view["size"] = path.stat().st_size
+    manifest_path.chmod(0o644)
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(RuntimeError, match="qualified view semantics"):
+        ip_packaging.audit_ip_release_manifest(manifest_path)
+
+
+@pytest.mark.parametrize("source_fault", ["ignored", "skip-worktree"])
+def test_release_requires_each_source_to_match_its_git_blob(tmp_path: Path, source_fault: str) -> None:
+    _rtl_contract_fixture(tmp_path)
+    source = "ip/rtl_fixture/rtl/top.sv"
+    commit = _commit_release_source(tmp_path, "release sources")
+    git = shutil.which("git")
+    if source_fault == "ignored":
+        subprocess.run([git, "rm", "--cached", source], cwd=tmp_path, check=True, capture_output=True)
+        (tmp_path / ".gitignore").write_text("artifacts/\n" + source + "\n")
+        subprocess.run([git, "add", ".gitignore"], cwd=tmp_path, check=True, capture_output=True)
+        subprocess.run([git, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                        "commit", "-m", "ignore RTL"], cwd=tmp_path, check=True, capture_output=True)
+    else:
+        subprocess.run([git, "update-index", "--skip-worktree", source], cwd=tmp_path, check=True, capture_output=True)
+        with (tmp_path / source).open("a") as stream:
+            stream.write("// local uncommitted source\n")
+    assert subprocess.run([git, "status", "--porcelain"], cwd=tmp_path, capture_output=True, text=True, check=True).stdout == ""
+    project = Project.open(tmp_path)
+    with pytest.raises(RuntimeError, match="Git commit|tracked by"):
+        project.run(project.plan("rtl-fixture:release"))
+    assert not list((tmp_path / "artifacts/release-store").glob("*/objects/sha256-*"))
 
 
 def test_managed_release_rechecks_the_real_git_commit(tmp_path: Path) -> None:

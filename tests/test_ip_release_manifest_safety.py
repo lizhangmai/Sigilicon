@@ -14,43 +14,49 @@ from sigilicon.adapters.release import ip_packaging
 def _write_release(root: Path) -> Path:
     root.mkdir()
     payload = root / "payload.txt"
-    payload.write_text("payload\n", encoding="utf-8")
+    payload.write_text("module fixture(input wire a); endmodule\n", encoding="utf-8")
+    interface = root / "interface.toml"
+    interface.write_text('''[module]
+name = "fixture"
+source = "payload.txt"
+ports = [{ name = "a", direction = "input", width = 1 }]
+''')
+    availability = {"simulation": True, "synthesis": False, "physical_implementation": False}
     manifest = {
         "schema": 2,
         "contract_kind": "ip-release-manifest",
         "release_kind": "source-package",
         "ip_name": "fixture",
         "release_id": "development-fixture",
-        "exports": [{"name": "fixture"}],
-        "views": [
-            {
-                "export": "fixture",
-                "role": "payload",
-                "path": "payload.txt",
-                "size": payload.stat().st_size,
-                "sha256": hashlib.sha256(payload.read_bytes()).hexdigest(),
-            }
-        ],
+        "source_commit": "a" * 40,
+        "exports": [{
+            "name": "fixture",
+            "interface": {"kind": "rtl", "contract": "interface.toml", "module": "fixture", "source_role": "payload"},
+            "maturity": {"required_roles": ["interface_contract", "payload"], "missing_items": []},
+            "availability": availability,
+        }],
+        "maturity": {"level": "development", "checks": [{"name": "interface", "passed": True}], "missing_items": []},
+        "availability": availability,
+        "views": [{
+            "export": "fixture", "role": role, "path": path.name, "source": path.name,
+            "size": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "format": view_format, "module": "fixture" if role == "payload" else None,
+            "capabilities": ["simulation"] if role == "payload" else [],
+        } for role, path, view_format in (("payload", payload, "verilog"), ("interface_contract", interface, "toml"))],
     }
     manifest_path = root / "manifest.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     return manifest_path
 
 
-def _skip_semantic_checks(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ip_packaging, "_packaged_interface_check", lambda *_: None)
-    monkeypatch.setattr(ip_packaging, "_packaged_maturity_check", lambda *_: None)
-
-
 def test_exact_release_audit_rejects_symlinked_payload(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path
 ) -> None:
     manifest_path = _write_release(tmp_path / "release")
-    _skip_semantic_checks(monkeypatch)
     assert ip_packaging.audit_ip_release_manifest(manifest_path)["ip_name"] == "fixture"
 
     external = tmp_path / "external.txt"
-    external.write_text("payload\n", encoding="utf-8")
+    external.write_bytes((manifest_path.parent / "payload.txt").read_bytes())
     payload = manifest_path.parent / "payload.txt"
     payload.unlink()
     payload.symlink_to(external)
@@ -60,22 +66,20 @@ def test_exact_release_audit_rejects_symlinked_payload(
 
 
 def test_exact_release_audit_hashes_same_size_payload_tampering(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path
 ) -> None:
     manifest_path = _write_release(tmp_path / "release")
-    _skip_semantic_checks(monkeypatch)
     payload = manifest_path.parent / "payload.txt"
-    payload.write_text("PAYLOAD\n", encoding="utf-8")
+    payload.write_text(payload.read_text().replace("wire", "WIRE"), encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="content drifted"):
         ip_packaging.audit_ip_release_manifest(manifest_path)
 
 
 def test_exact_release_audit_rejects_unknown_view_export(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path
 ) -> None:
     manifest_path = _write_release(tmp_path / "release")
-    _skip_semantic_checks(monkeypatch)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["views"][0]["export"] = "undeclared"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -85,10 +89,9 @@ def test_exact_release_audit_rejects_unknown_view_export(
 
 
 def test_exact_release_audit_rejects_unmanifested_files(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path
 ) -> None:
     manifest_path = _write_release(tmp_path / "release")
-    _skip_semantic_checks(monkeypatch)
     (manifest_path.parent / "extra.txt").write_text("extra\n", encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="inventory"):
@@ -96,10 +99,9 @@ def test_exact_release_audit_rejects_unmanifested_files(
 
 
 def test_exact_release_audit_rejects_unmanifested_directories(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path
 ) -> None:
     manifest_path = _write_release(tmp_path / "release")
-    _skip_semantic_checks(monkeypatch)
     (manifest_path.parent / "empty-extra").mkdir()
 
     with pytest.raises(RuntimeError, match="inventory"):
@@ -136,11 +138,9 @@ def test_release_store_rejects_mutation_during_domain_validation(
 
 def test_release_audit_is_reachable_only_through_the_public_cli(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     manifest_path = _write_release(tmp_path / "release")
-    _skip_semantic_checks(monkeypatch)
 
     assert sigilicon_main(["release", "audit", str(manifest_path)]) == 0
     assert '"ip_name": "fixture"' in capsys.readouterr().out
@@ -161,3 +161,23 @@ def test_release_store_rejects_symlinked_namespace_ancestor(
         )
 
     assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize("fault", ("failed", "nonboolean", "empty", "missing", "export-missing"))
+def test_public_audit_rejects_incomplete_maturity(tmp_path: Path, fault: str) -> None:
+    manifest_path = _write_release(tmp_path / "release")
+    manifest = json.loads(manifest_path.read_text())
+    if fault == "failed":
+        manifest["maturity"]["checks"][0]["passed"] = False
+    elif fault == "nonboolean":
+        manifest["maturity"]["checks"][0]["passed"] = 1
+    elif fault == "empty":
+        manifest["maturity"]["checks"] = []
+    elif fault == "missing":
+        manifest["maturity"]["missing_items"] = ["fixture:payload"]
+    else:
+        manifest["exports"][0]["maturity"]["missing_items"] = ["fixture:payload"]
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(RuntimeError, match="maturity"):
+        ip_packaging.audit_ip_release_manifest(manifest_path)

@@ -29,6 +29,7 @@ from sigilicon.project import Project
 from sigilicon.adapters.release.release_plan_record import (
     InterfaceConsistencyCheck,
     ReleaseAvailability,
+    ReleaseCollateralRecord,
 )
 
 if TYPE_CHECKING:
@@ -506,7 +507,7 @@ def _missing_roles(contract: IpContract, level: str) -> list[str]:
 
 
 def _release_semantics(
-    contract: IpContract, level: str, *, source_commit: str,
+    contract: IpContract, level: str, *, collateral: tuple[ReleaseCollateralRecord, ...],
 ) -> dict[str, tuple[ReleaseAvailability, tuple[str, ...]]]:
     from sigilicon.adapters.release.release_semantics import ExportSemantics
 
@@ -516,7 +517,7 @@ def _release_semantics(
         def read_receipt(role: str):
             source = _project_path(contract.project_root, Path(by_role[role].source), f"{role} source")
             return read_json_object(source, f"{role} receipt")
-        assessments[exported.name] = ExportSemantics.from_source(exported, level).assess(
-            level, source_commit, read_receipt,
+        assessments[exported.name] = ExportSemantics.from_source(exported, level, collateral).assess(
+            level, read_receipt,
         )
     return assessments

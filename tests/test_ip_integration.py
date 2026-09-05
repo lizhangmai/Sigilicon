@@ -112,7 +112,7 @@ endmodule
                     "physical": "fixture_macro:oa-1-pin",
                     "logical": "fixture_model:transaction-1-port",
                 },
-                "maturity": {"required_roles": list(role_metadata)},
+                "maturity": {"required_roles": list(role_metadata), "missing_items": []},
                 "availability": {
                     "simulation": True,
                     "synthesis": False,
@@ -202,7 +202,7 @@ ports = [{ name = "clk", direction = "input", width = 1 }]
                     "source_role": "rtl_source",
                 },
                 "maturity": {
-                    "required_roles": ["interface_contract", "rtl_source"]
+                    "required_roles": ["interface_contract", "rtl_source"], "missing_items": [],
                 },
                 "availability": {
                     "simulation": True,

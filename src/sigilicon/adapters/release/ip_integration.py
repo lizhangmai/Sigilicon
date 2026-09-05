@@ -405,14 +405,6 @@ def _locked_release_manifest(
     ):
         raise RuntimeError("IP dependency release does not match its provider owner")
     _release_export(manifest, release.export)
-    maturity = manifest.get("maturity")
-    assert isinstance(maturity, Mapping)
-    checks = maturity.get("checks")
-    if not isinstance(checks, list) or not checks or any(
-        not isinstance(check, Mapping) or check.get("passed") is not True
-        for check in checks
-    ):
-        raise RuntimeError("IP dependency release maturity checks are incomplete")
     return audited
 
 
