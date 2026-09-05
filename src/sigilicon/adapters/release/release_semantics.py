@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 from typing import Callable, Mapping
 
 from sigilicon.canonical import canonical_digest
-from sigilicon.domain.ip_release import IpExport, RtlIpInterface
+from sigilicon.domain.ip_release import IpExport, RtlIpInterface, ReceiptPolicy, receipt_policies
 from sigilicon.adapters.release.release_plan_record import ReleaseAvailability, ReleaseCollateralRecord
 
 
@@ -17,13 +17,6 @@ IMPLEMENTATION_FORMATS = {
     "raw_macro_gds_or_oasis": frozenset({"gds", "oasis"}),
     "raw_macro_cdl_or_lvs_netlist": frozenset({"cdl", "spice", "spectre"}),
 }
-RECEIPT_BINDINGS = {
-    "schematic_layout_parity_receipt": frozenset({"circuit_netlist", "raw_macro_gds_or_oasis", "raw_macro_cdl_or_lvs_netlist"}),
-    "drc_receipt": frozenset({"raw_macro_gds_or_oasis"}),
-    "lvs_receipt": frozenset({"circuit_netlist", "raw_macro_gds_or_oasis", "raw_macro_cdl_or_lvs_netlist"}),
-    "characterization_receipt": frozenset({"raw_macro_liberty_or_db", "pex_netlist"}),
-}
-RECEIPT_OUTPUTS = {"characterization_receipt": frozenset({"raw_macro_liberty_or_db"})}
 HDL_FORMATS = frozenset({"verilog", "systemverilog"})
 CIRCUIT_FORMATS = frozenset({"spectre-source", "spectre", "spice", "cdl", "dspf"})
 ROLE_FORMATS = {
@@ -66,7 +59,8 @@ class SignoffReceipt:
     role: str
     status: str
     source_identity: str
-    oa: Mapping[str, str]
+    subject: Mapping[str, str]
+    execution: Mapping[str, object]
     tool_name: str
     tool_version: str
     inputs: tuple[ReceiptArtifact, ...]
@@ -74,20 +68,29 @@ class SignoffReceipt:
 
     @classmethod
     def from_record(cls, row: Mapping[str, object]) -> SignoffReceipt:
-        fields = {"schema", "contract_kind", "role", "status", "source_identity", "oa", "tool", "inputs", "outputs"}
+        fields = {"schema", "contract_kind", "role", "status", "source_identity", "subject", "execution", "tool", "inputs", "outputs"}
         if not isinstance(row, Mapping) or set(row) != fields:
             raise ValueError("invalid signoff receipt envelope")
-        if type(row["schema"]) is not int or row["schema"] != 1 or row["contract_kind"] != "release-receipt":
+        if type(row["schema"]) is not int or row["schema"] != 2 or row["contract_kind"] != "release-receipt":
             raise ValueError("invalid signoff receipt schema")
-        if not isinstance(row["role"], str) or row["role"] not in RECEIPT_BINDINGS or not isinstance(row["status"], str):
+        if not isinstance(row["role"], str) or not row["role"] or not isinstance(row["status"], str):
             raise ValueError("invalid signoff receipt role or status")
         if not isinstance(row["source_identity"], str) or re.fullmatch(r"sha256-[0-9a-f]{64}", row["source_identity"]) is None:
             raise ValueError("invalid receipt source-identity")
-        oa = row["oa"]
-        if not isinstance(oa, Mapping) or set(oa) != {"library", "cell", "schematic_view", "layout_view"} or any(
-            not isinstance(value, str) or not value for value in oa.values()
+        subject = row["subject"]
+        if not isinstance(subject, Mapping) or not subject or any(
+            not isinstance(value, str) or not value for value in subject.values()
         ):
-            raise ValueError("invalid receipt oa-identity")
+            raise ValueError("invalid receipt subject-identity")
+        execution = row["execution"]
+        if not isinstance(execution, Mapping) or set(execution) != {
+            "run_id", "operation_id", "plan_identity", "executed", "report_parsed", "exit_code"
+        } or any(not isinstance(execution[key], str) or not execution[key]
+                 for key in ("run_id", "operation_id", "plan_identity")):
+            raise ValueError("invalid receipt execution provenance")
+        if (execution["executed"] is not True or execution["report_parsed"] is not True
+                or type(execution["exit_code"]) is not int or execution["exit_code"] != 0):
+            raise ValueError("receipt execution is incomplete or failed")
         tool = row["tool"]
         if not isinstance(tool, Mapping) or set(tool) != {"name", "version"} or any(
             not isinstance(value, str) or not value for value in tool.values()
@@ -98,7 +101,7 @@ class SignoffReceipt:
             if not isinstance(row[field], list):
                 raise ValueError(f"receipt {field} must be an array")
             bindings.append(tuple(ReceiptArtifact.from_record(value) for value in row[field]))
-        return cls(row["role"], row["status"], row["source_identity"], dict(oa), tool["name"], tool["version"], *bindings)
+        return cls(row["role"], row["status"], row["source_identity"], dict(subject), dict(execution), tool["name"], tool["version"], *bindings)
 
 
 @dataclass(frozen=True)
@@ -150,6 +153,8 @@ class ExportSemantics:
     views: tuple[ReleaseView, ...]
     source_role: str | None = None
     oa_identity: tuple[str, str, str, str] | None = None
+    subject: Mapping[str, str] = field(default_factory=dict)
+    receipts: Mapping[str, ReceiptPolicy] = field(default_factory=dict)
 
     @classmethod
     def from_source(cls, exported: IpExport, level: str, collateral: tuple[ReleaseCollateralRecord, ...]) -> ExportSemantics:
@@ -160,6 +165,11 @@ class ExportSemantics:
             tuple(ReleaseView.from_source(item) for item in collateral if item.export == exported.name),
             interface.source_role if rtl else None,
             None if rtl else (interface.library, interface.cell, interface.schematic_view, interface.layout_view),
+            ({"kind": interface.kind, "module": interface.module,
+              **({"variant": interface.variant} if interface.variant else {})} if rtl else
+             {"kind": interface.kind, **{key: getattr(interface, key)
+              for key in ("library", "cell", "schematic_view", "layout_view")}}),
+            exported.receipts,
         )
 
     @classmethod
@@ -187,7 +197,11 @@ class ExportSemantics:
             raise ValueError("RTL release cannot declare OA identity")
         selected = tuple(ReleaseView.from_record(row) for row in views
                          if isinstance(row, Mapping) and row.get("export") == name)
-        return cls(name, kind, tuple(required), selected, interface.get("source_role"), oa)
+        subject = ({"kind": kind, "module": interface.get("module"),
+                    **({"variant": interface["variant"]} if "variant" in interface else {})}
+                   if kind == "rtl" else {"kind": kind, **dict(exported["oa"])})
+        return cls(name, kind, tuple(required), selected, interface.get("source_role"), oa,
+                   subject, receipt_policies(exported.get("receipts", {})))
 
     def assess(
         self, level: str,
@@ -210,16 +224,23 @@ class ExportSemantics:
             pex = by_role.get("pex_netlist")
             if pex is None or not self._physical_view(pex) or not pex.supports("circuit_simulation"):
                 problems.append(f"{self.name}:pex_netlist:format-identity-or-capability")
-            for role, bindings in RECEIPT_BINDINGS.items():
-                if role not in by_role:
-                    problems.append(f"{self.name}:{role}")
-                    continue
-                try:
-                    receipt = read_receipt(role)
-                except (OSError, ValueError) as exc:
-                    problems.append(f"{self.name}:{role}:invalid-json:{exc}")
-                    continue
-                problems.extend(self._receipt_problems(role, receipt, by_role))
+        if level == "signoff" and not self.receipts:
+            problems.append(f"{self.name}:missing-receipt-policy")
+        for view in self.views:
+            if "signoff" in view.capabilities and view.role not in self.receipts:
+                problems.append(f"{self.name}:{view.role}:missing-receipt-policy")
+        for role in self.receipts:
+            if level != "signoff" and role not in self.required_roles:
+                continue
+            if role not in by_role:
+                problems.append(f"{self.name}:{role}")
+                continue
+            try:
+                receipt = read_receipt(role)
+            except (OSError, ValueError) as exc:
+                problems.append(f"{self.name}:{role}:invalid-json:{exc}")
+                continue
+            problems.extend(self._receipt_problems(role, receipt, by_role))
 
         def supports(role: str | None, capability: str, formats: frozenset[str] | None = None) -> bool:
             view = by_role.get(role)
@@ -261,12 +282,13 @@ class ExportSemantics:
         a self-reference to the commit that stores the receipts themselves.
         """
         return canonical_digest({
-            "export": self.name, "kind": self.kind, "oa": self.oa_identity,
+            "export": self.name, "subject": dict(self.subject),
+            "receipts": {role: policy.record for role, policy in self.receipts.items()},
             "views": [{
                 "role": view.role, "size": view.size, "sha256": view.sha256,
                 "format": view.format, "capabilities": sorted(view.capabilities),
                 "library": view.library, "cell": view.cell, "view": view.view, "corner": view.corner,
-            } for view in sorted(self.views, key=lambda item: item.role) if view.role not in RECEIPT_BINDINGS],
+            } for view in sorted(self.views, key=lambda item: item.role) if view.role not in self.receipts],
         })
 
     def _receipt_problems(
@@ -284,11 +306,10 @@ class ExportSemantics:
             problems.append(f"{prefix}:receipt-role")
         if receipt.source_identity != self.source_identity:
             problems.append(f"{prefix}:source-identity")
-        expected_oa = dict(zip(("library", "cell", "schematic_view", "layout_view"), self.oa_identity, strict=True))
-        if receipt.oa != expected_oa:
-            problems.append(f"{prefix}:oa-identity")
-        outputs = RECEIPT_OUTPUTS.get(role, frozenset())
-        inputs = RECEIPT_BINDINGS[role] - outputs
+        if receipt.subject != self.subject:
+            problems.append(f"{prefix}:subject-identity")
+        outputs = set(self.receipts[role].outputs)
+        inputs = set(self.receipts[role].inputs)
         for field, values, expected in (("inputs", receipt.inputs, inputs), ("outputs", receipt.outputs, outputs)):
             if len(values) != len(expected) or {value.role for value in values} != expected:
                 problems.append(f"{prefix}:{field}:receipt-roles")

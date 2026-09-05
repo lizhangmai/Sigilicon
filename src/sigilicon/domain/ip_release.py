@@ -105,11 +105,50 @@ IpInterface = OaIpInterface | RtlIpInterface
 
 
 @dataclass(frozen=True)
+class ReceiptPolicy:
+    """Export-local evidence bindings, owned by the release contract."""
+
+    inputs: tuple[str, ...]
+    outputs: tuple[str, ...]
+
+    @classmethod
+    def from_record(cls, value: object) -> ReceiptPolicy:
+        row = _table(value, "receipt policy")
+        _reject_unknown(row, {"inputs", "outputs"}, "receipt policy")
+        groups = []
+        for field in ("inputs", "outputs"):
+            items = row.get(field)
+            if not isinstance(items, (list, tuple)) or any(
+                not isinstance(item, str) or not item for item in items
+            ) or len(set(items)) != len(items):
+                raise ValueError(f"receipt policy {field} must be unique roles")
+            groups.append(tuple(items))
+        if not any(groups) or set(groups[0]) & set(groups[1]):
+            raise ValueError("receipt policy must bind distinct inputs and outputs")
+        return cls(*groups)
+
+    @property
+    def record(self) -> dict[str, list[str]]:
+        return {"inputs": list(self.inputs), "outputs": list(self.outputs)}
+
+
+def receipt_policies(value: object) -> Mapping[str, ReceiptPolicy]:
+    rows = _table(value, "receipt policies")
+    policies = {_string(role, "receipt role"): ReceiptPolicy.from_record(row)
+                for role, row in rows.items()}
+    for role, policy in policies.items():
+        if set((*policy.inputs, *policy.outputs)) & set(policies):
+            raise ValueError(f"receipt policy {role} must bind design views, not receipts")
+    return MappingProxyType(policies)
+
+
+@dataclass(frozen=True)
 class IpExport:
     name: str
     interface: IpInterface
     collateral: tuple[IpCollateral, ...]
     required_roles: Mapping[str, tuple[str, ...]]
+    receipts: Mapping[str, ReceiptPolicy] = field(default_factory=lambda: MappingProxyType({}))
 
 
 @dataclass(frozen=True)
@@ -230,7 +269,7 @@ def _parse_ip_contract(
         entry = _table(value, f"exports[{index}]")
         _reject_unknown(
             entry,
-            {"name", "interface", "oa", "maturity"},
+            {"name", "interface", "oa", "maturity", "receipts"},
             f"exports[{index}]",
         )
         name = _string(entry.get("name"), f"exports[{index}].name")
@@ -375,6 +414,7 @@ def _parse_ip_contract(
         export_specs[name] = {
             "interface": parsed_interface,
             "required_roles": required_roles,
+            "receipts": receipt_policies(entry.get("receipts", {})),
         }
 
     collateral_raw = raw.get("collateral")
@@ -480,6 +520,7 @@ def _parse_ip_contract(
             interface=values["interface"],
             collateral=tuple(collateral_by_export[name]),
             required_roles=MappingProxyType(dict(values["required_roles"])),
+            receipts=values["receipts"],
         )
         if isinstance(
             exported.interface, (OaMixedSignalIpInterface, OaNativeIpInterface)

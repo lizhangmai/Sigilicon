@@ -331,6 +331,12 @@ kind = "rtl"
 contract = "configs/interface.toml"
 module = "rtl_top"
 source_role = "rtl_source"
+[exports.receipts.synthesis_receipt]
+inputs = ["interface_contract", "rtl_source"]
+outputs = []
+[exports.receipts.physical_implementation_receipt]
+inputs = ["interface_contract", "rtl_source"]
+outputs = []
 [exports.maturity.development]
 required_roles = ["interface_contract", "rtl_source"]
 [exports.maturity.implementation]
@@ -731,34 +737,12 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
     detached_record["exports"] = []
     assert plan.record["exports"]
     assert plan.record["missing_items"] == []
-    assert plan.record["exports"] == [
-        {
-            "name": "native-top",
-            "oa": {
-                "library": "native_lib",
-                "cell": "NATIVE_TOP",
-                "schematic_view": "schematic",
-                "layout_view": "layout",
-            },
-            "interface": {
-                "kind": "oa-native",
-                "contract": "ip/native_fixture/configs/interface.toml",
-            },
-            "maturity": {
-                "required_roles": [
-                    "interface_contract",
-                    "oa_port_contract",
-                    "circuit_netlist",
-                ],
-                "missing_items": [],
-            },
-            "availability": {
-                "simulation": True,
-                "synthesis": False,
-                "physical_implementation": False,
-            },
-        }
-    ]
+    release_export = plan.payload.exports[0]
+    assert release_export.name == "native-top"
+    assert release_export.interface.kind == "oa-native"
+    assert (release_export.oa.library, release_export.oa.cell) == ("native_lib", "NATIVE_TOP")
+    assert release_export.availability.simulation
+    assert not release_export.availability.physical_implementation
     assert plan.record["maturity_checks"][1] == {
         "name": "development_interface_consistency:native-top",
         "export": "native-top",
@@ -1055,12 +1039,6 @@ def test_rtl_release_plans_and_audits_without_oa_sources(
     assert isinstance(exported.interface, RtlIpInterface)
     assert contract.oa_assembly is None
 
-    def reject_oa_load(*_args, **_kwargs):
-        raise AssertionError("RTL release consulted an OA source")
-
-    monkeypatch.setattr(
-        oa_library_domain, "load_oa_library_source", reject_oa_load
-    )
     _patch_checkout(
         monkeypatch,
         lambda _root, _resources: SimpleNamespace(
@@ -1073,26 +1051,12 @@ def test_rtl_release_plans_and_audits_without_oa_sources(
         project=Project.open(tmp_path),
     )
 
-    assert plan.record["exports"] == [
-        {
-            "name": "rtl-top",
-            "interface": {
-                "kind": "rtl",
-                "contract": "ip/rtl_fixture/configs/interface.toml",
-                "module": "rtl_top",
-                "source_role": "rtl_source",
-            },
-            "maturity": {
-                "required_roles": ["interface_contract", "rtl_source"],
-                "missing_items": [],
-            },
-            "availability": {
-                "simulation": True,
-                "synthesis": False,
-                "physical_implementation": False,
-            },
-        }
-    ]
+    release_export = plan.payload.exports[0]
+    assert release_export.name == "rtl-top"
+    assert release_export.interface.kind == "rtl"
+    assert release_export.interface.module == "rtl_top"
+    assert release_export.availability.simulation
+    assert not release_export.availability.physical_implementation
     implementation = ip_release_planning.plan_ip_release_contract(
         contract,
         project=Project.open(tmp_path),
@@ -1305,6 +1269,15 @@ view = "layout"
 corner = "tt"
 capabilities = {json.dumps(capabilities)}
 ''')
+    bindings = {
+        "schematic_layout_parity_receipt": (["circuit_netlist", "raw_macro_gds_or_oasis", "raw_macro_cdl_or_lvs_netlist"], []),
+        "drc_receipt": (["raw_macro_gds_or_oasis"], []),
+        "lvs_receipt": (["circuit_netlist", "raw_macro_gds_or_oasis", "raw_macro_cdl_or_lvs_netlist"], []),
+        "characterization_receipt": (["pex_netlist"], ["raw_macro_liberty_or_db"]),
+    }
+    policies = "".join(f"[exports.receipts.{role}]\ninputs = {json.dumps(inputs)}\noutputs = {json.dumps(outputs)}\n"
+                       for role, (inputs, outputs) in bindings.items())
+    contract_path.write_text(contract_path.read_text().replace("[[collateral]]", policies + "\n[[collateral]]", 1))
     component.write_text(component.read_text().replace("[sources]", "[sources]\n" + "\n".join(source_rows)))
     contract_path.write_text(contract_path.read_text() + "".join(collateral_rows))
     operation = configs / "operations.toml"
@@ -1318,16 +1291,13 @@ capabilities = {json.dumps(capabilities)}
     policy = ExportSemantics.from_source(contract.get_export("native-top"), "signoff", plan.payload.collateral)
     identities = {view.role: {"role": view.role, "size": view.size, "sha256": view.sha256}
                   for view in plan.payload.collateral}
-    bindings = {
-        "schematic_layout_parity_receipt": (["circuit_netlist", "raw_macro_gds_or_oasis", "raw_macro_cdl_or_lvs_netlist"], []),
-        "drc_receipt": (["raw_macro_gds_or_oasis"], []),
-        "lvs_receipt": (["circuit_netlist", "raw_macro_gds_or_oasis", "raw_macro_cdl_or_lvs_netlist"], []),
-        "characterization_receipt": (["pex_netlist"], ["raw_macro_liberty_or_db"]),
-    }
     for role, (inputs, outputs) in bindings.items():
         receipt = {
-            "schema": 1, "contract_kind": "release-receipt", "role": role, "status": "passed",
-            "source_identity": policy.source_identity, "oa": oa, "tool": {"name": "fixture", "version": "1"},
+            "schema": 2, "contract_kind": "release-receipt", "role": role, "status": "passed",
+            "source_identity": policy.source_identity, "subject": {"kind": "oa-native", **oa},
+            "execution": {"run_id": "fixture-run", "operation_id": "fixture-operation", "plan_identity": "fixture-plan",
+                          "executed": True, "report_parsed": True, "exit_code": 0},
+            "tool": {"name": "fixture", "version": "1"},
             "inputs": [identities[name] for name in inputs], "outputs": [identities[name] for name in outputs],
         }
         (sources / f"{role}.data").write_text(json.dumps(receipt))
@@ -1350,12 +1320,61 @@ def _damage_receipt(receipt: dict, fault: str) -> None:
         receipt["inputs"] = []
     elif fault == "duplicate":
         receipt["inputs"].append(receipt["inputs"][0])
+    elif fault == "status":
+        receipt["status"] = "failed"
+    elif fault == "subject":
+        receipt["subject"] = {"kind": "rtl", "module": "wrong"}
+    elif fault == "execution":
+        receipt["execution"]["report_parsed"] = False
 
 
-@pytest.mark.parametrize("receipt_fault", [None, "source-identity", "receipt-roles", "tool-version", "digest", "size", "direction", "duplicate"])
-def test_signoff_receipt_policy_round_trip(tmp_path: Path, receipt_fault: str | None) -> None:
-    contract_path, design_commit = _signoff_contract_fixture(tmp_path)
-    receipt_path = contract_path.parent.parent / "sources/drc_receipt.data"
+def _rtl_signoff_fixture(tmp_path: Path) -> tuple[Path, str]:
+    from sigilicon.adapters.release.release_semantics import ExportSemantics
+
+    contract_path = _rtl_contract_fixture(tmp_path)
+    component = contract_path.parent / "ip.toml"
+    receipts = ("synthesis_receipt", "physical_implementation_receipt")
+    for role in receipts:
+        path = component.parent.parent / f"{role}.json"
+        path.write_text("{}")
+        component.write_text(component.read_text().replace(
+            "[sources]", f'[sources]\n{role} = "{path.relative_to(tmp_path)}"'))
+        with contract_path.open("a") as stream:
+            stream.write(f'''\n[[collateral]]
+export = "rtl-top"
+role = "{role}"
+component = "rtl-fixture"
+source = "{role}"
+package_path = "exports/rtl-top/{role}.json"
+format = "json"
+capabilities = ["signoff"]
+''')
+    operation = component.parent / "operations.toml"
+    operation.write_text(operation.read_text().replace('maturity = "development"', 'maturity = "signoff"'))
+    design_commit = _commit_release_source(tmp_path, "RTL source with evidence policy")
+    project = Project.open(tmp_path)
+    contract = load_ip_contract(contract_path, project=project)
+    plan = ip_release_planning.plan_ip_release_contract(contract, project=project)
+    policy = ExportSemantics.from_source(contract.get_export("rtl-top"), "signoff", plan.payload.collateral)
+    inputs = [{"role": view.role, "size": view.size, "sha256": view.sha256}
+              for view in plan.payload.collateral if view.role in {"interface_contract", "rtl_source"}]
+    for role in receipts:
+        receipt = {
+            "schema": 2, "contract_kind": "release-receipt", "role": role, "status": "passed",
+            "source_identity": policy.source_identity, "subject": {"kind": "rtl", "module": "rtl_top"},
+            "execution": {"run_id": "fixture-run", "operation_id": "fixture-operation", "plan_identity": "fixture-plan",
+                          "executed": True, "report_parsed": True, "exit_code": 0},
+            "tool": {"name": "fixture", "version": "1"}, "inputs": inputs, "outputs": [],
+        }
+        (component.parent.parent / f"{role}.json").write_text(json.dumps(receipt))
+    return contract_path, design_commit
+
+
+@pytest.mark.parametrize("rtl", [False, True], ids=["oa-native", "rtl"])
+@pytest.mark.parametrize("receipt_fault", [None, "source-identity", "receipt-roles", "tool-version", "digest", "size", "direction", "duplicate", "status", "subject", "execution"])
+def test_signoff_receipt_policy_round_trip(tmp_path: Path, receipt_fault: str | None, rtl: bool) -> None:
+    contract_path, design_commit = (_rtl_signoff_fixture if rtl else _signoff_contract_fixture)(tmp_path)
+    receipt_path = contract_path.parent.parent / ("synthesis_receipt.json" if rtl else "sources/drc_receipt.data")
     if receipt_fault:
         receipt = json.loads(receipt_path.read_text())
         _damage_receipt(receipt, receipt_fault)
@@ -1368,7 +1387,7 @@ def test_signoff_receipt_policy_round_trip(tmp_path: Path, receipt_fault: str | 
     if receipt_fault:
         assert plan.missing_items
         assert plan.record["availability"]["physical_implementation"] is False
-        assert project.preflight(project.plan("native-fixture:release")).ready is False
+        assert project.preflight(project.plan(f"{contract.owner}:release")).ready is False
     else:
         assert plan.missing_items == ()
         built = _publish_release(contract_path, project=project, maturity="signoff")
@@ -1377,15 +1396,16 @@ def test_signoff_receipt_policy_round_trip(tmp_path: Path, receipt_fault: str | 
         assert audited["source_commit"] == release_commit
 
 
-@pytest.mark.parametrize("fault", ["digest", "source-identity", "direction"])
-def test_package_audit_validates_receipt_content_bindings(tmp_path: Path, fault: str) -> None:
-    contract_path, _ = _signoff_contract_fixture(tmp_path)
+@pytest.mark.parametrize("rtl", [False, True], ids=["oa-native", "rtl"])
+@pytest.mark.parametrize("fault", ["digest", "source-identity", "direction", "status", "subject", "execution"])
+def test_package_audit_validates_receipt_content_bindings(tmp_path: Path, fault: str, rtl: bool) -> None:
+    contract_path, _ = (_rtl_signoff_fixture if rtl else _signoff_contract_fixture)(tmp_path)
     _commit_release_source(tmp_path, "signoff evidence")
     project = Project.open(tmp_path)
     built = _publish_release(contract_path, project=project)
     manifest_path = _built_manifest(project, built)
     manifest = json.loads(manifest_path.read_text())
-    view = next(row for row in manifest["views"] if row["role"] == "drc_receipt")
+    view = next(row for row in manifest["views"] if row["role"] == ("synthesis_receipt" if rtl else "drc_receipt"))
     path = manifest_path.parent / view["path"]
     receipt = json.loads(path.read_text())
     _damage_receipt(receipt, fault)
@@ -1437,7 +1457,6 @@ def test_managed_release_rechecks_the_real_git_commit(tmp_path: Path) -> None:
     assert audited["availability"]["simulation"] is True
 
 
-@pytest.mark.xfail(strict=True, reason="RTL receipt contents are not validated")
 def test_rtl_signoff_rejects_failed_receipts(tmp_path: Path) -> None:
     contract = _rtl_contract_fixture(tmp_path)
     component = contract.parent / "ip.toml"

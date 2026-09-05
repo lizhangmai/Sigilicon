@@ -8,7 +8,7 @@ import json
 from types import MappingProxyType
 from typing import Literal, Mapping, TypeAlias
 
-from sigilicon.domain.ip_release import IpContract
+from sigilicon.domain.ip_release import IpContract, ReceiptPolicy
 
 
 @dataclass(frozen=True)
@@ -224,6 +224,7 @@ class ReleaseExportRecord:
     maturity_missing_items: tuple[str, ...]
     availability: ReleaseAvailability
     oa: ReleaseOaIdentity | None = None
+    receipts: Mapping[str, ReceiptPolicy] = field(default_factory=lambda: MappingProxyType({}))
 
     @property
     def record(self) -> dict[str, object]:
@@ -235,6 +236,7 @@ class ReleaseExportRecord:
                 "missing_items": list(self.maturity_missing_items),
             },
             "availability": self.availability.record,
+            "receipts": {role: policy.record for role, policy in self.receipts.items()},
         }
         if self.oa is not None:
             value["oa"] = self.oa.record

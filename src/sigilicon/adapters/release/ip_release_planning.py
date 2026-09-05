@@ -752,6 +752,7 @@ def _plan_loaded_ip_release(
                 maturity_missing_items=tuple(export_missing),
                 availability=availability,
                 oa=oa_identity,
+                receipts=exported.receipts,
             )
         )
     availability = ReleaseAvailability(
