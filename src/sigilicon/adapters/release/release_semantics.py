@@ -312,14 +312,10 @@ class ExportSemantics:
                     if not set(purposes).issubset({view.role for view in selected}):
                         problems.append(f"{self.name}:{receipt.name}:{field}:evidence-purpose")
                     covered.update(names)
-                    if role == "characterization_receipt":
+                    if role == "characterization_receipt" and field == "outputs":
                         for view in selected:
-                            if view.role in purposes and (
-                                view.variant != receipt.variant
-                                or canonical_json(dict(view.condition)) != canonical_json(dict(receipt.condition))
-                                or (field == "outputs" and "characterized" not in view.capabilities)
-                            ):
-                                problems.append(f"{self.name}:{receipt.name}:{view.name}:characterization-condition-or-capability")
+                            if view.role in purposes and "characterized" not in view.capabilities:
+                                problems.append(f"{self.name}:{receipt.name}:{view.name}:characterization-capability")
                 required = {view.name for purpose in purposes for view in by_role.get(purpose, ())
                             if view.name in self.required_views}
                 if not required.issubset(covered):
@@ -382,4 +378,13 @@ class ExportSemantics:
                 view = by_role.get(value.name)
                 if view is None or (value.size, value.sha256) != (view.size, view.sha256):
                     problems.append(f"{prefix}:{field}:artifact-identity:{value.name}")
+                if view is not None:
+                    variant_conflict = (receipt.variant is not None and view.variant is not None
+                                        and receipt.variant != view.variant)
+                    condition_conflict = any(
+                        canonical_json(receipt.condition[key]) != canonical_json(view.condition[key])
+                        for key in receipt.condition.keys() & view.condition.keys()
+                    )
+                    if variant_conflict or condition_conflict:
+                        problems.append(f"{prefix}:{field}:applicability-conflict:{view.name}")
         return problems

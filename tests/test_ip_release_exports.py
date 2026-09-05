@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable
 import hashlib
 import json
+import re
+import tomllib
 from pathlib import Path
 import shutil
 import subprocess
@@ -1241,7 +1243,25 @@ def _commit_release_source(root: Path, message: str) -> str:
     return subprocess.run([git, "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True).stdout.strip()
 
 
-def _signoff_contract_fixture(tmp_path: Path, *, evidence_fault: str | None = None) -> tuple[Path, str]:
+def _set_view_applicability(contract: Path, applicability: dict[str, dict]) -> None:
+    parts = contract.read_text().split("[[collateral]]")
+    for index in range(1, len(parts)):
+        name = tomllib.loads(parts[index])["name"]
+        for field, value in applicability.get(name, {}).items():
+            parts[index] = re.sub(rf"^{field} = .*\n", "", parts[index], flags=re.MULTILINE)
+            if value is not None:
+                if isinstance(value, dict):
+                    fields = (f"{json.dumps(key)} = {json.dumps(item)}" for key, item in value.items())
+                    encoded = "{ " + ", ".join(fields) + " }"
+                else:
+                    encoded = json.dumps(value)
+                parts[index] += f"{field} = {encoded}\n"
+    contract.write_text("[[collateral]]".join(parts))
+
+
+def _signoff_contract_fixture(
+    tmp_path: Path, *, evidence_fault: str | None = None, applicability: dict[str, dict] | None = None,
+) -> tuple[Path, str]:
     contract_path = _native_oa_contract_fixture(tmp_path)
     configs = contract_path.parent
     sources = configs.parent / "sources"
@@ -1304,6 +1324,7 @@ capabilities = {json.dumps(capabilities)}
     operation.write_text(operation.read_text().replace('maturity = "development"', 'maturity = "signoff"'))
     from sigilicon.adapters.release.release_semantics import ExportSemantics
 
+    _set_view_applicability(contract_path, applicability or {})
     design_commit = _commit_release_source(tmp_path, "design and physical collateral")
     project = Project.open(tmp_path)
     contract = load_ip_contract(contract_path, project=project)
@@ -1321,6 +1342,7 @@ capabilities = {json.dumps(capabilities)}
             "tool": {"name": "fixture", "version": "1"},
             "inputs": [identities[name] for name in inputs], "outputs": [identities[name] for name in outputs],
         }
+        receipt.update((applicability or {}).get(role, {}))
         (sources / f"{role}.data").write_text(json.dumps(receipt))
     return contract_path, design_commit
 
@@ -1383,7 +1405,7 @@ def _damage_receipt(receipt: dict, fault: str) -> None:
         receipt["coverage"] = ["unverified"]
 
 
-def _rtl_signoff_fixture(tmp_path: Path) -> tuple[Path, str]:
+def _rtl_signoff_fixture(tmp_path: Path, *, applicability: dict[str, dict] | None = None) -> tuple[Path, str]:
     from sigilicon.adapters.release.release_semantics import ExportSemantics
 
     contract_path = _rtl_contract_fixture(tmp_path)
@@ -1407,6 +1429,7 @@ capabilities = ["signoff"]
 ''')
     operation = component.parent / "operations.toml"
     operation.write_text(operation.read_text().replace('maturity = "development"', 'maturity = "signoff"'))
+    _set_view_applicability(contract_path, applicability or {})
     design_commit = _commit_release_source(tmp_path, "RTL source with evidence policy")
     project = Project.open(tmp_path)
     contract = load_ip_contract(contract_path, project=project)
@@ -1423,8 +1446,76 @@ capabilities = ["signoff"]
                           "executed": True, "report_parsed": True, "exit_code": 0},
             "tool": {"name": "fixture", "version": "1"}, "inputs": inputs, "outputs": [],
         }
+        receipt.update((applicability or {}).get(role, {}))
         (component.parent.parent / f"{role}.json").write_text(json.dumps(receipt))
     return contract_path, design_commit
+
+
+@pytest.mark.parametrize("rtl,receipt_name,view_name", [
+    (False, "schematic_layout_parity_receipt", "raw_macro_cdl_or_lvs_netlist"),
+    (False, "drc_receipt", "raw_macro_gds_or_oasis"),
+    (False, "lvs_receipt", "raw_macro_gds_or_oasis"),
+    (False, "characterization_receipt", "pex_netlist"),
+    (False, "characterization_receipt", "raw_macro_liberty_or_db"),
+    (True, "synthesis_receipt", "rtl_source"),
+    (True, "physical_implementation_receipt", "rtl_source"),
+])
+@pytest.mark.parametrize("dimension", ["variant", "condition"])
+def test_signoff_rejects_conflicting_bound_view_applicability(
+    tmp_path: Path, rtl: bool, receipt_name: str, view_name: str, dimension: str,
+) -> None:
+    applicability = {
+        view_name: {dimension: "low-voltage" if dimension == "variant" else {"corner": "ff"}},
+        receipt_name: {dimension: "nominal" if dimension == "variant" else {"corner": "tt"}},
+    }
+    contract_path, _ = (_rtl_signoff_fixture if rtl else _signoff_contract_fixture)(tmp_path, applicability=applicability)
+    _commit_release_source(tmp_path, "conflicting evidence applicability")
+    project = Project.open(tmp_path)
+    contract = load_ip_contract(contract_path, project=project)
+    plan = ip_release_planning.plan_ip_release_contract(contract, project=project, maturity="signoff")
+    assert any(receipt_name in problem and "applicability-conflict" in problem for problem in plan.missing_items)
+    assert not project.preflight(project.plan(f"{contract.owner}:release")).ready
+
+
+@pytest.mark.parametrize("applicability", [
+    {"raw_macro_gds_or_oasis": {"variant": "low-voltage"}},
+    {"drc_receipt": {"variant": "nominal"}},
+    {"drc_receipt": {"condition": {"corner": "tt", "voltage": 0.9}}},
+    {"drc_receipt": {"condition": {"voltage": 0.9}}},
+    {"characterization_receipt": {"variant": "nominal", "condition": {"corner": "tt", "voltage": 0.9}}},
+])
+def test_native_signoff_preserves_shared_and_partially_qualified_views(tmp_path: Path, applicability: dict) -> None:
+    contract_path, _ = _signoff_contract_fixture(tmp_path, applicability=applicability)
+    _commit_release_source(tmp_path, "compatible evidence applicability")
+    project = Project.open(tmp_path)
+    built = _publish_release(contract_path, project=project)
+    audited = ip_packaging.audit_ip_release_manifest(_built_manifest(project, built))
+    assert audited["availability"]["physical_implementation"] is True
+
+
+@pytest.mark.parametrize("rtl", [False, True], ids=["oa-native", "rtl"])
+def test_package_audit_rejects_conflicting_receipt_applicability(tmp_path: Path, rtl: bool) -> None:
+    input_name = "rtl_source" if rtl else "raw_macro_gds_or_oasis"
+    receipt_name = "synthesis_receipt" if rtl else "drc_receipt"
+    contract_path, _ = (_rtl_signoff_fixture if rtl else _signoff_contract_fixture)(
+        tmp_path, applicability={input_name: {"variant": "low-voltage"}},
+    )
+    _commit_release_source(tmp_path, "shared evidence applicability")
+    project = Project.open(tmp_path)
+    manifest_path = _built_manifest(project, _publish_release(contract_path, project=project))
+    manifest = json.loads(manifest_path.read_text())
+    view = next(row for row in manifest["views"] if row["name"] == receipt_name)
+    path = manifest_path.parent / view["path"]
+    receipt = json.loads(path.read_text())
+    receipt["variant"] = view["variant"] = "nominal"
+    path.chmod(0o644)
+    path.write_text(json.dumps(receipt))
+    view["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    view["size"] = path.stat().st_size
+    manifest_path.chmod(0o644)
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(RuntimeError, match="applicability-conflict"):
+        ip_packaging.audit_ip_release_manifest(manifest_path)
 
 
 @pytest.mark.parametrize("rtl", [False, True], ids=["oa-native", "rtl"])
