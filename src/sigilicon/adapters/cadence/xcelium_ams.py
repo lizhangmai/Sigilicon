@@ -329,7 +329,7 @@ def plan_xcelium_ams_cell(
         raise ValueError(
             f"Xcelium AMS verification cell {spec.cell} must declare success_marker"
         )
-    sources = (spec.canonical_source, *spec.compile_sources)
+    sources = tuple(spec.project_root / path for path in spec.hdl.sources)
     if len(set(sources)) != len(sources):
         raise ValueError(f"verification cell {spec.cell} has duplicate compile sources")
     invalid_sources = [
@@ -353,9 +353,6 @@ def plan_xcelium_ams_cell(
         resources=resources,
     )
     model_set = platform.simulation.model_set(spec.ams.model_set)
-    model_names = [path.name for path in model_set.paths]
-    if len(model_names) != len(set(model_names)):
-        raise ValueError("Xcelium AMS platform model files have duplicate basenames")
     command_template = (
         "xrun",
         "-64bit",
@@ -367,6 +364,9 @@ def plan_xcelium_ams_cell(
         "$RUN_WORK/xcelium.d",
         "-log",
         "$RUN_WORK/xrun.log",
+        "-top", spec.hdl.top,
+        *(arg for directory in spec.hdl.include_dirs for arg in ("-incdir", directory)),
+        *(arg for name, value in spec.hdl.defines for arg in ("-define", name + ("=" + value if value else ""))),
         *(path.relative_to(repository.project_root).as_posix() for path in sources),
         "$RUN_INPUTS/ams_control.scs",
     )
@@ -438,28 +438,32 @@ def execute_xcelium_ams_cell(
     def selected(path: Path) -> Path:
         return bound.get(path.resolve(), path)
 
+    def selected_directory(directory: str) -> Path:
+        root = plan.spec.project_root / directory
+        matches = {selected(plan.spec.project_root / source).parents[len(Path(source).relative_to(directory).parts) - 1]
+                   for source in (*plan.spec.hdl.sources, *plan.spec.hdl.headers)
+                   if Path(source).is_relative_to(directory)}
+        if len(matches) != 1:
+            raise ValueError("AMS HDL include directory does not map to one sealed source tree")
+        return matches.pop()
+
     def prepare_inputs() -> None:
         staged["circuit"] = artifacts.copy_file(
             "inputs",
             ("release", plan.circuit_netlist.name),
             selected(plan.circuit_netlist),
         )
-        staged.update(
-            {
-                f"model:{path.name}": artifacts.copy_file(
-                    "inputs",
-                    ("pdk", path.name),
-                    selected(path),
-                )
-                for path in plan.model_set.paths
-            }
-        )
+        for asset, relative in plan.model_set.members:
+            destination = ("pdk", *relative.parts)
+            artifacts.directory("inputs", *destination[:-1])
+            staged[f"model:{asset.require_path()}"] = artifacts.copy_file(
+                "inputs", destination, selected(asset.require_path()))
         staged["control"] = artifacts.write_text(
             "inputs",
             ("ams_control.scs",),
             plan.render_ams_control(
                 circuit_netlist=staged["circuit"],
-                model_file=staged[f"model:{plan.model_set.file.name}"],
+                model_file=staged[f"model:{plan.model_set.file.require_path()}"],
             ),
         )
 
@@ -481,6 +485,9 @@ def execute_xcelium_ams_cell(
             xcelium_path,
             "-log",
             f"{work_path}/xrun.log",
+            "-top", plan.spec.hdl.top,
+            *(arg for directory in plan.spec.hdl.include_dirs for arg in ("-incdir", str(selected_directory(directory)))),
+            *(arg for name, value in plan.spec.hdl.defines for arg in ("-define", name + ("=" + value if value else ""))),
             *(str(selected(path)) for path in plan.sources),
             str(staged["control"]),
         ],

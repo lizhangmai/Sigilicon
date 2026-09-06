@@ -47,7 +47,7 @@ owner = "parent"
 [operations.rtl]
 uses = "cadence.xcelium"
 filesets = [{ component = "parent", fileset = "rtl" }, { component = "child", fileset = "rtl" }]
-config = { success_marker = "FIXTURE_COMPLETE", timeout_seconds = 10 }
+config = { hdl = {top = "parent", sources = [{component = "parent", source = "rtl"}, {component = "child", source = "rtl"}]}, success_marker = "FIXTURE_COMPLETE", timeout_seconds = 10 }
 ''')
     executable = write_file(root / "site/xcelium/tools/bin/xrun", "offline tool boundary\n", executable=True)
     with (root / "sigilicon.toml").open("a") as stream:
@@ -88,7 +88,7 @@ def test_synopsys_composite_compiles_qualified_sources_in_declared_order(tmp_pat
     parent = tmp_path / "ip/parent"
     runner = write_file(parent / "run.sh", """#!/bin/bash
 set -eu
-while read -r source; do cat "$source"; done < "$SIGILICON_VCS_RTL_FILELIST"
+while read -r source; do cat "$source"; done < "$SIGILICON_HDL_FILELIST"
 printf 'COMPOSITE_COMPLETE\\n'
 """, executable=True)
     component = parent / "component.toml"
@@ -104,7 +104,7 @@ SIGILICON_SYNOPSYS_VCS = "synopsys.vcs"
 uses = "synopsys.vcs"
 runtime = "vcs"
 filesets = [{ component = "parent", fileset = "rtl" }, { component = "child", fileset = "rtl" }]
-config = { runner = "run.sh", variant = "test", target = "structural", rtl_sources = [{component = "child", source = "rtl"}, {component = "parent", source = "rtl"}], success_marker = "COMPOSITE_COMPLETE", timeout_seconds = 10 }
+config = { runner = "run.sh", variant = "test", target = "structural", hdl = {top = "parent", sources = [{component = "child", source = "rtl"}, {component = "parent", source = "rtl"}]}, success_marker = "COMPOSITE_COMPLETE", timeout_seconds = 10 }
 ''')
     with (tmp_path / "sigilicon.toml").open("a") as stream:
         stream.write('"runtime.bash" = "/bin/bash"\n"synopsys.vcs" = "/bin/true"\n')
@@ -159,7 +159,7 @@ rtl = ["rtl"]
         parent.write_text(parent.read_text() + f'\n[[component]]\nname = "{name}"\ncontract = "ip/{owner}/{name}/component.toml"\n')
     catalog = tmp_path / 'ip/parent/operations.toml'
     catalog.write_text(catalog.read_text().replace('{ component = "child", fileset = "rtl" }',
-        '{ component = "alu", fileset = "rtl" }, { component = "adder", fileset = "rtl" }'))
+        '{ component = "alu", fileset = "rtl" }, { component = "adder", fileset = "rtl" }').replace('{component = "child", source = "rtl"}', '{component = "alu", source = "rtl"}, {component = "adder", source = "rtl"}'))
 
     def simulate(request):
         selected = [Path(argument).read_text() for argument in request.argv if argument.endswith('.sv')]
@@ -176,3 +176,31 @@ rtl = ["rtl"]
     references = project.source_inventory('parent')
     assert references[owner_root / 'adder/rtl.sv'].component == 'adder'
     assert project.require_owner(owner_root / 'adder/rtl.sv').name == owner
+
+
+def test_xcelium_keeps_headers_out_of_units_and_passes_compile_options(tmp_path: Path, monkeypatch) -> None:
+    _composite(tmp_path)
+    parent = tmp_path / 'ip/parent'
+    write_file(parent / 'defs/width.svh', '`define WIDTH 8\n')
+    write_file(parent / 'types.sv', 'package types; typedef logic [7:0] byte_t; endpackage\n')
+    component = parent / 'component.toml'
+    component.write_text(component.read_text().replace('[sources]', '[sources]\nheader = "ip/parent/defs/width.svh"\npackage = "ip/parent/types.sv"').replace('rtl = ["rtl"]', 'rtl = ["rtl", "header", "package"]'))
+    catalog = parent / 'operations.toml'
+    catalog.write_text(catalog.read_text().replace('sources = [{component = "parent", source = "rtl"}', 'headers = [{component = "parent", source = "header"}], include_dirs = ["defs"], defines = {MODE = "3"}, sources = [{component = "parent", source = "package"}, {component = "parent", source = "rtl"}'))
+
+    def simulate(request):
+        argv = request.argv
+        units = [Path(item).name for item in argv if item.endswith('.sv')]
+        assert units == ['types.sv', 'top.sv', 'top.sv']
+        assert not any(item.endswith('.svh') for item in argv)
+        assert argv[argv.index('-top') + 1] == 'parent'
+        assert argv[argv.index('-define') + 1] == 'MODE=3'
+        include = Path(argv[argv.index('-incdir') + 1])
+        assert (include / 'width.svh').read_text() == '`define WIDTH 8\n'
+        assert include != parent / 'defs'
+        Path(argv[argv.index('-log') + 1]).write_text('compile options checked\n')
+        return ProcessResult(0, 'FIXTURE_COMPLETE\n', '')
+
+    monkeypatch.setattr(xcelium.managed_process, 'run', simulate)
+    project = Project.open(tmp_path)
+    assert project.run(project.plan('parent:rtl')).status == 'succeeded'

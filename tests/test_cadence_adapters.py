@@ -20,7 +20,7 @@ from sigilicon.cli.main import main
     ('timeout_seconds = 1', True, "success_marker"),
     ('success_marker = "DONE", timeout_seconds = 0', True, "timeout_seconds"),
     ('success_marker = "DONE", timeout_seconds = 1, unknown = 1', True, "unknown"),
-    ('success_marker = "DONE", timeout_seconds = 1', False, "no Verilog sources"),
+    ('success_marker = "DONE", timeout_seconds = 1', False, "step source closure"),
 ))
 def test_xcelium_static_contract_fails_during_plan_and_check(
     tmp_path: Path, config: str, hdl: bool, error: str,
@@ -33,7 +33,7 @@ owner = "fixture"
 [operations.rtl]
 uses = "cadence.xcelium"
 filesets = [{{ component = "fixture", fileset = "rtl" }}]
-config = {{ {config} }}
+config = {{ hdl = {{top = "top", sources = [{{component = "fixture", source = "source_1"}}]}}, {config} }}
 ''')
     component = write_component_owner(tmp_path, "fixture", filesets={
         "operation": ("ip/fixture/operations.toml",),
@@ -117,7 +117,7 @@ owner = "example"
 [operations.rtl]
 uses = "cadence.xcelium"
 filesets = [{{ component = "example", fileset = "rtl" }}]
-config = {{ success_marker = "{marker}", timeout_seconds = 10 }}
+config = {{ hdl = {{top = "testbench", sources = [{{component = "example", source = "source_0"}}, {{component = "example", source = "source_1"}}]}}, success_marker = "{marker}", timeout_seconds = 10 }}
 ''')
     component = write_component_owner(root, "example", filesets={
         "rtl": ("ip/example/rtl/design.sv", "ip/example/dv/testbench.sv"),

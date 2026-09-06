@@ -16,6 +16,7 @@ from sigilicon.contracts import (
     require_config_header,
 )
 from sigilicon.domain.context import RepositoryIdentity
+from sigilicon.domain.hdl import HdlCompilation
 
 if TYPE_CHECKING:
     from sigilicon.project import Project
@@ -38,6 +39,9 @@ _FIELDS = frozenset(
         "runner",
         "success_marker",
         "ams",
+        "top",
+        "include_dirs",
+        "defines",
     }
 )
 
@@ -134,6 +138,7 @@ class VerificationCellSpec:
     dut: str
     simulator: str
     compile_sources: tuple[Path, ...]
+    hdl: HdlCompilation
     support_files: tuple[Path, ...]
     contracts: tuple[Path, ...]
     runner: Path | None
@@ -177,6 +182,7 @@ class VerificationCellSpec:
             "dut": self.dut,
             "simulator": self.simulator,
             "compile_sources": [relative(path) for path in self.compile_sources],
+            "hdl": self.hdl.record,
             "support_files": [relative(path) for path in self.support_files],
             "contracts": [relative(path) for path in self.contracts],
             "runner": relative(self.runner) if self.runner is not None else None,
@@ -435,6 +441,23 @@ def _parse_verification_cell(
         project_root=root,
         field=f"{contract}: support_files",
     )
+    include_dirs = raw.get("include_dirs", ())
+    if not isinstance(include_dirs, (list, tuple)) or any(not isinstance(item, str) for item in include_dirs):
+        raise ValueError("include_dirs must be cell-relative directories")
+    directories = []
+    for item in include_dirs:
+        directory = (cell_root / item).resolve()
+        if not directory.is_relative_to(root):
+            raise ValueError("include_dirs must stay inside the project")
+        directories.append(directory.relative_to(root).as_posix())
+    defines = raw.get("defines", {})
+    if not isinstance(defines, Mapping):
+        raise ValueError("defines must be a table")
+    hdl = HdlCompilation(_text(raw.get("top"), "top"),
+                         tuple(path.relative_to(root).as_posix() for path in (*compile_sources, canonical_source)),
+                         tuple(path.relative_to(root).as_posix() for path in support_files if path.suffix.lower() in {".vh", ".svh"}),
+                         tuple(directories), tuple(sorted(defines.items())))
+    hdl.validate()
     contracts = _files(
         raw.get("contracts", []),
         cell_root=cell_root,
@@ -551,6 +574,7 @@ def _parse_verification_cell(
         dut=dut,
         simulator=simulator,
         compile_sources=compile_sources,
+        hdl=hdl,
         support_files=support_files,
         contracts=contracts,
         runner=runner,

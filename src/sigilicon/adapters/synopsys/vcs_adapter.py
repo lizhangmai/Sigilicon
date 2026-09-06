@@ -11,7 +11,7 @@ from sigilicon.adapters.synopsys._common import (
     _logs,
     _run_script,
     _runtime_environment,
-    _write_filelist,
+    _hdl_environment,
 )
 
 from sigilicon.adapters.synopsys.planning import VcsAction, RunnerAdapter, require_action
@@ -27,16 +27,7 @@ class VcsAdapter(RunnerAdapter):
         runtime = _runtime_environment(context.runtime, context.step)
         environment = runtime.values
         environment["SIGILICON_DESIGN_VARIANT"] = action.invocation.variant
-        rtl = action.rtl
-        testbench = action.testbench
-        if target != "gate":
-            environment["SIGILICON_VCS_RTL_FILELIST"] = str(
-                _write_filelist(context, "rtl", rtl)
-            )
-        if target != "structural":
-            environment["SIGILICON_VCS_TESTBENCH_FILELIST"] = str(
-                _write_filelist(context, "testbench", testbench)
-            )
+        environment.update(_hdl_environment(context, action.hdl))
         held = list(runtime.files)
         if target == "gate":
             artifact = context.artifacts(ArtifactReference(action.synthesis_step, "mapped-netlist", "netlist.verilog"))[0]

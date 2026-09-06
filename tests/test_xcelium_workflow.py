@@ -37,6 +37,7 @@ owner = "demo"
 
 cell = "tb_demo"
 role = "rtl-testbench"
+top = "tb_demo"
 canonical_source = "testbench.sv"
 dut = "dut"
 simulator = "xcelium"

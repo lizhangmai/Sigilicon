@@ -13,6 +13,7 @@ from sigilicon.execution._io import ExecutionIO
 from typing import Mapping
 from pathlib import Path, PurePosixPath
 from sigilicon.project import Project
+from sigilicon.domain.hdl import HdlCompilation
 from sigilicon.execution._plan import PreflightCheck, Step
 from sigilicon.execution._resources import Resources
 from sigilicon.adapters.cadence._common import (
@@ -47,7 +48,7 @@ class _SpectreAction:
 
 @dataclass(frozen=True)
 class _XceliumAction:
-    sources: tuple[str, ...]
+    hdl: HdlCompilation
     success_marker: str
     timeout_seconds: int
 
@@ -233,18 +234,7 @@ class XceliumAdapter:
     """Execute one explicit, source-closed Verilog/SystemVerilog testbench."""
 
     name = "cadence.xcelium"
-    _fields = frozenset({"success_marker", "timeout_seconds"})
-
-    @staticmethod
-    def _hdl_sources(step: Step) -> tuple[str, ...]:
-        sources = tuple(
-            source
-            for source in step.sources
-            if Path(source).suffix.lower() in {".sv", ".svh", ".v", ".vh"}
-        )
-        if not sources:
-            raise ContractError("Xcelium filesets select no Verilog sources")
-        return sources
+    _fields = frozenset({"hdl", "success_marker", "timeout_seconds"})
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         return (_executable_check(resources, _XRUN),)
@@ -258,7 +248,7 @@ class XceliumAdapter:
         del project
         config = _strict_config(step, self._fields)
         action = _XceliumAction(
-            tuple(_relative(source, "HDL fileset source") for source in self._hdl_sources(step)),
+            HdlCompilation.resolve(step.config.get("hdl"), {item.reference: item.path for item in step.source_closure}),
             _text(config, "success_marker"),
             _positive_integer(config, "timeout_seconds"),
         )
@@ -275,7 +265,7 @@ class XceliumAdapter:
         action = step.action
         if not isinstance(action, _XceliumAction):
             raise ExecutionError("Xcelium Step has no typed action")
-        source_names = action.sources
+        source_names = action.hdl.sources
         sources = tuple(context.source_path(source) for source in source_names)
         timeout, marker = action.timeout_seconds, action.success_marker
         with owned_scratch_directory(
@@ -308,6 +298,9 @@ class XceliumAdapter:
                     library,
                     "-log",
                     f"{work}/xrun.log",
+                    "-top", action.hdl.top,
+                    *(arg for directory in action.hdl.include_dirs for arg in ("-incdir", str(context.source_directory / directory))),
+                    *(arg for name, value in action.hdl.defines for arg in ("-define", name + ("=" + value if value else ""))),
                     *(str(source) for source in sources),
                 ],
                 resources=context.runtime,

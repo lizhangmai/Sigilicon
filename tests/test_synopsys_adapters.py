@@ -74,15 +74,14 @@ def test_synopsys_adapters_reject_unknown_configuration_fields(adapter, tmp_path
         "synopsys.vcs": {
             **common,
             "target": "rtl",
-            "rtl_sources": [{"component": "fixture", "source": "rtl/design.sv"}],
-            "testbench_sources": [{"component": "fixture", "source": "dv/testbench.sv"}],
             "success_marker": "passed",
+            "hdl": {"top": "design", "sources": [{"component": "fixture", "source": "rtl/design.sv"}] + [{"component": "fixture", "source": "dv/testbench.sv"}]}
         },
         "synopsys.dc": {
             **common,
             "constraints": "flow/constraints.sdc",
             "corner": "tt",
-            "rtl_sources": [{"component": "fixture", "source": "rtl/design.sv"}],
+            "hdl": {"top": "design", "sources": [{"component": "fixture", "source": "rtl/design.sv"}]}
         },
         "synopsys.fc": {
             **common,
@@ -113,11 +112,11 @@ test "$1" = rtl
 test -x "$SIGILICON_SYNOPSYS_VCS"
 test "$VCS_HOME" != /ambient/vcs
 test "$VCS_ARCH_OVERRIDE" = linux
-test -s "$SIGILICON_VCS_RTL_FILELIST"
-mapfile -t rtl < "$SIGILICON_VCS_RTL_FILELIST"
+test -s "$SIGILICON_HDL_FILELIST"
+mapfile -t rtl < "$SIGILICON_HDL_FILELIST"
 test "${rtl[0]##*/}" = design.sv
 test "${rtl[1]##*/}" = aaa_legacy.v
-test -s "$SIGILICON_VCS_TESTBENCH_FILELIST"
+test -s "$SIGILICON_HDL_CONTRACT"
 mkdir -p "$SIGILICON_VCS_OUTPUT_ROOT/csrc" "$SIGILICON_VCS_OUTPUT_ROOT/simv.daidir"
 printf 'archive\n' >"$SIGILICON_VCS_OUTPUT_ROOT/simv.daidir/archive.so"
 ln -s ../simv.daidir/archive.so "$SIGILICON_VCS_OUTPUT_ROOT/csrc/archive.so"
@@ -140,10 +139,9 @@ printf 'managed vcs\n'
             "runner": runner.relative_to(sources).as_posix(),
             "target": "rtl",
             "variant": "test",
-            "rtl_sources": [{"component": "fixture", "source": name} for name in ("rtl/design.sv", "rtl/aaa_legacy.v")],
-            "testbench_sources": [{"component": "fixture", "source": "dv/testbench.sv"}],
             "success_marker": "managed vcs",
             "timeout_seconds": 10,
+            "hdl": {"top": "design", "sources": [{"component": "fixture", "source": name} for name in ("rtl/design.sv", "rtl/aaa_legacy.v")] + [{"component": "fixture", "source": "dv/testbench.sv"}]}
         },
         sources=("dv/run_vcs.sh", "rtl/design.sv", "rtl/aaa_legacy.v", "dv/testbench.sv"),
         runtime=RuntimeEnvironment(
@@ -216,7 +214,7 @@ def test_owner_runner_cannot_mutate_a_watched_step_source(tmp_path: Path) -> Non
         sources / "dv/run_vcs.sh",
         """#!/usr/bin/env bash
 set -euo pipefail
-source_file="$(head -n 1 "$SIGILICON_VCS_RTL_FILELIST")"
+source_file="$(head -n 1 "$SIGILICON_HDL_FILELIST")"
 printf 'tampered\n' >>"$source_file"
 """,
         executable=True,
@@ -231,10 +229,9 @@ printf 'tampered\n' >>"$source_file"
             "runner": runner.relative_to(sources).as_posix(),
             "target": "rtl",
             "variant": "test",
-            "rtl_sources": [{"component": "fixture", "source": "rtl/design.sv"}],
-            "testbench_sources": [{"component": "fixture", "source": "dv/testbench.sv"}],
             "success_marker": "must not reach completion",
             "timeout_seconds": 10,
+            "hdl": {"top": "design", "sources": [{"component": "fixture", "source": "rtl/design.sv"}] + [{"component": "fixture", "source": "dv/testbench.sv"}]}
         },
         sources=("dv/run_vcs.sh", "rtl/design.sv", "dv/testbench.sv"),
         runtime=RuntimeEnvironment(
@@ -304,14 +301,13 @@ ln -s ../mapped.ddc "$SIGILICON_DC_OUTPUT_ROOT/cache/current.ddc"
         {
             "runner": runner.relative_to(sources).as_posix(),
             "constraints": "impl/syn/constraints.sdc",
-            "top": "design",
             "variant": "test",
             "corner": "tt",
             "evaluator": "tools/evaluate.py",
-            "rtl_sources": [{"component": "fixture", "source": "rtl/design.sv"}],
             "timeout_seconds": 10,
             "reports": ("check_design.rpt", "area.rpt"),
             "verdict_report": "verdict.json",
+            "hdl": {"top": "design", "sources": [{"component": "fixture", "source": "rtl/design.sv"}]}
         },
         sources=(
             "impl/syn/run_dc.sh",

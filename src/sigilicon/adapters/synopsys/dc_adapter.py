@@ -11,7 +11,7 @@ from sigilicon.adapters.synopsys._common import (
     _logs,
     _run_script,
     _runtime_environment,
-    _write_filelist,
+    _hdl_environment,
 )
 
 from sigilicon.adapters.synopsys.planning import DcAction, RunnerAdapter, require_action
@@ -28,15 +28,8 @@ class DcAdapter(RunnerAdapter):
         environment.update(
             {
                 "SIGILICON_DESIGN_VARIANT": action.invocation.variant,
-                "SIGILICON_DESIGN_TOP": action.top,
+                **_hdl_environment(context, action.hdl),
                 "SIGILICON_DESIGN_CORNER": action.corner,
-                "SIGILICON_DC_RTL_FILELIST": str(
-                    _write_filelist(
-                        context,
-                        "rtl",
-                        action.rtl,
-                    )
-                ),
                 "SIGILICON_DC_CONSTRAINTS": str(
                     context.source_path(action.constraints)
                 ),

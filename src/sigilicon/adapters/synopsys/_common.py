@@ -461,3 +461,14 @@ def _run_script(
             timeout_seconds=invocation.timeout_seconds,
             before_spawn=visible,
         ))
+
+
+def _hdl_environment(context, compilation):
+    """One sealed compile contract for synthesis and simulation owner runners."""
+    payload = {**compilation.record,
+               "sources": [str(context.source_path(path)) for path in compilation.sources],
+               "headers": [str(context.source_path(path)) for path in compilation.headers],
+               "include_dirs": [str(context.source_directory / path) for path in compilation.include_dirs]}
+    return {"SIGILICON_DESIGN_TOP": compilation.top,
+            "SIGILICON_HDL_FILELIST": str(_write_filelist(context, "hdl", compilation.sources)),
+            "SIGILICON_HDL_CONTRACT": str(context.workspace("synopsys", {}, tool_work_root=context.work_directory).write_text("work", ("hdl.json",), json.dumps(payload) + "\n"))}

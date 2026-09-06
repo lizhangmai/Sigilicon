@@ -12,7 +12,7 @@ from sigilicon.execution._values import ContractError
 from sigilicon.execution._plan import PreflightCheck, Step
 from sigilicon.execution._resources import Resources
 from sigilicon.project import Project
-from sigilicon.source import SourceReference
+from sigilicon.domain.hdl import HdlCompilation
 from sigilicon.adapters.synopsys._common import (
     _ENVIRONMENT,
     _ENVIRONMENT_PREFIX,
@@ -106,50 +106,24 @@ def dependency(step: Step, field: str) -> str:
     return selected
 
 
-def hdl_sources(step: Step, field: str, *, required: bool = True) -> tuple[str, ...]:
-    raw = step.config.get(field, ())
-    if not isinstance(raw, (tuple, list)):
-        raise ContractError(f"{field} must be an array of component/source references")
-    references = []
-    for item in raw:
-        if not isinstance(item, Mapping) or set(item) != {"component", "source"}:
-            raise ContractError(f"{field} must select component/source identities")
-        references.append(SourceReference(item["component"], item["source"]))
-    if len(set(references)) != len(references):
-        raise ContractError(f"{field} contains duplicate sources")
-    closure = {source.reference: source.path for source in step.source_closure}
-    selected = []
-    for reference in references:
-        path = closure.get(reference)
-        if path is None or not path.endswith((".v", ".sv")):
-            raise ContractError(f"{field}: {reference} must select HDL in the step source closure")
-        selected.append(path)
-    if required and not selected:
-        raise ContractError(f"{field} must select at least one Verilog or SystemVerilog source")
-    return tuple(selected)
-
-
 @dataclass(frozen=True)
 class VcsAction(Action):
     kind: ClassVar[str] = "synopsys.vcs"
     invocation: Invocation
     target: str
-    rtl: tuple[str, ...]
-    testbench: tuple[str, ...]
+    hdl: HdlCompilation
     success_marker: str
     synthesis_step: str | None
 
     @classmethod
     def compile(cls, step: Step) -> VcsAction:
         config = _strict_config(step, frozenset({
-            "runner", "variant", "timeout_seconds", "target", "rtl_sources",
-            "testbench_sources", "success_marker", "synthesis_step",
+            "runner", "variant", "timeout_seconds", "target", "hdl", "success_marker", "synthesis_step",
         }))
         target = _target(config)
         return cls(
             Invocation.compile(step, "SIGILICON_SYNOPSYS_VCS"), target,
-            hdl_sources(step, "rtl_sources", required=target != "gate"),
-            hdl_sources(step, "testbench_sources", required=target != "structural"),
+            HdlCompilation.resolve(step.config.get("hdl"), {item.reference: item.path for item in step.source_closure}),
             _text(config, "success_marker"),
             dependency(step, "synthesis_step") if target == "gate" else None,
         )
@@ -157,13 +131,12 @@ class VcsAction(Action):
 
 @dataclass(frozen=True)
 class DcAction(Action):
-    top: str
     kind: ClassVar[str] = "synopsys.dc"
     invocation: Invocation
     corner: str
     constraints: str
     evaluator: str
-    rtl: tuple[str, ...]
+    hdl: HdlCompilation
     reports: tuple[str, ...]
     verdict: str
 
@@ -171,12 +144,12 @@ class DcAction(Action):
     def compile(cls, step: Step) -> DcAction:
         config = _strict_config(step, frozenset({
             "runner", "variant", "timeout_seconds", "corner", "constraints",
-            "evaluator", "rtl_sources", "reports", "verdict_report", "top",
+            "evaluator", "hdl", "reports", "verdict_report",
         }))
         return cls(
-            Invocation.compile(step, "SIGILICON_SYNOPSYS_DC_SHELL"), _text(config, "top"), _text(config, "corner"),
+            Invocation.compile(step, "SIGILICON_SYNOPSYS_DC_SHELL"), _text(config, "corner"),
             source(step, "constraints"), source(step, "evaluator"),
-            hdl_sources(step, "rtl_sources"),
+            HdlCompilation.resolve(step.config.get("hdl"), {item.reference: item.path for item in step.source_closure}),
             tuple(_safe_relative(name, "DC report") for name in _strings(config, "reports")),
             _safe_relative(_text(config, "verdict_report"), "DC verdict report"),
         )

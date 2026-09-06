@@ -145,12 +145,12 @@ def validate_execution(record: Mapping) -> VerifiedExecution:
             or evidence.get("corner") != action["corner"]):
         raise ValueError("tool verdict applicability disagrees with its action")
     if adapter == "synopsys.dc":
-        inputs = identities(sources[path] for path in (*action["rtl"], action["constraints"]))
+        inputs = identities(sources[path] for path in (*action["hdl"]["sources"], action["constraints"]))
     else:
         inputs = identities(item for item in artifacts
             if (item["step"] == action["synthesis_step"] and item["role"] in {"mapped-netlist", "mapped-constraints"})
             or (item["step"] == action["reference_step"] and item["role"] == "reference-library"))
     outputs = identities(item for item in artifacts if item["step"] == reference.step
                          and not item["kind"].startswith(("evidence.", "log.", "report.")))
-    return VerifiedExecution(check, result["owner"], action["top"], action["invocation"]["variant"],
+    return VerifiedExecution(check, result["owner"], action["hdl"]["top"] if adapter == "synopsys.dc" else action["top"], action["invocation"]["variant"],
                              {"corner": action["corner"]}, frozenset(checks), inputs, outputs)

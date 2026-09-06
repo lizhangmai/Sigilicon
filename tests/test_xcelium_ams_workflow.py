@@ -35,6 +35,7 @@ owner = "demo"
 
 cell = "tb_demo_ams"
 role = "ams-migration-testbench"
+top = "tb_demo"
 canonical_source = "testbench.vams"
 dut = "native_adapter"
 simulator = "xcelium-ams"
@@ -320,7 +321,7 @@ def test_xcelium_ams_plan_resolves_locked_circuit_and_platform(
     assert plan.circuit_netlist == circuit
     assert plan.model_set.name == "nominal"
     assert plan.model_set.file.name == "model.scs"
-    assert [path.suffix for path in plan.sources] == [".vams", ".sv"]
+    assert [path.suffix for path in plan.sources] == [".sv", ".vams"]
     assert ".scs" not in " ".join(plan.command_template[:-1])
     control = plan.render_ams_control()
     assert f'include "{circuit}"' in control

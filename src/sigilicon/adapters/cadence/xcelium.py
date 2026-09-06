@@ -27,7 +27,7 @@ from sigilicon.execution._resources import Resources
 from sigilicon.execution._values import json_value
 
 
-_HDL_SOURCE_SUFFIXES = frozenset({".sv", ".svh", ".v", ".vh"})
+_HDL_SOURCE_SUFFIXES = frozenset({".sv", ".v"})
 _XCELIUM_FAILURE_PATTERNS = (
     ("xcelium-error", re.compile(r"(?im)^\s*\*[EF],")),
     ("failed-status", re.compile(r"(?i)\bstatus\s*=\s*failed\b")),
@@ -196,7 +196,7 @@ def plan_xcelium_cell(
         raise ValueError(
             f"Xcelium verification cell {spec.cell} must declare success_marker"
         )
-    sources = (spec.canonical_source, *spec.compile_sources)
+    sources = tuple(spec.project_root / path for path in spec.hdl.sources)
     if len(set(sources)) != len(sources):
         raise ValueError(f"verification cell {spec.cell} has duplicate compile sources")
     invalid_sources = [
@@ -221,6 +221,9 @@ def plan_xcelium_cell(
         "$RUN_WORK/xcelium.d",
         "-log",
         "$RUN_WORK/xrun.log",
+        "-top", spec.hdl.top,
+        *(arg for directory in spec.hdl.include_dirs for arg in ("-incdir", directory)),
+        *(arg for name, value in spec.hdl.defines for arg in ("-define", name + ("=" + value if value else ""))),
         *(path.relative_to(repository.project_root).as_posix() for path in sources),
     )
     source_paths = {
@@ -270,6 +273,9 @@ def execute_xcelium_cell(
             xcelium_path,
             "-log",
             f"{work_path}/xrun.log",
+            "-top", plan.spec.hdl.top,
+            *(arg for directory in plan.spec.hdl.include_dirs for arg in ("-incdir", str(plan.spec.project_root / directory))),
+            *(arg for name, value in plan.spec.hdl.defines for arg in ("-define", name + ("=" + value if value else ""))),
             *(str(path) for path in plan.sources),
         ],
         validate_inputs=lambda: _require_xcelium_sources(plan),
