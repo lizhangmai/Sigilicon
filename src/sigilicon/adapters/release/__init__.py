@@ -10,6 +10,7 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from sigilicon.execution.adapter import AdapterPreparation
+from sigilicon.execution.artifact_reference import ArtifactProduct, StepContract
 from sigilicon.execution._result import Artifact, StepResult
 from sigilicon.execution._values import ContractError, ExecutionError
 from sigilicon.execution._io import ExecutionIO
@@ -80,12 +81,7 @@ class IpReleaseAdapter:
     name = "sigilicon.ip-release"
     _fields = frozenset({"owner", "maturity"})
 
-    def prepare(
-        self,
-        project: Project,
-        step: Step,
-        _resources: Resources,
-    ) -> AdapterPreparation:
+    def _configuration(self, project: Project, step: Step):
         unknown = set(step.config) - self._fields
         if unknown:
             raise ContractError(
@@ -99,6 +95,23 @@ class IpReleaseAdapter:
         maturity = step.config.get("maturity")
         if maturity is not None and (not isinstance(maturity, str) or not maturity):
             raise ContractError("release maturity must be non-empty text")
+        from sigilicon.domain.ip_release import load_ip_contract
+        load_ip_contract(contract, project=project)
+        if maturity is not None and maturity not in {"development", "implementation", "signoff"}:
+            raise ContractError("unsupported release maturity")
+        return owner, contract, maturity
+
+    def contract(self, project: Project, step: Step) -> StepContract:
+        self._configuration(project, step)
+        return StepContract(produces=(ArtifactProduct("release", "summary.ip-release", "many"),))
+
+    def prepare(
+        self,
+        project: Project,
+        step: Step,
+        _resources: Resources,
+    ) -> AdapterPreparation:
+        owner, contract, maturity = self._configuration(project, step)
         release = plan_ip_release(contract, project=project, maturity=maturity)
         owner_root = owner.root.resolve()
         project_root = project.project_root.resolve()

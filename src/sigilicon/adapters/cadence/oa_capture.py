@@ -10,6 +10,7 @@ from sigilicon.domain.oa_library import find_oa_assembly, load_oa_library_source
 from sigilicon.domain.oa_snapshot import NativeOaSnapshot
 from sigilicon.domain.platform import load_platform
 from sigilicon.execution.adapter import AdapterPreparation
+from sigilicon.execution.artifact_reference import ArtifactProduct, StepContract
 from sigilicon.execution._result import StepResult
 from sigilicon.execution._source import Source
 from sigilicon.execution._values import ContractError
@@ -38,7 +39,7 @@ class NativeCaptureRequest:
 class OaCaptureAdapter:
     name = "cadence.oa-capture"
 
-    def prepare(self, project, step, resources):
+    def _configuration(self, project, step, resources=None):
         reader = ContractReader(step.config, "OA capture")
         owner, cell, view = reader.text("owner"), reader.text("cell"), reader.text("view")
         reader.finish()
@@ -51,6 +52,14 @@ class OaCaptureAdapter:
         platform = load_platform(project, assembly.pdk, resources=resources)
         if platform.oa is None:
             raise ContractError("OA capture requires a technology binding")
+        return owner, cell, view, assembly, platform
+
+    def contract(self, project, step):
+        self._configuration(project, step)
+        return StepContract(produces=(ArtifactProduct("native-source", "source.native-oa", path="view.json"),))
+
+    def prepare(self, project, step, resources):
+        owner, cell, view, assembly, platform = self._configuration(project, step, resources)
         owner_root = project.owner(owner).root
         documents = {**assembly.source_documents, **platform.source_documents,
                      platform.source_paths[0]: platform.catalog_document}

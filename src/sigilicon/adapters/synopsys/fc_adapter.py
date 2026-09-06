@@ -18,7 +18,7 @@ from sigilicon.adapters.synopsys._common import (
     _safe_relative,
 )
 
-from sigilicon.adapters.synopsys.planning import FcAction, RunnerAdapter, require_action, FC_OUTPUT_ENVIRONMENT
+from sigilicon.adapters.synopsys.planning import FcAction, RunnerAdapter, require_action
 
 class FcAdapter(RunnerAdapter):
     name = "synopsys.fc"
@@ -58,7 +58,8 @@ class FcAdapter(RunnerAdapter):
             )
             output_names = {output.role: output.path for output in action.outputs}
             required = frozenset(output_names)
-            role_environment = FC_OUTPUT_ENVIRONMENT
+            role_environment = {output.role: output.environment for output in action.outputs}
+            output_kinds = {output.role: output.kind for output in action.outputs}
             environment.update(
                 {
                     "SIGILICON_FC_MAPPED_NETLIST": str(mapped_netlist.path),
@@ -94,7 +95,8 @@ class FcAdapter(RunnerAdapter):
                     }
                 )
             else:
-                for role, environment_name in role_environment.items():
+                for role in output_names:
+                    environment_name = role_environment[role]
                     environment[environment_name] = (
                         f"{scratch.child_path}/{role}/{output_names[role]}"
                     )
@@ -144,7 +146,7 @@ class FcAdapter(RunnerAdapter):
                         checkpoint = role_root / output_names[role]
                         if not checkpoint.is_dir() or checkpoint.is_symlink():
                             continue
-                        archive = scratch.path / f"{output_names[role]}.tar"
+                        archive = scratch.path / (Path(output_names[role]).name + ".tar")
                         _archive_directory(
                             checkpoint,
                             archive,
@@ -165,8 +167,7 @@ class FcAdapter(RunnerAdapter):
                     copied.extend(
                         context.copy_output(
                             role=role,
-                            kind=("layout.gds" if role == "layout-stream" else
-                                  "evidence.tool-verdict" if role == "execution-verdict" else "result.synopsys-fc"),
+                            kind=output_kinds[role],
                             source=path,
                             filename=path.relative_to(role_root).as_posix(),
                         )

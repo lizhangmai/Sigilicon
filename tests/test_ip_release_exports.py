@@ -1,4 +1,5 @@
 from __future__ import annotations
+from conftest import FixtureAdapter
 
 from collections.abc import Callable
 import hashlib
@@ -1753,7 +1754,7 @@ uses = "fake.generate"
 filesets = [{component = "rtl-fixture", fileset = "design"}]
 ''')
 
-    class Generate:
+    class Generate(FixtureAdapter):
         name = "fake.generate"
 
         def prepare(self, project, step, resources):

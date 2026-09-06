@@ -11,7 +11,7 @@ from typing import Mapping
 from sigilicon.artifacts import read_nofollow_bytes
 from sigilicon.contracts import ContractReader, freeze_toml_document, thaw_toml_document
 from sigilicon.execution.adapter import AdapterPreparation
-from sigilicon.execution.artifact_reference import ArtifactReference
+from sigilicon.execution.artifact_reference import ArtifactReference, ArtifactProduct, StepContract
 from sigilicon.execution._source import Source
 from sigilicon.execution._resources import ResourceBinding
 from sigilicon.execution._result import Artifact, StepResult
@@ -48,7 +48,7 @@ class BuildAction:
 class BuildArtifactReleaseAdapter:
     name = "sigilicon.release-artifacts"
 
-    def prepare(self, project, step, resources):
+    def _configuration(self, step):
         config = ContractReader(step.config, "build artifact release")
         base = ContractReader(config.table("base"), "source package reference")
         reference = ReleaseRef(base.text("store"), base.text("manifest_sha256"))
@@ -59,26 +59,9 @@ class BuildArtifactReleaseAdapter:
         config.finish()
         if not isinstance(views, (tuple, list)) or not views:
             raise ContractError("build release requires generated view declarations")
-        destination = resources.require_destination(release_store_resource(reference.store))
-        package = ReleaseStore(destination).open(reference, validate=validate_ip_release_package)
-        if package.manifest.get("release_kind") != "source-package":
-            raise ContractError("build release base must be a source package")
-        from sigilicon.domain.ip_release import load_ip_contract
-        owner_contract = project.owner(package.manifest["owner"]).release_contract
-        contract = load_ip_contract(owner_contract, project=project)
-        manifest = json.loads(json.dumps(dict(package.manifest)))
         if maturity not in {"development", "implementation", "signoff"}:
             raise ContractError("unsupported build release maturity")
-        manifest["maturity"]["level"] = maturity
-        for exported in manifest["exports"]:
-            declaration = contract.get_export(exported["name"])
-            exported["maturity"]["required_views"] = list(declaration.required_views[maturity])
-            exported["receipts"] = {name: policy.record for name, policy in declaration.receipts.items()}
-        materialization = RunStore(project.artifact_root).materialization_plan(**dict(run))
-        if materialization.result.owner != package.manifest.get("owner"):
-            raise ContractError("generated collateral must belong to the source package owner")
         declared = []
-        artifacts = []
         for raw in views:
             reader = ContractReader(raw, "generated release view")
             row = {key: reader.text(key) for key in ("export", "name", "role", "format", "package_path")}
@@ -93,10 +76,35 @@ class BuildArtifactReleaseAdapter:
                               "lef": "abstract.lef", "liberty": "library.liberty", "db": "library.synopsys-db"}
             if row["format"] in expected_kinds and selection.kind != expected_kinds[row["format"]]:
                 raise ContractError("generated physical view format disagrees with its artifact kind")
-            artifact, = materialization.artifacts(selection)
-            artifacts.append(artifact.path)
             row["artifact"] = selection.record
             declared.append(freeze_toml_document(row))
+        return reference, maturity, run, tuple(declared)
+
+    def contract(self, project, step):
+        self._configuration(step)
+        return StepContract(produces=(ArtifactProduct("release", "summary.ip-release", "many"),))
+
+    def prepare(self, project, step, resources):
+        reference, maturity, run, views = self._configuration(step)
+        destination = resources.require_destination(release_store_resource(reference.store))
+        package = ReleaseStore(destination).open(reference, validate=validate_ip_release_package)
+        if package.manifest.get("release_kind") != "source-package":
+            raise ContractError("build release base must be a source package")
+        from sigilicon.domain.ip_release import load_ip_contract
+        owner_contract = project.owner(package.manifest["owner"]).release_contract
+        contract = load_ip_contract(owner_contract, project=project)
+        manifest = json.loads(json.dumps(dict(package.manifest)))
+        manifest["maturity"]["level"] = maturity
+        for exported in manifest["exports"]:
+            declaration = contract.get_export(exported["name"])
+            exported["maturity"]["required_views"] = list(declaration.required_views[maturity])
+            exported["receipts"] = {name: policy.record for name, policy in declaration.receipts.items()}
+        materialization = RunStore(project.artifact_root).materialization_plan(**dict(run))
+        if materialization.result.owner != package.manifest.get("owner"):
+            raise ContractError("generated collateral must belong to the source package owner")
+        declared = views
+        artifacts = [materialization.artifacts(ArtifactReference.from_record(row["artifact"]))[0].path
+                     for row in declared]
         source_paths = []
         owner = project.owner(materialization.result.owner)
         for row in materialization.execution_plan["sources"]:

@@ -16,6 +16,7 @@ from sigilicon.virtuoso.oa_snapshot import attest_native_snapshot
 from sigilicon.domain.oa_library import find_oa_assembly, load_oa_library_source
 from sigilicon.domain.platform import load_platform
 from sigilicon.execution.adapter import AdapterPreparation
+from sigilicon.execution.artifact_reference import ArtifactProduct, StepContract
 from sigilicon.execution._values import ContractError, ExecutionError
 from sigilicon.execution._io import ExecutionIO
 from sigilicon.execution._plan import PreflightCheck, Step
@@ -134,7 +135,7 @@ def export_oa_stream(
 class OaExportAdapter:
     name = "cadence.oa-export"
 
-    def prepare(self, project: Project, step: Step, resources: Resources) -> AdapterPreparation:
+    def _configuration(self, project: Project, step: Step, resources=None):
         config = ContractReader(step.config, "OA export config")
         owner = config.text("owner")
         cell = config.text("cell")
@@ -193,6 +194,16 @@ class OaExportAdapter:
                                  assembly.workspace_root, identity, cds_identity, platform.layout.xstream_flatten_pcells,
                                  platform.layout.xstream_suppressed_warnings, timeout,
                                  tuple(item[0] for _, item in sorted(snapshots.items())))
+        return action, assembly, platform, snapshots
+
+    def contract(self, project: Project, step: Step) -> StepContract:
+        self._configuration(project, step)
+        return StepContract(produces=(ArtifactProduct("layout-stream", "layout.gds", path="layout.gds"),
+                                      ArtifactProduct("export", "evidence.oa-export", "many")))
+
+    def prepare(self, project: Project, step: Step, resources: Resources) -> AdapterPreparation:
+        action, assembly, platform, snapshots = self._configuration(project, step, resources)
+        owner, identity, cds_identity = action.owner, action.layermap_resource, action.cds_lib_resource
         owner_root = project.owner(owner).root
         documents = {**assembly.source_documents, **platform.source_documents,
                      platform.source_paths[0]: platform.catalog_document}

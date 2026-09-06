@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from sigilicon.execution.adapter import AdapterPreparation
+from sigilicon.execution.artifact_reference import ArtifactProduct, StepContract
 from typing import Any
 from sigilicon.execution._values import ContractError, ExecutionError
 from sigilicon.execution._io import ExecutionIO
@@ -142,7 +143,7 @@ class StructuralLinkAdapter:
             raise ContractError("structural-link filesets select no RTL sources")
         return sources
 
-    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
+    def _configuration(self, step: Step):
         config = self._config(step)
         _text(config, "owner")
         for name in (
@@ -186,6 +187,15 @@ class StructuralLinkAdapter:
             raise ContractError(
                 "structural-link requires an owner-declared runtime profile"
             )
+        return config
+
+    def contract(self, project: Project, step: Step) -> StepContract:
+        config = self._configuration(step)
+        project.owner(config["owner"])
+        return StepContract(produces=(ArtifactProduct("structural-link", "evidence.structural-link", "many"),))
+
+    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
+        self._configuration(step)
         return preflight_environment(step.runtime, resources)
 
     def prepare(
@@ -195,7 +205,7 @@ class StructuralLinkAdapter:
         resources: Resources,
     ) -> AdapterPreparation:
         initial = step
-        config = self._config(initial)
+        config = self._configuration(initial)
         owner = _text(config, "owner")
         project.owner(owner)
         lock_name = _safe_relative(

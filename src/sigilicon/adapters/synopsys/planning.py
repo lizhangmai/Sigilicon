@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
+from pathlib import PurePosixPath
 from types import MappingProxyType
 from typing import ClassVar, Self, Mapping
 
 from sigilicon.execution.adapter import AdapterPreparation
+from sigilicon.execution.artifact_reference import ArtifactProduct, ArtifactReference, StepContract
 from sigilicon.execution._values import ContractError
 from sigilicon.execution._plan import PreflightCheck, Step
 from sigilicon.execution._resources import Resources
@@ -65,6 +67,12 @@ class Action(ABC):
         ...
 
     @property
+    @abstractmethod
+    def contract(self) -> StepContract:
+        """Artifacts guaranteed and consumed by this tool action."""
+        ...
+
+    @property
     def record(self) -> dict[str, object]:
         return {"kind": self.kind, **asdict(self)}
 
@@ -73,6 +81,9 @@ class RunnerAdapter:
     """Shared compile/readiness boundary for the four owner runner protocols."""
 
     action_type: type[Action]
+
+    def contract(self, project: Project, step: Step) -> StepContract:
+        return self.action_type.compile(step).contract
 
     def prepare(self, project: Project, step: Step, resources: Resources) -> AdapterPreparation:
         return AdapterPreparation(action=self.action_type.compile(step))
@@ -115,6 +126,11 @@ class VcsAction(Action):
     success_marker: str
     synthesis_step: str | None
 
+    @property
+    def contract(self) -> StepContract:
+        consumes = (ArtifactReference(self.synthesis_step, "mapped-netlist", "netlist.verilog"),) if self.target == "gate" else ()
+        return StepContract(consumes, (ArtifactProduct("log", "log.synopsys", "many"),))
+
     @classmethod
     def compile(cls, step: Step) -> VcsAction:
         config = _strict_config(step, frozenset({
@@ -140,6 +156,16 @@ class DcAction(Action):
     reports: tuple[str, ...]
     verdict: str
 
+    @property
+    def contract(self) -> StepContract:
+        return StepContract(produces=(
+            ArtifactProduct("log", "log.synopsys", "many"),
+            ArtifactProduct("mapped-netlist", "netlist.verilog", path="mapped.v"),
+            ArtifactProduct("mapped-constraints", "constraints.sdc", path="mapped.sdc"),
+            ArtifactProduct("checkpoint", "checkpoint.synopsys-ddc", path="mapped.ddc"),
+            *(ArtifactProduct("report", "report.synopsys", path=name) for name in self.reports),
+            ArtifactProduct("execution-verdict", "evidence.tool-verdict", path=self.verdict)))
+
     @classmethod
     def compile(cls, step: Step) -> DcAction:
         config = _strict_config(step, frozenset({
@@ -155,22 +181,37 @@ class DcAction(Action):
         )
 
 
-FC_OUTPUT_ENVIRONMENT = MappingProxyType({
-    "routed-netlist": "SIGILICON_FC_ROUTED_NETLIST",
-    "routed-constraints": "SIGILICON_FC_ROUTED_CONSTRAINTS",
-    "layout-stream": "SIGILICON_FC_GDS",
-    "checkpoint": "SIGILICON_FC_CHECKPOINT",
-    "design-check-report": "SIGILICON_FC_DESIGN_CHECK_REPORT",
-    "structural-report": "SIGILICON_FC_STRUCTURAL_REPORT",
-    "qor-report": "SIGILICON_FC_QOR_REPORT",
-    "timing-report": "SIGILICON_FC_TIMING_REPORT",
-    "area-report": "SIGILICON_FC_AREA_REPORT",
-    "power-report": "SIGILICON_FC_POWER_REPORT",
-    "drc-report": "SIGILICON_FC_DRC_REPORT",
-    "physical-completion-report": "SIGILICON_FC_PHYSICAL_COMPLETION_REPORT",
-    "tie-off-check-report": "SIGILICON_FC_TIE_OFF_CHECK_REPORT",
-    "execution-verdict": "SIGILICON_FC_EXECUTION_VERDICT",
+FC_REQUIRED_OUTPUTS = MappingProxyType({
+    "routed-netlist": "netlist.verilog", "routed-constraints": "constraints.sdc",
+    "layout-stream": "layout.gds", "checkpoint": "checkpoint.synopsys-dlib-tar",
+    "execution-verdict": "evidence.tool-verdict",
 })
+
+
+@dataclass(frozen=True)
+class FcOutput:
+    role: str
+    path: str
+    kind: str
+    environment: str
+
+    @property
+    def artifact_path(self) -> str:
+        return PurePosixPath(self.path).name + ".tar" if self.role == "checkpoint" else self.path
+
+    @classmethod
+    def parse(cls, role: str, raw: Mapping) -> FcOutput:
+        from sigilicon.contracts import ContractReader
+        reader = ContractReader(raw, f"FC output {role}")
+        result = cls(role, _safe_relative(reader.text("path"), f"FC output {role}"),
+                     reader.text("kind"), reader.text("environment"))
+        reader.finish()
+        ArtifactProduct(role, result.kind)
+        if result.kind != FC_REQUIRED_OUTPUTS.get(role, "report.synopsys"):
+            raise ContractError(f"FC output {role} has an incompatible artifact kind")
+        if not result.environment.startswith("SIGILICON_FC_OUTPUT_") or _ENVIRONMENT.fullmatch(result.environment) is None:
+            raise ContractError("FC output environment must use SIGILICON_FC_OUTPUT_ names")
+        return result
 
 
 @dataclass(frozen=True)
@@ -184,7 +225,20 @@ class FcAction(Action):
     synthesis_step: str | None
     reference_step: str | None
     evaluator: str | None
-    outputs: tuple[Output, ...]
+    outputs: tuple[FcOutput, ...]
+
+    @property
+    def contract(self) -> StepContract:
+        logs = (ArtifactProduct("log", "log.synopsys", "many"),)
+        if self.target == "library":
+            return StepContract(produces=(*logs,
+                ArtifactProduct("reference-library", "library.synopsys-ndm", "many"),
+                ArtifactProduct("library-check-report", "report.synopsys", path="check_workspace.rpt")))
+        return StepContract((
+            ArtifactReference(self.synthesis_step, "mapped-netlist", "netlist.verilog"),
+            ArtifactReference(self.synthesis_step, "mapped-constraints", "constraints.sdc"),
+            ArtifactReference(self.reference_step, "reference-library", "library.synopsys-ndm", "many")),
+            (*logs, *(ArtifactProduct(output.role, output.kind, path=output.artifact_path) for output in self.outputs)))
 
     @classmethod
     def compile(cls, step: Step) -> FcAction:
@@ -197,10 +251,13 @@ class FcAction(Action):
         if target not in {"library", "pnr"}:
             raise ContractError(f"unsupported FC target {target!r}")
         outputs = _mapping(config, "outputs")
-        if target == "pnr" and set(outputs) != set(FC_OUTPUT_ENVIRONMENT):
+        if target == "pnr" and not set(FC_REQUIRED_OUTPUTS).issubset(outputs):
             raise ContractError("FC outputs do not match the physical result contract")
         if target == "library" and outputs:
             raise ContractError("FC library action cannot declare physical outputs")
+        parsed = tuple(FcOutput.parse(role, row) for role, row in sorted(outputs.items()))
+        if len({item.environment for item in parsed}) != len(parsed):
+            raise ContractError("FC output environment names must be unique")
         return cls(
             Invocation.compile(step, "SIGILICON_SYNOPSYS_LM_SHELL" if target == "library"
                                else "SIGILICON_SYNOPSYS_FC_SHELL"),
@@ -209,8 +266,7 @@ class FcAction(Action):
             dependency(step, "synthesis_step") if target == "pnr" else None,
             dependency(step, "reference_step") if target == "pnr" else None,
             source(step, "evaluator") if target == "pnr" else None,
-            tuple(Output(role, _safe_relative(path, f"FC output {role}"))
-                  for role, path in sorted(outputs.items())),
+            parsed,
         )
 
 
@@ -225,6 +281,13 @@ class HspiceAction(Action):
     source_environment: tuple[tuple[str, str], ...]
     output_environment: tuple[tuple[str, str], ...]
     outputs: tuple[Output, ...]
+
+    @property
+    def contract(self) -> StepContract:
+        return StepContract(produces=(ArtifactProduct("log", "log.synopsys", "many"),
+            *(ArtifactProduct(output.role, "evidence.hspice" if output.required else "diagnostic.hspice",
+                "one" if output.required else "many", output.path if output.required else None, output.required)
+              for output in self.outputs)))
 
     @classmethod
     def compile(cls, step: Step) -> HspiceAction:

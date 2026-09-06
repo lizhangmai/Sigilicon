@@ -1,4 +1,5 @@
 from __future__ import annotations
+from conftest import FixtureAdapter
 
 import json
 
@@ -194,8 +195,12 @@ def test_verifier_accepts_stream_producers_and_requires_real_reports(tmp_path: P
 
     _verification_project(tmp_path, origin=origin, check=check)
 
-    class StreamAdapter:
+    class StreamAdapter(FixtureAdapter):
         name = "fake.stream"
+
+        def contract(self, project, step):
+            from sigilicon.execution.artifact_reference import StepContract, ArtifactProduct
+            return StepContract(produces=(ArtifactProduct("layout-stream", "layout.gds", path="layout.gds"),))
 
         def prepare(self, project, step, resources):
             return AdapterPreparation()
@@ -518,3 +523,44 @@ def test_release_receipt_consumes_only_the_specific_checked_claim(tmp_path: Path
         'coverage': list(policy.coverage)}
     _, problems = semantics.assess('development', lambda _: receipt)
     assert bool(problems) == (fault is not None)
+
+
+@pytest.mark.parametrize(('products', 'member', 'error'), [
+    ((('report.text', 'layout.gds'),), None, 'kind mismatch'),
+    ((('layout.gds', 'a.gds'), ('layout.gds', 'b.gds')), None, 'cardinality'),
+    ((('layout.gds', 'a.gds'), ('layout.gds', 'b.gds')), 'b.gds', None),
+])
+def test_plan_and_check_validate_artifact_interfaces_before_tools(tmp_path, monkeypatch, products, member, error):
+    from sigilicon.execution import AdapterPreparation, ArtifactProduct, StepContract
+    from sigilicon.adapters.mentor.calibre_adapter import CalibreAdapter
+    from sigilicon.cli.main import main
+    from sigilicon.project import Project
+
+    _verification_project(tmp_path, origin='artifact')
+    catalog = tmp_path / 'ip/example/operations.toml'
+    if member:
+        catalog.write_text(catalog.read_text().replace('role = "layout-stream"', f'role = "layout-stream", path = "{member}"'))
+
+    class StreamAdapter:
+        name = 'fake.stream'
+
+        def contract(self, project, step):
+            return StepContract(produces=tuple(ArtifactProduct('layout-stream', kind, path=path) for kind, path in products))
+
+        def prepare(self, project, step, resources):
+            return AdapterPreparation()
+
+        def preflight(self, step, resources):
+            return ()
+
+        def run(self, context):
+            raise AssertionError('static validation must not run the producer')
+
+    monkeypatch.setattr('sigilicon.adapters.trusted_adapters', lambda: (StreamAdapter(), CalibreAdapter()))
+    if error:
+        with pytest.raises(ValueError, match=error):
+            Project.open(tmp_path).plan('example:verify')
+        assert main(['check', '--project-root', str(tmp_path)]) != 0
+    else:
+        Project.open(tmp_path).plan('example:verify')
+        assert main(['check', '--project-root', str(tmp_path)]) == 0

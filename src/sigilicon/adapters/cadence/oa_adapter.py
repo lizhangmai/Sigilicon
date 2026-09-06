@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import json
 from sigilicon.execution.adapter import AdapterPreparation
+from sigilicon.execution.artifact_reference import ArtifactProduct, StepContract
 from typing import Any, Mapping
 from sigilicon.external_tools import (
     CADENCE_SPICEIN_TOOL,
@@ -71,6 +72,10 @@ class NativeOaAdapter:
     name = "cadence.native-oa"
     _fields = frozenset({"owner", "testbench", "timeout_seconds"})
 
+    def contract(self, project: Project, step: Step) -> StepContract:
+        _oa_source_plan(project, step, fields=self._fields, testbench_only=True)
+        return StepContract(produces=(ArtifactProduct("maestro", "evidence.cadence-maestro", "many"),))
+
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         if step.action is None:
             config = _strict_config(step, self._fields)
@@ -101,30 +106,11 @@ class NativeOaAdapter:
         step: Step,
         resources: Resources,
     ) -> AdapterPreparation:
-        from sigilicon.domain.platform import load_platforms
-        from sigilicon.adapters.cadence.oa_library import (
-            oa_plan_source_paths,
-            plan_oa_library_rebuild,
-        )
-
-        initial = step
-        config = _strict_config(initial, self._fields)
-        owner = _text(config, "owner")
-        selected_owner = project.owner(owner)
-        manifest = find_oa_assembly(project, selected_owner.root)
-        if manifest is None:
-            raise ContractError(f"owner {owner!r} has no OA assembly")
-        platforms = load_platforms(project, resources=resources)
-        planning = plan_oa_library_rebuild(
-            manifest,
-            project=project,
-            platform_inventory=platforms,
-            testbench=_text(config, "testbench"),
-        )
-        testbench = _text(config, "testbench")
+        from sigilicon.adapters.cadence.oa_library import oa_plan_source_paths
+        config, planning = _oa_source_plan(project, step, fields=self._fields,
+                                           resources=resources, testbench_only=True)
+        owner, testbench = config["owner"], config["testbench"]
         matches = tuple(item for item in planning.testbenches if item.cell == testbench)
-        if len(matches) != 1:
-            raise ContractError(f"unknown native OA testbench: {testbench}")
         required = _validate_oa_plan_sources(
             project,
             owner,
@@ -336,6 +322,23 @@ def _oa_preflight(
     )
 
 
+def _oa_source_plan(project: Project, step: Step, *, fields: frozenset[str],
+                    resources: Resources | None = None, testbench_only: bool = False):
+    from sigilicon.domain.platform import load_platforms
+    from sigilicon.adapters.cadence.oa_library import plan_oa_library_rebuild
+    config = _oa_config(step, fields)
+    owner = config["owner"]
+    manifest = find_oa_assembly(project, project.owner(owner).root)
+    if manifest is None:
+        raise ContractError(f"owner {owner!r} has no OA assembly")
+    planning = plan_oa_library_rebuild(manifest, project=project,
+        platform_inventory=load_platforms(project, resources=resources),
+        **({"testbench": config["testbench"]} if testbench_only else {}))
+    if "testbench" in fields and sum(item.cell == config["testbench"] for item in planning.testbenches) != 1:
+        raise ContractError(f"unknown native OA testbench: {config['testbench']}")
+    return config, planning
+
+
 def _prepare_oa(
     project: Project,
     step: Step,
@@ -344,26 +347,9 @@ def _prepare_oa(
     fields: frozenset[str],
     operation: str,
 ):
-    from sigilicon.domain.platform import load_platforms
-    from sigilicon.adapters.cadence.oa_library import (
-        oa_plan_source_paths,
-        plan_oa_library_rebuild,
-    )
-
-    config = _oa_config(step, fields)
-    owner = _text(config, "owner")
-    manifest = find_oa_assembly(project, project.owner(owner).root)
-    if manifest is None:
-        raise ContractError(f"owner {owner!r} has no OA assembly")
-    planning = plan_oa_library_rebuild(
-        manifest,
-        project=project,
-        platform_inventory=load_platforms(project, resources=resources),
-    )
-    if "testbench" in fields:
-        testbench = _text(config, "testbench")
-        if sum(item.cell == testbench for item in planning.testbenches) != 1:
-            raise ContractError(f"unknown native OA testbench: {testbench}")
+    from sigilicon.adapters.cadence.oa_library import oa_plan_source_paths
+    config, planning = _oa_source_plan(project, step, fields=fields, resources=resources)
+    owner = config["owner"]
     required = _validate_oa_plan_sources(
         project,
         owner,
@@ -419,6 +405,10 @@ class OaCheckAdapter:
     """Validate one planned OA library without mutating its workspace."""
 
     name = "cadence.oa-check"
+
+    def contract(self, project: Project, step: Step) -> StepContract:
+        _oa_source_plan(project, step, fields=_OA_FIELDS, testbench_only=False)
+        return StepContract(produces=(ArtifactProduct("oa", "evidence.cadence-oa", "many"),))
 
     def preflight(
         self,
@@ -491,6 +481,10 @@ class OaRebuildAdapter:
 
     name = "cadence.oa-rebuild"
 
+    def contract(self, project: Project, step: Step) -> StepContract:
+        _oa_source_plan(project, step, fields=_OA_FIELDS, testbench_only=False)
+        return StepContract(produces=(ArtifactProduct("oa", "evidence.cadence-oa", "many"),))
+
     def preflight(
         self,
         step: Step,
@@ -558,6 +552,10 @@ class OaAttestAdapter:
     """Attest one native OA testbench against its planned assembly."""
 
     name = "cadence.oa-attest"
+
+    def contract(self, project: Project, step: Step) -> StepContract:
+        _oa_source_plan(project, step, fields=_OA_ATTEST_FIELDS, testbench_only=False)
+        return StepContract(produces=(ArtifactProduct("oa", "evidence.cadence-oa", "many"),))
 
     def preflight(
         self,

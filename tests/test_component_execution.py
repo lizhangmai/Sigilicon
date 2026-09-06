@@ -204,3 +204,14 @@ def test_xcelium_keeps_headers_out_of_units_and_passes_compile_options(tmp_path:
     monkeypatch.setattr(xcelium.managed_process, 'run', simulate)
     project = Project.open(tmp_path)
     assert project.run(project.plan('parent:rtl')).status == 'succeeded'
+
+
+def test_static_check_does_not_require_the_configured_eda_installation(tmp_path: Path) -> None:
+    from sigilicon.cli.main import main
+
+    project, _ = _composite(tmp_path)
+    manifest = tmp_path / 'sigilicon.toml'
+    manifest.write_text(manifest.read_text().replace(str(tmp_path / 'site/xcelium/tools/bin/xrun'), '/uninstalled/xcelium/tools/bin/xrun'))
+    assert main(['check', '--project-root', str(tmp_path)]) == 0
+    with pytest.raises((ValueError, OSError), match='executable|tool|No such file'):
+        Project.open(tmp_path).plan('parent:rtl')

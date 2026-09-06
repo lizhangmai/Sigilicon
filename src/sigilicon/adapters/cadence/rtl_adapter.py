@@ -6,6 +6,7 @@ import json
 from dataclasses import asdict, dataclass
 from sigilicon.canonical import canonical_digest
 from sigilicon.execution.adapter import AdapterPreparation
+from sigilicon.execution.artifact_reference import ArtifactProduct, StepContract
 from sigilicon.execution._result import Artifact, StepResult
 from sigilicon.external_tools import CADENCE_SPECTRE_TOOL, owned_scratch_directory
 from sigilicon.execution._values import ContractError, ExecutionError
@@ -28,7 +29,7 @@ from sigilicon.adapters.cadence._common import (
     _text,
 )
 from sigilicon.adapters.cadence.spectre_measurement import (
-    MeasurementAction, prepare_measurement, run_measurement,
+    MeasurementAction, measurement_configuration, prepare_measurement, run_measurement,
 )
 
 @dataclass(frozen=True)
@@ -85,6 +86,21 @@ class SpectreAdapter:
                 "cadence.spectre runtime profiles support files and values only"
             )
         return deck, outputs, _positive_integer(config, "timeout_seconds")
+
+    def contract(self, project: Project, step: Step) -> StepContract:
+        if "program" in step.config:
+            from sigilicon.domain.platform import load_platform
+            config, *_ = measurement_configuration(step)
+            platform = load_platform(project, config["platform"])
+            if platform.simulation is None:
+                raise ContractError("Spectre measurement requires a simulation platform")
+            platform.simulation.model_set(config["model_set"])
+            return StepContract(produces=(ArtifactProduct("measurement", "evidence.measurement", path="measurements.json"),
+                ArtifactProduct("measurement", "table.measurement", path="waveforms.csv"),
+                ArtifactProduct("spectre", "raw.cadence-spectre", "many")))
+        _, outputs, _ = self._configuration(step)
+        return StepContract(produces=(*(ArtifactProduct("spectre", "raw.cadence-spectre", path=name) for name in outputs),
+                                      ArtifactProduct("spectre", "evidence.cadence-spectre", path="flow-evidence.json")))
 
     def prepare(
         self,
@@ -235,6 +251,14 @@ class XceliumAdapter:
 
     name = "cadence.xcelium"
     _fields = frozenset({"hdl", "success_marker", "timeout_seconds"})
+
+    def contract(self, project: Project, step: Step) -> StepContract:
+        config = _strict_config(step, self._fields)
+        HdlCompilation.resolve(config.get("hdl"), {item.reference: item.path for item in step.source_closure})
+        _text(config, "success_marker")
+        _positive_integer(config, "timeout_seconds")
+        return StepContract(produces=(ArtifactProduct("xcelium", "log.cadence-xcelium", "many"),
+                                      ArtifactProduct("xcelium", "summary.cadence-xcelium", path="summary.json")))
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         return (_executable_check(resources, _XRUN),)

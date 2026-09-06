@@ -54,7 +54,7 @@ class MeasurementAction:
         }
 
 
-def prepare_measurement(project: Project, step: Step, resources: Resources) -> AdapterPreparation:
+def measurement_configuration(step: Step):
     config = _strict_config(step, frozenset({
         "program", "spec", "circuit", "inputs", "platform", "model_set", "parameters", "timeout_seconds", "top",
     }))
@@ -73,6 +73,15 @@ def prepare_measurement(project: Project, step: Step, resources: Resources) -> A
     parameters = config.get("parameters", {})
     if not isinstance(parameters, Mapping):
         raise ContractError("measurement parameters must be a table")
+    _text(config, "top")
+    _text(config, "platform")
+    _text(config, "model_set")
+    _positive_integer(config, "timeout_seconds")
+    return config, selected, inputs, parameters
+
+
+def prepare_measurement(project: Project, step: Step, resources: Resources) -> AdapterPreparation:
+    config, selected, inputs, parameters = measurement_configuration(step)
     platform = load_platform(project, _text(config, "platform"), resources=resources)
     if platform.simulation is None:
         raise ContractError("Spectre measurement requires a simulation platform")

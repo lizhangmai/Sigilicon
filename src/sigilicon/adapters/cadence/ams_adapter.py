@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import json
 from sigilicon.execution.adapter import AdapterPreparation
+from sigilicon.execution.artifact_reference import ArtifactProduct, StepContract
 from sigilicon.external_tools import (
     CADENCE_SPECTRE_TOOL,
     owned_scratch_directory,
@@ -58,7 +59,7 @@ class XceliumAmsAdapter:
     name = "cadence.xcelium-ams"
     _fields = frozenset({"owner", "cell", "timeout_seconds"})
 
-    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
+    def _configuration(self, step: Step):
         config = _strict_config(step, self._fields)
         _text(config, "owner")
         cell = _relative(_text(config, "cell"), "verification cell")
@@ -67,6 +68,24 @@ class XceliumAmsAdapter:
         _positive_integer(config, "timeout_seconds")
         if step.evidence is None:
             raise ContractError("Xcelium AMS execution requires an evidence envelope")
+        return config
+
+    def contract(self, project: Project, step: Step) -> StepContract:
+        config = self._configuration(step)
+        from sigilicon.domain.verification_cell import load_verification_cell
+        from sigilicon.adapters.cadence.xcelium_ams import _AMS_HDL_SUFFIXES
+        contract = project.owner(config["owner"]).root / config["cell"]
+        spec = load_verification_cell(contract, project=project)
+        if spec.simulator.lower() != "xcelium-ams" or spec.ams is None:
+            raise ContractError("verification cell must declare typed xcelium-ams inputs")
+        if spec.success_marker is None:
+            raise ContractError("Xcelium AMS verification cell must declare success_marker")
+        if any(path.suffix.lower() not in _AMS_HDL_SUFFIXES for path in (spec.canonical_source, *spec.compile_sources)):
+            raise ContractError("Spectre circuits must come from the AMS circuit selection")
+        return StepContract(produces=(ArtifactProduct("xcelium-ams", "evidence.xcelium-ams", "many"),))
+
+    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
+        self._configuration(step)
         return (
             _executable_check(resources, _XRUN),
             _executable_check(resources, CADENCE_SPECTRE_TOOL),
@@ -81,7 +100,7 @@ class XceliumAmsAdapter:
         from sigilicon.adapters.cadence.xcelium_ams import plan_xcelium_ams_cell
 
         initial = step
-        config = _strict_config(initial, self._fields)
+        config = self._configuration(initial)
         owner = _text(config, "owner")
         selected_owner = project.owner(owner)
         contract = selected_owner.root / _relative(

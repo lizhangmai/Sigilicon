@@ -16,7 +16,7 @@ from sigilicon.execution.adapter import AdapterPreparation
 from sigilicon.execution._workspace import ExecutionWorkspace
 from sigilicon.execution._values import ContractError, ExecutionError
 from sigilicon.execution._io import ExecutionIO
-from sigilicon.execution.artifact_reference import ArtifactReference
+from sigilicon.execution.artifact_reference import ArtifactReference, ArtifactProduct, StepContract
 from sigilicon.execution._plan import PreflightCheck, Step
 from sigilicon.execution._resources import ResourceBinding, Resources
 from sigilicon.execution._source import Source
@@ -32,6 +32,7 @@ class _Input:
     step: str | None
     role: str | None
     kinds: tuple[str, ...]
+    path: str | None = None
 
     @classmethod
     def parse(cls, raw: Mapping, step: Step, *, layout: bool) -> _Input:
@@ -39,24 +40,27 @@ class _Input:
         source = fields.text("source", None)
         dependency = fields.text("step", None)
         role = fields.text("role", None)
+        member = fields.text("path", None)
+        if member is not None:
+            member = require_relative_path(member, "artifact member").as_posix()
         fields.finish()
         if source is not None:
             source = require_relative_path(source, "verification source").as_posix()
-            if dependency is not None or role is not None or source not in step.sources:
+            if dependency is not None or role is not None or member is not None or source not in step.sources:
                 raise ContractError("verification source must select exactly one file in the step closure")
         elif dependency not in step.needs or role is None:
             raise ContractError("verification artifact must select one role from a declared step dependency")
-        return cls(source, dependency, role, ("layout.gds",) if layout else ("netlist.cdl",))
+        return cls(source, dependency, role, ("layout.gds",) if layout else ("netlist.cdl",), member)
 
     @property
     def record(self) -> dict:
-        return {"source": self.source, "step": self.step, "role": self.role, "kinds": list(self.kinds)}
+        return {"source": self.source, "step": self.step, "role": self.role, "kinds": list(self.kinds), "path": self.path}
 
     def stage(self, context: ExecutionIO, workspace: ExecutionWorkspace, filename: str) -> Path:
         if self.source is not None:
             return workspace.copy_file("inputs", (filename,), context.owner_source_path(self.source))
         return context.materialize_artifact(
-            ArtifactReference(self.step, self.role, self.kinds[0]),
+            ArtifactReference(self.step, self.role, self.kinds[0], path=self.path),
             workspace.input_root / filename,
         )
 
@@ -95,7 +99,7 @@ class _CalibreAction:
 class CalibreAdapter:
     name = "mentor.calibre"
 
-    def prepare(self, project: Project, step: Step, resources: Resources) -> AdapterPreparation:
+    def _configuration(self, project: Project, step: Step, resources=None):
         config = ContractReader(step.config, "Calibre config")
         owner = config.text("owner")
         cell = config.text("cell")
@@ -124,6 +128,21 @@ class CalibreAdapter:
         deck = platform.verification.require_check(check)
         identity = f"pdk:{platform.key}:verification/{check}"
         action = _CalibreAction(owner, cell, check, platform_name, layout, source, policy, deck, identity, timeout)
+        return action, platform
+
+    def contract(self, project: Project, step: Step) -> StepContract:
+        action, _ = self._configuration(project, step)
+        consumes = tuple(ArtifactReference(item.step, item.role, item.kinds[0], path=item.path)
+                         for item in (action.layout, action.source) if item is not None and item.step is not None)
+        products = (ArtifactProduct("verification", "evidence.physical-verification", path="typed-evidence.json"),
+                    ArtifactProduct("verification", "report.calibre", "many"))
+        if action.check == "lvs":
+            products += (ArtifactProduct("verification", "netlist.cdl", path="extracted.sp"),)
+        return StepContract(consumes, products)
+
+    def prepare(self, project: Project, step: Step, resources: Resources) -> AdapterPreparation:
+        action, platform = self._configuration(project, step, resources)
+        deck, owner, cell, check, policy, identity = action.deck, action.owner, action.cell, action.check, action.policy, action.deck_resource
         render_run_deck(read_nofollow_text(deck.asset.require_path()),
             VerificationRequest(owner, cell, check, action.identity, policy, deck),
             layout_path="layout.gds", source_path="source.cdl", primary=cell, work_dir="work",

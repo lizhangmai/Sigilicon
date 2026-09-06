@@ -1,4 +1,5 @@
 from __future__ import annotations
+from conftest import FixtureAdapter
 
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -311,7 +312,7 @@ filesets = [{ component = "example", fileset = "value" }]
     return operations
 
 
-class CopyAdapter:
+class CopyAdapter(FixtureAdapter):
     name = "fake.copy"
 
     def prepare(self, _project, step, _resources):
@@ -336,7 +337,7 @@ class CopyAdapter:
         )
 
 
-class UpperAdapter:
+class UpperAdapter(FixtureAdapter):
     name = "fake.upper"
 
     def prepare(self, _project, step, _resources):
@@ -388,7 +389,7 @@ def test_large_chain_execution_does_not_rescan_the_global_source_set(
         encoding="utf-8",
     )
 
-    class NoopAdapter:
+    class NoopAdapter(FixtureAdapter):
         name = "fake.noop"
 
         def prepare(self, _project, step, _resources):

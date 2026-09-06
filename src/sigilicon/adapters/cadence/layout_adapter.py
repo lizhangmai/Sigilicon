@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sigilicon.execution.adapter import AdapterPreparation
+from sigilicon.execution.artifact_reference import ArtifactProduct, StepContract
 from typing import Any
 from sigilicon.execution._values import ContractError, ExecutionError
 from sigilicon.execution._io import ExecutionIO
@@ -58,33 +59,35 @@ class LayoutAdapter:
     name = "cadence.layout"
     _fields = frozenset({"owner", "spec", "timeout_seconds"})
 
-    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
+    def _configuration(self, step: Step):
         config = _strict_config(step, self._fields)
         _text(config, "owner")
         spec = _relative(_text(config, "spec"), "layout spec")
         if spec not in step.sources:
             raise ContractError("layout spec must be inside the operation source closure")
         _positive_integer(config, "timeout_seconds")
+        return config
+
+    def contract(self, project: Project, step: Step) -> StepContract:
+        self._source_plan(project, step)
+        return StepContract(produces=(ArtifactProduct("layout", "evidence.cadence-layout", "many"), ArtifactProduct("lvs-source", "netlist.cdl", path="source.cdl")))
+
+    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
+        self._configuration(step)
         return (
             _bridge_check(resources),
             _executable_check(resources, _PYTHON),
             *_capability_checks(resources, _OA_CAPABILITIES),
         )
 
-    def prepare(
-        self,
-        project: Project,
-        step: Step,
-        resources: Resources,
-    ) -> AdapterPreparation:
+    def _source_plan(self, project: Project, step: Step, resources: Resources | None = None):
         from sigilicon.domain.platform import (
             load_platforms,
-            platform_resource_identities,
         )
         from sigilicon.adapters.cadence.layout_generation import plan_layout_spec
 
         initial = step
-        config = _strict_config(initial, self._fields)
+        config = self._configuration(initial)
         owner = _text(config, "owner")
         spec = project.owner(owner).root / _relative(
             _text(config, "spec"), "layout spec"
@@ -97,6 +100,17 @@ class LayoutAdapter:
         )
         if planning.spec.pdk.oa is None:
             raise ContractError("OA layout generation requires a platform OA capability")
+        return config, planning
+
+    def prepare(
+        self,
+        project: Project,
+        step: Step,
+        resources: Resources,
+    ) -> AdapterPreparation:
+        from sigilicon.domain.platform import platform_resource_identities
+        config, planning = self._source_plan(project, step, resources)
+        owner = config["owner"]
         prepared = _prepare_cadence_inputs(
             project,
             resources,

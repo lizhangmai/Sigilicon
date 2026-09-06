@@ -350,7 +350,11 @@ def inspect_repository_designs(
         for identity in rows:
             if not isinstance(identity, str):
                 raise ValueError(f"{catalog_path}: operation identities must be text")
-            plan = context.plan(f"{owner.name}:{identity}")
+            from sigilicon.execution.operations import _compile_operation, parse_selector
+            from sigilicon.execution.adapter import validate_operation
+            _, operation, variant = parse_selector(f"{owner.name}:{identity}")
+            plan = _compile_operation(context, owner=owner.name, operation=operation, variant=variant)
+            validate_operation(context, plan, context._adapters())
             owner_operations[identity] = {
                 "steps": [
                     {"id": step.id, "uses": step.uses}

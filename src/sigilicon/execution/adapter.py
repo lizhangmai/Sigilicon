@@ -13,6 +13,7 @@ from sigilicon.execution._resources import ResourceBinding, Resources
 from sigilicon.execution._source import Source
 from sigilicon.execution._io import ExecutionIO
 from sigilicon.execution._result import StepResult
+from sigilicon.execution.artifact_reference import StepContract, validate_step_contracts
 
 if TYPE_CHECKING:
     from sigilicon.project import Project
@@ -23,6 +24,8 @@ class Adapter(Protocol):
     """Trusted implementation of one planned tool invocation."""
 
     name: str
+
+    def contract(self, project: Project, step: Step) -> StepContract: ...
 
     def prepare(
         self,
@@ -119,6 +122,20 @@ class AdapterRegistry(Mapping[str, Adapter]):
         return len(self._values)
 
 
+def validate_operation(project: Project, draft: ExecutionPlan, adapters: AdapterRegistry) -> None:
+    """Check adapter configuration and DAG interfaces without deployment resources."""
+    contracts = {}
+    for step in draft.steps:
+        adapter = adapters.get(step.uses)
+        if adapter is None:
+            raise ContractError(f"unknown trusted adapter: {step.uses!r}")
+        contract = adapter.contract(project, step)
+        if not isinstance(contract, StepContract):
+            raise ContractError(f"adapter {step.uses!r} returned an invalid step contract")
+        contracts[step.id] = contract
+    validate_step_contracts(draft.steps, contracts)
+
+
 def plan_execution(
     draft: ExecutionPlan,
     *,
@@ -133,6 +150,7 @@ def plan_execution(
     if not isinstance(resources, Resources):
         raise TypeError("plan_execution resources must be Resources")
 
+    validate_operation(project, draft, adapters)
     owner_root = project.owner(draft.owner).root.resolve()
     project_root = project.project_root.resolve()
     inventory = project.source_inventory(draft.owner)

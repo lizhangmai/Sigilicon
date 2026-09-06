@@ -638,31 +638,78 @@ exit 1
     assert partial.read_text() == "partial\n"
 
 
-@pytest.mark.parametrize("failure", ("runner", "missing-checkpoint"))
-def test_fc_failed_implementation_preserves_generated_reports(tmp_path: Path, failure: str) -> None:
+@pytest.mark.parametrize("failure", ("runner", "missing-checkpoint", "owner-reports"))
+def test_fc_preserves_declared_reports_and_accepts_owner_report_selection(tmp_path: Path, failure: str) -> None:
     sources = tmp_path / "run/inputs/sources"
-    outputs = {
-        "routed-netlist": "routed.v", "routed-constraints": "routed.sdc",
-        "layout-stream": "routed.gds", "checkpoint": "routed.ndm",
-        "design-check-report": "check.rpt", "structural-report": "structural.rpt",
-        "qor-report": "qor.rpt", "timing-report": "timing.rpt",
-        "area-report": "area.rpt", "power-report": "power.rpt",
-        "drc-report": "drc.rpt", "physical-completion-report": "completion.rpt",
-        "tie-off-check-report": "tie.rpt", "execution-verdict": "verdict.json",
-    }
+    outputs = {'routed-netlist': {'path': 'routed.v',
+                        'kind': 'netlist.verilog',
+                        'environment': 'SIGILICON_FC_OUTPUT_ROUTED_NETLIST'},
+     'routed-constraints': {'path': 'routed.sdc',
+                            'kind': 'constraints.sdc',
+                            'environment': 'SIGILICON_FC_OUTPUT_ROUTED_CONSTRAINTS'},
+     'layout-stream': {'path': 'routed.gds',
+                       'kind': 'layout.gds',
+                       'environment': 'SIGILICON_FC_OUTPUT_LAYOUT_STREAM'},
+     'checkpoint': {'path': 'routed.ndm',
+                    'kind': 'checkpoint.synopsys-dlib-tar',
+                    'environment': 'SIGILICON_FC_OUTPUT_CHECKPOINT'},
+     'design-check-report': {'path': 'check.rpt',
+                             'kind': 'report.synopsys',
+                             'environment': 'SIGILICON_FC_OUTPUT_DESIGN_CHECK_REPORT'},
+     'structural-report': {'path': 'structural.rpt',
+                           'kind': 'report.synopsys',
+                           'environment': 'SIGILICON_FC_OUTPUT_STRUCTURAL_REPORT'},
+     'qor-report': {'path': 'qor.rpt',
+                    'kind': 'report.synopsys',
+                    'environment': 'SIGILICON_FC_OUTPUT_QOR_REPORT'},
+     'timing-report': {'path': 'timing.rpt',
+                       'kind': 'report.synopsys',
+                       'environment': 'SIGILICON_FC_OUTPUT_TIMING_REPORT'},
+     'area-report': {'path': 'area.rpt',
+                     'kind': 'report.synopsys',
+                     'environment': 'SIGILICON_FC_OUTPUT_AREA_REPORT'},
+     'power-report': {'path': 'power.rpt',
+                      'kind': 'report.synopsys',
+                      'environment': 'SIGILICON_FC_OUTPUT_POWER_REPORT'},
+     'drc-report': {'path': 'drc.rpt',
+                    'kind': 'report.synopsys',
+                    'environment': 'SIGILICON_FC_OUTPUT_DRC_REPORT'},
+     'physical-completion-report': {'path': 'completion.rpt',
+                                    'kind': 'report.synopsys',
+                                    'environment': 'SIGILICON_FC_OUTPUT_PHYSICAL_COMPLETION_REPORT'},
+     'tie-off-check-report': {'path': 'tie.rpt',
+                              'kind': 'report.synopsys',
+                              'environment': 'SIGILICON_FC_OUTPUT_TIE_OFF_CHECK_REPORT'},
+     'execution-verdict': {'path': 'verdict.json',
+                           'kind': 'evidence.tool-verdict',
+                           'environment': 'SIGILICON_FC_OUTPUT_EXECUTION_VERDICT'}}
     script = """#!/bin/bash
 set -eu
-for name in SIGILICON_FC_ROUTED_NETLIST SIGILICON_FC_ROUTED_CONSTRAINTS SIGILICON_FC_GDS \
-  SIGILICON_FC_DESIGN_CHECK_REPORT SIGILICON_FC_STRUCTURAL_REPORT SIGILICON_FC_QOR_REPORT \
-  SIGILICON_FC_TIMING_REPORT SIGILICON_FC_AREA_REPORT SIGILICON_FC_POWER_REPORT \
-  SIGILICON_FC_DRC_REPORT SIGILICON_FC_PHYSICAL_COMPLETION_REPORT \
-  SIGILICON_FC_TIE_OFF_CHECK_REPORT SIGILICON_FC_EXECUTION_VERDICT; do
+for name in SIGILICON_FC_OUTPUT_ROUTED_NETLIST SIGILICON_FC_OUTPUT_ROUTED_CONSTRAINTS SIGILICON_FC_OUTPUT_LAYOUT_STREAM \
+  SIGILICON_FC_OUTPUT_DESIGN_CHECK_REPORT SIGILICON_FC_OUTPUT_STRUCTURAL_REPORT SIGILICON_FC_OUTPUT_QOR_REPORT \
+  SIGILICON_FC_OUTPUT_TIMING_REPORT SIGILICON_FC_OUTPUT_AREA_REPORT SIGILICON_FC_OUTPUT_POWER_REPORT \
+  SIGILICON_FC_OUTPUT_DRC_REPORT SIGILICON_FC_OUTPUT_PHYSICAL_COMPLETION_REPORT \
+  SIGILICON_FC_OUTPUT_TIE_OFF_CHECK_REPORT SIGILICON_FC_OUTPUT_EXECUTION_VERDICT; do
   mkdir -p "$(dirname "${!name}")"
   printf 'generated report\n' > "${!name}"
 done
 """
     if failure == "runner":
-        script += 'mkdir -p "$SIGILICON_FC_CHECKPOINT"\nprintf checkpoint > "$SIGILICON_FC_CHECKPOINT/cell"\nexit 1\n'
+        script += 'mkdir -p "$SIGILICON_FC_OUTPUT_CHECKPOINT"\nprintf checkpoint > "$SIGILICON_FC_OUTPUT_CHECKPOINT/cell"\nexit 1\n'
+    if failure == "owner-reports":
+        import json
+        outputs = {role: row for role, row in outputs.items() if row["kind"] != "report.synopsys"}
+        outputs["checkpoint"]["path"] = "checkpoints/routed.ndm"
+        outputs["congestion-report"] = {"path": "congestion.txt", "kind": "report.synopsys",
+                                        "environment": "SIGILICON_FC_OUTPUT_CONGESTION"}
+        names = " ".join(row["environment"] for role, row in outputs.items() if role != "checkpoint")
+        verdict = json.dumps({"schema": 2, "contract_kind": "tool-verdict", "owner": "fixture",
+            "stage": "physical-implementation", "variant": "test", "corner": "tt", "passed": True,
+            "product_qualification_conclusion": False, "checks": {"routed": True},
+            "plan_identity": "1" * 64, "run_id": "2" * 32, "step_id": "pnr"})
+        script = '#!/bin/bash\nset -eu\nfor name in ' + names + '; do\n mkdir -p "$(dirname "${!name}")"\n printf "generated report\\n" > "${!name}"\ndone\n'
+        script += 'mkdir -p "$SIGILICON_FC_OUTPUT_CHECKPOINT"\nprintf checkpoint > "$SIGILICON_FC_OUTPUT_CHECKPOINT/cell"\n'
+        script += "printf '%s\\n' '" + verdict + "' > \"$SIGILICON_FC_OUTPUT_EXECUTION_VERDICT\"\n"
     _file(sources / "run.sh", script, executable=True)
     _file(sources / "evaluate.py", "raise SystemExit(1)\n")
     dependencies = {
@@ -691,8 +738,9 @@ done
 
     result = FcAdapter().run(context)
 
-    assert result.status == "failed"
-    report = next(artifact for artifact in result.artifacts if artifact.role == "timing-report")
+    assert result.status == ("succeeded" if failure == "owner-reports" else "failed")
+    report_role = "congestion-report" if failure == "owner-reports" else "timing-report"
+    report = next(artifact for artifact in result.artifacts if artifact.role == report_role)
     assert report.read_text() == "generated report\n"
     assert next(artifact for artifact in result.artifacts if artifact.role == "layout-stream").kind == "layout.gds"
     if failure == "runner":

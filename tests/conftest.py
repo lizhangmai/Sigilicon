@@ -393,3 +393,10 @@ VSS = "inputOutput"
         return root, design_dir / "design.toml"
 
     return create
+
+
+class FixtureAdapter:
+    """Test process boundaries without inter-step artifact inputs."""
+    def contract(self, project, step):
+        from sigilicon.execution.artifact_reference import StepContract
+        return StepContract()
