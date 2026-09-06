@@ -121,7 +121,7 @@ def _audit_release_package(
     if (
         manifest.get("schema") != 4
         or manifest.get("contract_kind") != "ip-release-manifest"
-        or manifest.get("release_kind") != "source-package"
+        or manifest.get("release_kind") not in {"source-package", "build-artifact-package"}
     ):
         raise RuntimeError("release package manifest identity is invalid")
     raw_exports = manifest.get("exports")
@@ -246,6 +246,53 @@ class ReleaseStore:
         if result.absolute() != result or result.resolve() != result:
             raise RuntimeError("release store path traverses a symlink")
         return result
+
+    def publish(
+        self, store: str, manifest: Mapping[str, Any], payloads: Mapping[str, Path],
+        *, validate: Callable[[ReleasePackage], None] | None = None,
+    ) -> ReleasePackage:
+        """Install a fully audited package atomically; existing objects stay immutable."""
+
+        import hashlib
+        import os
+        import uuid
+        from sigilicon.artifacts import atomic_write_json, copy_immutable_file
+        from sigilicon.external_tools import owned_directory
+
+        validate_artifact_component(store, "release store")
+        namespace = self.root / store / "objects"
+        with owned_directory(namespace, create_missing=True) as held:
+            temporary_name = f".publish-{uuid.uuid4().hex}"
+            os.mkdir(temporary_name, dir_fd=held.fd)
+            temporary = namespace / temporary_name
+            installed = False
+            try:
+                views = manifest.get("views", [])
+                expected = {view["path"]: view for view in views}
+                if set(expected) != set(payloads) or len(expected) != len(views):
+                    raise ValueError("release publication payload closure disagrees with its views")
+                from sigilicon.contracts import require_relative_path
+                for name, source in payloads.items():
+                    relative = require_relative_path(name, "release view path")
+                    row = expected[name]
+                    copy_immutable_file(source, temporary / relative,
+                                        expected_size=row["size"], expected_sha256=row["sha256"])
+                atomic_write_json(temporary / "manifest.json", dict(manifest))
+                package = audit_release_package(temporary / "manifest.json", validate=validate)
+                digest = hashlib.sha256(package.manifest_path.read_bytes()).hexdigest()
+                reference = ReleaseRef(store, digest)
+                target = _release_object_name(reference)
+                try:
+                    os.stat(target, dir_fd=held.fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    SafeTree(temporary).make_readonly()
+                    os.rename(temporary_name, target, src_dir_fd=held.fd, dst_dir_fd=held.fd)
+                    installed = True
+            finally:
+                if not installed:
+                    tree = SafeTree(temporary)
+                    tree.remove(os.stat(temporary_name, dir_fd=held.fd, follow_symlinks=False))
+        return self.open(reference, validate=validate)
 
     def open(
         self,

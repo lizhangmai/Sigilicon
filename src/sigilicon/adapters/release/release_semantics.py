@@ -84,7 +84,7 @@ class SignoffReceipt:
         fields = {"schema", "contract_kind", "name", "status", "source_identity", "subject", "execution", "tool", "inputs", "outputs", "variant", "condition", "coverage"}
         if not isinstance(row, Mapping) or set(row) != fields:
             raise ValueError("invalid signoff receipt envelope")
-        if type(row["schema"]) is not int or row["schema"] != 3 or row["contract_kind"] != "release-receipt":
+        if type(row["schema"]) is not int or row["schema"] != 4 or row["contract_kind"] != "release-receipt":
             raise ValueError("invalid signoff receipt schema")
         if not isinstance(row["name"], str) or not row["name"] or not isinstance(row["status"], str):
             raise ValueError("invalid signoff receipt name or status")
@@ -96,14 +96,16 @@ class SignoffReceipt:
         ):
             raise ValueError("invalid receipt subject-identity")
         execution = row["execution"]
-        if not isinstance(execution, Mapping) or set(execution) != {
-            "run_id", "operation_id", "plan_identity", "executed", "report_parsed", "exit_code"
-        } or any(not isinstance(execution[key], str) or not execution[key]
-                 for key in ("run_id", "operation_id", "plan_identity")):
+        if not isinstance(execution, Mapping):
             raise ValueError("invalid receipt execution provenance")
-        if (execution["executed"] is not True or execution["report_parsed"] is not True
-                or type(execution["exit_code"]) is not int or execution["exit_code"] != 0):
-            raise ValueError("receipt execution is incomplete or failed")
+        if execution.get("kind") == "external":
+            if set(execution) != {"kind", "authority", "reference"} or any(
+                not isinstance(execution.get(key), str) or not execution[key] for key in ("authority", "reference")
+            ):
+                raise ValueError("invalid external receipt authority/reference")
+        else:
+            from sigilicon.adapters.release.run_evidence import validate_execution
+            validate_execution(execution)
         tool = row["tool"]
         if not isinstance(tool, Mapping) or set(tool) != {"name", "version"} or any(
             not isinstance(value, str) or not value for value in tool.values()
@@ -356,6 +358,16 @@ class ExportSemantics:
         except ValueError as exc:
             return [f"{prefix}:{exc}"]
         problems = []
+        authority = self.receipts[role].authority
+        if receipt.execution.get("kind") == "external":
+            if authority is None or receipt.execution["authority"] != authority:
+                problems.append(f"{prefix}:untrusted-external-authority")
+        else:
+            from sigilicon.adapters.release.run_evidence import validate_execution
+            closure = validate_execution(receipt.execution)
+            identities = {(item.get("size"), item.get("sha256")) for item in closure}
+            if any((item.size, item.sha256) not in identities for item in (*receipt.inputs, *receipt.outputs)):
+                problems.append(f"{prefix}:artifact-outside-executed-closure")
         if receipt.status != "passed":
             problems.append(f"{prefix}:status")
         if receipt.name != role:

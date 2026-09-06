@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import tomllib
 from typing import Mapping
@@ -16,6 +16,7 @@ from sigilicon.execution.adapter import AdapterPreparation
 from sigilicon.execution._workspace import ExecutionWorkspace
 from sigilicon.execution._values import ContractError, ExecutionError
 from sigilicon.execution._io import ExecutionIO
+from sigilicon.execution.artifact_reference import ArtifactReference
 from sigilicon.execution._plan import PreflightCheck, Step
 from sigilicon.execution._resources import ResourceBinding, Resources
 from sigilicon.execution._source import Source
@@ -54,15 +55,10 @@ class _Input:
     def stage(self, context: ExecutionIO, workspace: ExecutionWorkspace, filename: str) -> Path:
         if self.source is not None:
             return workspace.copy_file("inputs", (filename,), context.owner_source_path(self.source))
-        matches = context.artifacts(self.step, self.role)
-        if len(matches) != 1 or matches[0].kind not in self.kinds:
-            raise ExecutionError("physical verification requires one artifact with the declared format")
-        artifact = matches[0]
-        path = workspace.copy_file("inputs", (filename,), artifact.path)
-        captured = SafeTree(workspace.input_root).file(filename, "physical verification artifact")
-        if (captured.size, captured.sha256) != (artifact.size, artifact.sha256):
-            raise ExecutionError("physical verification artifact content drifted during materialization")
-        return path
+        return context.materialize_artifact(
+            ArtifactReference(self.step, self.role, self.kinds[0]),
+            workspace.input_root / filename,
+        )
 
 
 @dataclass(frozen=True)
@@ -169,4 +165,6 @@ class CalibreAdapter:
                 "passed": evidence.clean, "product_qualification_conclusion": False,
             })
         return StepResult("succeeded" if evidence.clean else "failed",
-                          context.output_artifacts("verification", "evidence.physical-verification"), message=evidence.message)
+                          tuple(replace(item, kind=("evidence.physical-verification" if item.path.name == "typed-evidence.json"
+                                                   else "netlist.cdl" if item.path.name == "extracted.sp" else "report.calibre"))
+                                for item in context.output_artifacts("verification", "report.calibre")), message=evidence.message)

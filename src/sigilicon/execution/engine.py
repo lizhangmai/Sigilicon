@@ -118,7 +118,11 @@ def _preflight(
 ) -> PreflightResult:
     """Check exact sources and only the adapters selected by this plan."""
 
-    checks: list[PreflightCheck] = []
+    current_software = plan.software.current()
+    checks: list[PreflightCheck] = [PreflightCheck(
+        "software", plan.software.identity, "ready" if current_software else "blocked",
+        "execution software snapshot" if current_software else "execution software changed after planning",
+    )]
     seen_sources: set[tuple[Path, str]] = set()
     for source in (*plan._composition_sources, *plan.sources):
         identity = (source.root, source.path)

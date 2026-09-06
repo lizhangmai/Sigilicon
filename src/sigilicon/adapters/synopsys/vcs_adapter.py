@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from sigilicon.execution.artifact_reference import ArtifactReference
+
 from sigilicon.execution._io import ExecutionIO
 from sigilicon.execution._result import StepResult
 from sigilicon.external_tools import owned_scratch_directory, process_group_cleanup_uncertainty
 from sigilicon.adapters.synopsys._common import (
-    _artifact,
     _logs,
     _run_script,
     _runtime_environment,
@@ -38,7 +39,7 @@ class VcsAdapter(RunnerAdapter):
             )
         held = list(runtime.files)
         if target == "gate":
-            artifact = _artifact(context, action.synthesis_step, "mapped-netlist")
+            artifact = context.artifacts(ArtifactReference(action.synthesis_step, "mapped-netlist", "netlist.verilog"))[0]
             environment["SIGILICON_VCS_MAPPED_NETLIST"] = str(artifact.path)
             held.append("SIGILICON_VCS_MAPPED_NETLIST")
         with owned_scratch_directory(

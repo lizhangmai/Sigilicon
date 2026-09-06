@@ -240,7 +240,7 @@ class RunStore:
         ):
             raise RunStoreError("execution manifest identity or closure drift")
         if (
-            plan.get("schema") != 16
+            plan.get("schema") != 17
             or plan.get("contract_kind") != "execution-plan"
             or plan.get("owner") != selected.owner
             or plan.get("operation") != selected.operation
@@ -557,6 +557,19 @@ class RunStore:
             )
         except (ContractError, TypeError, ValueError) as exc:
             raise RunStoreError(f"persisted run failure is malformed: {exc}") from exc
+
+    def materialization_plan(
+        self, *, owner: str, operation: str, run_id: str, variant: str | None = None,
+    ):
+        """Audit a complete run before allowing its outputs to leave the run store."""
+
+        from sigilicon.execution.materialization import MaterializationPlan
+
+        selected = self._select(owner=owner, operation=operation, variant=variant, run_id=run_id)
+        manifest = self._manifest(selected, verify_content=True)
+        manifest, plan, raw = self._records(selected, manifest)
+        result = self._typed_result(raw, selected.paths.root, manifest)
+        return MaterializationPlan(result, plan, canonical_digest(manifest))
 
     def clean(
         self,

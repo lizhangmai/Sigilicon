@@ -181,8 +181,9 @@ class IpReleaseAdapter:
         )
 
 
-def release_adapters() -> tuple[IpReleaseAdapter, ...]:
-    return (IpReleaseAdapter(),)
+def release_adapters():
+    from sigilicon.adapters.release.build_artifacts import BuildArtifactReleaseAdapter
+    return (IpReleaseAdapter(), BuildArtifactReleaseAdapter())
 
 
 __all__ = ["IpReleaseAdapter", "release_adapters"]

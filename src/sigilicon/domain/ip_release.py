@@ -117,11 +117,12 @@ class ReceiptPolicy:
     inputs: tuple[str, ...]
     outputs: tuple[str, ...]
     coverage: tuple[str, ...] = ()
+    authority: str | None = None
 
     @classmethod
     def from_record(cls, value: object) -> ReceiptPolicy:
         row = _table(value, "receipt policy")
-        _reject_unknown(row, {"inputs", "outputs", "coverage"}, "receipt policy")
+        _reject_unknown(row, {"inputs", "outputs", "coverage", "authority"}, "receipt policy")
         groups = []
         for field in ("inputs", "outputs"):
             items = row.get(field)
@@ -135,11 +136,14 @@ class ReceiptPolicy:
         coverage = row.get("coverage", ())
         if not isinstance(coverage, (list, tuple)) or any(not isinstance(item, str) or not item for item in coverage) or len(set(coverage)) != len(coverage):
             raise ValueError("receipt policy coverage must be unique names")
-        return cls(*groups, tuple(coverage))
+        authority = row.get("authority")
+        if authority is not None:
+            authority = _string(authority, "external receipt authority")
+        return cls(*groups, tuple(coverage), authority)
 
     @property
     def record(self) -> dict[str, list[str]]:
-        return {"inputs": list(self.inputs), "outputs": list(self.outputs), "coverage": list(self.coverage)}
+        return {"inputs": list(self.inputs), "outputs": list(self.outputs), "coverage": list(self.coverage), **({"authority": self.authority} if self.authority else {})}
 
 
 def receipt_policies(value: object) -> Mapping[str, ReceiptPolicy]:

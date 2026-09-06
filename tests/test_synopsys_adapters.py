@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -673,7 +674,8 @@ done
             Artifact("mapped-constraints", "constraints.sdc", _file(tmp_path / "deps/mapped.sdc")),
         )),
         "reference": StepResult.succeeded(artifacts=(
-            Artifact("reference-library", "library.synopsys-ndm", _file(tmp_path / "deps/test.ndm/lib")),
+            Artifact("reference-library", "library.synopsys-ndm", _file(tmp_path / "run/outputs/reference/reference-library/test.ndm/lib", ""),
+                     size=0, sha256=hashlib.sha256(b"").hexdigest()),
         )),
     }
     step = Step("pnr", "synopsys.fc", {

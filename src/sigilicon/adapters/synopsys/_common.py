@@ -294,15 +294,6 @@ def _logs(context: ExecutionIO, stdout: str, stderr: str) -> tuple[Artifact, ...
     )
 
 
-def _artifact(context: ExecutionIO, dependency: str, role: str) -> Artifact:
-    artifacts = context.artifacts(dependency, role)
-    if len(artifacts) != 1:
-        raise ExecutionError(
-            f"dependency {dependency!r} must publish exactly one {role!r} artifact"
-        )
-    return artifacts[0]
-
-
 def _run_script(
     context: ExecutionIO,
     environment: dict[str, str],

@@ -111,3 +111,23 @@ config = { runner = "run.sh", variant = "test", target = "structural", rtl_sourc
     assert result.status == "succeeded"
     stdout = next(artifact for artifact in result.outcomes[0].result.artifacts if artifact.path.name == "stdout.log")
     assert "module child; endmodule\nmodule parent; endmodule" in stdout.read_text()
+
+
+def test_plan_identity_includes_execution_software_content(tmp_path: Path) -> None:
+    import os
+    import shutil
+    import subprocess
+    import sys
+    import sigilicon
+
+    _composite(tmp_path)
+    software = tmp_path / "software"
+    package = software / "sigilicon"
+    shutil.copytree(Path(sigilicon.__file__).parent, package, ignore=shutil.ignore_patterns("__pycache__"))
+    script = "from sigilicon.project import Project; import sys; print(Project.open(sys.argv[1]).plan('parent:rtl').identity)"
+    environment = {**os.environ, "PYTHONPATH": str(software)}
+    before = subprocess.check_output([sys.executable, "-c", script, str(tmp_path)], env=environment, text=True)
+    with (package / "__init__.py").open("a") as stream:
+        stream.write("\n# changed implementation source\n")
+    after = subprocess.check_output([sys.executable, "-c", script, str(tmp_path)], env=environment, text=True)
+    assert before != after

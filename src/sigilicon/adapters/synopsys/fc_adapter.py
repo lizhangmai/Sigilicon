@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from sigilicon.execution.artifact_reference import ArtifactReference
+
 from sigilicon.execution._result import Artifact, StepResult
 from sigilicon.execution._values import ExecutionError
 from sigilicon.execution._io import ExecutionIO
@@ -10,7 +12,6 @@ from sigilicon.external_tools import owned_scratch_directory, process_group_clea
 from sigilicon.adapters.synopsys._common import (
     _ToolVerdict,
     _archive_directory,
-    _artifact,
     _logs,
     _run_script,
     _runtime_environment,
@@ -49,20 +50,12 @@ class FcAdapter(RunnerAdapter):
         else:
             synthesis = action.synthesis_step
             reference = action.reference_step
-            mapped_netlist = _artifact(context, synthesis, "mapped-netlist")
-            mapped_constraints = _artifact(context, synthesis, "mapped-constraints")
-            reference_files = context.artifacts(reference, "reference-library")
-            if not reference_files:
-                raise ExecutionError("reference-library step published no files")
-            reference_name = action.reference_library
-            candidates = {
-                parent
-                for artifact in reference_files
-                for parent in artifact.path.parents
-                if parent.name == reference_name
-            }
-            if len(candidates) != 1:
-                raise ExecutionError("cannot reconstruct the reference-library directory")
+            mapped_netlist = context.artifacts(ArtifactReference(synthesis, "mapped-netlist", "netlist.verilog"))[0]
+            mapped_constraints = context.artifacts(ArtifactReference(synthesis, "mapped-constraints", "constraints.sdc"))[0]
+            reference_root = context.artifact_directory(
+                ArtifactReference(reference, "reference-library", "library.synopsys-ndm", "many"),
+                action.reference_library,
+            )
             output_names = {output.role: output.path for output in action.outputs}
             required = frozenset(output_names)
             role_environment = FC_OUTPUT_ENVIRONMENT
@@ -70,7 +63,7 @@ class FcAdapter(RunnerAdapter):
                 {
                     "SIGILICON_FC_MAPPED_NETLIST": str(mapped_netlist.path),
                     "SIGILICON_FC_MAPPED_SDC": str(mapped_constraints.path),
-                    "SIGILICON_FC_REFERENCE_NDM": str(next(iter(candidates))),
+                    "SIGILICON_FC_REFERENCE_NDM": str(reference_root),
                     "SIGILICON_IMPLEMENTATION_EVALUATOR": str(
                         context.source_path(action.evaluator)
                     ),
@@ -172,7 +165,8 @@ class FcAdapter(RunnerAdapter):
                     copied.extend(
                         context.copy_output(
                             role=role,
-                            kind="layout.gds" if role == "layout-stream" else "result.synopsys-fc",
+                            kind=("layout.gds" if role == "layout-stream" else
+                                  "evidence.tool-verdict" if role == "execution-verdict" else "result.synopsys-fc"),
                             source=path,
                             filename=path.relative_to(role_root).as_posix(),
                         )

@@ -717,6 +717,7 @@ def _plan_loaded_ip_release(
         contract,
         level,
         collateral=collateral,
+        project=project,
     )
     semantic_missing = sorted({problem for _, problems in semantics.values() for problem in problems})
     semantic_check = QualifiedViewSemanticsCheck(passed=not semantic_missing, problems=tuple(semantic_missing))

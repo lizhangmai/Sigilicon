@@ -254,6 +254,7 @@ def plan_execution(
     return _bind_execution_plan(
         ExecutionPlan(
             project_identity=draft.project_identity,
+            software=draft.software,
             owner=draft.owner,
             operation=draft.operation,
             variant=draft.variant,

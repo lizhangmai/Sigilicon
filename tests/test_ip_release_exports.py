@@ -339,9 +339,11 @@ contract = "configs/interface.toml"
 module = "rtl_top"
 source_view = "rtl_source"
 [exports.receipts.synthesis_receipt]
+authority = "offline-fixture"
 inputs = ["interface_contract", "rtl_source"]
 outputs = []
 [exports.receipts.physical_implementation_receipt]
+authority = "offline-fixture"
 inputs = ["interface_contract", "rtl_source"]
 outputs = []
 [exports.maturity.development]
@@ -1319,7 +1321,7 @@ capabilities = {json.dumps(capabilities)}
         bindings["characterization_receipt"] = (["circuit_netlist"], ["raw_macro_liberty_or_db"])
     if evidence_fault == "missing-drc-purpose":
         collateral_rows = [row.replace('role = "drc_receipt"', 'role = "unrelated_receipt"') for row in collateral_rows]
-    policies = "".join(f"[exports.receipts.{role}]\ninputs = {json.dumps(inputs)}\noutputs = {json.dumps(outputs)}\n"
+    policies = "".join(f'[exports.receipts.{role}]\nauthority = "offline-fixture"\ninputs = {json.dumps(inputs)}\noutputs = {json.dumps(outputs)}\n'
                        for role, (inputs, outputs) in bindings.items())
     contract_path.write_text(contract_path.read_text().replace("[[collateral]]", policies + "\n[[collateral]]", 1))
     component.write_text(component.read_text().replace("[sources]", "[sources]\n" + "\n".join(source_rows)))
@@ -1338,11 +1340,10 @@ capabilities = {json.dumps(capabilities)}
                   for view in plan.payload.collateral}
     for role, (inputs, outputs) in bindings.items():
         receipt = {
-            "schema": 3, "contract_kind": "release-receipt", "name": role, "status": "passed",
+            "schema": 4, "contract_kind": "release-receipt", "name": role, "status": "passed",
             "source_identity": policy.source_identity, "subject": {"kind": "oa-native", **oa},
             "variant": None, "condition": {"corner": "tt"}, "coverage": [],
-            "execution": {"run_id": "fixture-run", "operation_id": "fixture-operation", "plan_identity": "fixture-plan",
-                          "executed": True, "report_parsed": True, "exit_code": 0},
+            "execution": {"kind": "external", "authority": "offline-fixture", "reference": "fixture-evidence-1"},
             "tool": {"name": "fixture", "version": "1"},
             "inputs": [identities[name] for name in inputs], "outputs": [identities[name] for name in outputs],
         }
@@ -1400,7 +1401,7 @@ def _damage_receipt(receipt: dict, fault: str) -> None:
     elif fault == "subject":
         receipt["subject"] = {"kind": "rtl", "module": "wrong"}
     elif fault == "execution":
-        receipt["execution"]["report_parsed"] = False
+        receipt["execution"]["authority"] = "untrusted-fixture"
     elif fault == "condition":
         receipt["condition"] = {"corner": "wrong"}
     elif fault == "variant":
@@ -1443,11 +1444,10 @@ capabilities = ["signoff"]
               for view in plan.payload.collateral if view.role in {"interface_contract", "rtl_source"}]
     for role in receipts:
         receipt = {
-            "schema": 3, "contract_kind": "release-receipt", "name": role, "status": "passed",
+            "schema": 4, "contract_kind": "release-receipt", "name": role, "status": "passed",
             "source_identity": policy.source_identity, "subject": {"kind": "rtl", "module": "rtl_top"},
             "variant": None, "condition": {}, "coverage": [],
-            "execution": {"run_id": "fixture-run", "operation_id": "fixture-operation", "plan_identity": "fixture-plan",
-                          "executed": True, "report_parsed": True, "exit_code": 0},
+            "execution": {"kind": "external", "authority": "offline-fixture", "reference": "fixture-evidence-1"},
             "tool": {"name": "fixture", "version": "1"}, "inputs": inputs, "outputs": [],
         }
         receipt.update((applicability or {}).get(role, {}))
@@ -1739,3 +1739,61 @@ capabilities = ["circuit_simulation"]
     assert "subckt NATIVE_CHILD" in circuit.read_text()
     alternate = ip_packaging.release_view(audited, "circuit_ff", export="native-top")
     assert alternate["condition"] == {"corner": "ff"}
+
+
+def test_generated_release_consumes_closed_run_without_tracking_outputs(tmp_path: Path, monkeypatch) -> None:
+    from sigilicon.execution import AdapterPreparation
+    from sigilicon.execution._result import Artifact, StepResult
+    from sigilicon.release_store import ReleaseRef, ReleaseStore
+    from sigilicon.adapters import trusted_adapters
+
+    contract = _rtl_contract_fixture(tmp_path)
+    operations = contract.parent / "operations.toml"
+    component = contract.parent / "ip.toml"
+    component.write_text(component.read_text().replace('[filesets]', '[filesets]\ndesign = ["rtl"]'))
+    with operations.open("a") as stream:
+        stream.write('''\n[operations.generate]
+uses = "fake.generate"
+filesets = [{component = "rtl-fixture", fileset = "design"}]
+''')
+
+    class Generate:
+        name = "fake.generate"
+
+        def prepare(self, project, step, resources):
+            return AdapterPreparation()
+
+        def preflight(self, step, resources):
+            return ()
+
+        def run(self, context):
+            path = context.write_text("report", "generated.txt", "generated diagnostic\n")
+            return StepResult.succeeded(artifacts=(Artifact("report", "text.plain", path),))
+
+    adapters = (*trusted_adapters(), Generate())
+    monkeypatch.setattr("sigilicon.adapters.trusted_adapters", lambda: adapters)
+    _commit_release_source(tmp_path, "source package and producer operation")
+    project = Project.open(tmp_path)
+    base = _publish_release(contract, project=project)
+    run = project.run(project.plan("rtl-fixture:generate"))
+    with operations.open("a") as stream:
+        stream.write(f'''\n[operations.package]
+uses = "sigilicon.release-artifacts"
+filesets = [{{component = "rtl-fixture", fileset = "release"}}]
+[operations.package.config]
+base = {{store = "{base['store']}", manifest_sha256 = "{base['manifest_sha256']}"}}
+run = {{owner = "rtl-fixture", operation = "generate", run_id = "{run.run_id}"}}
+views = [{{export = "rtl-top", name = "diagnostic", role = "diagnostic", format = "text", package_path = "exports/rtl-top/diagnostic.txt", artifact = {{step = "run", role = "report", kind = "text.plain"}}}}]
+''')
+    _commit_release_source(tmp_path, "bind generated artifact publication")
+    project = Project.open(tmp_path)
+    result = project.run(project.plan("rtl-fixture:package"))
+    summary = json.loads(result.outcomes[0].result.artifacts[0].read_text())
+    package = ReleaseStore(tmp_path / "artifacts/release-store").open(
+        ReleaseRef(summary["store"], summary["manifest_sha256"]),
+        validate=ip_packaging.validate_ip_release_package,
+    )
+    assert package.manifest["release_kind"] == "build-artifact-package"
+    assert package.view("rtl-top", "diagnostic").path.read_text() == "generated diagnostic\n"
+    assert package.manifest["source_commit"] == base["source_commit"]
+    assert package.manifest["provenance"]["build"]["execution"]["result"]["run_id"] == run.run_id

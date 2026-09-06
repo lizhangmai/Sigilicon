@@ -346,7 +346,8 @@ class UpperAdapter:
         return ()
 
     def run(self, context: ExecutionIO) -> StepResult:
-        source = context.artifacts("source", "source")[0]
+        from sigilicon.execution.artifact_reference import ArtifactReference
+        source = context.artifacts(ArtifactReference("source", "source", "text.plain"))[0]
         output = context.write_text(
             "result",
             "value.txt",
@@ -2085,3 +2086,41 @@ def test_nested_artifact_names_survive_run_store_roundtrip(tmp_path: Path) -> No
     )
     assert stored.outcomes[0].result.artifacts[0].read_text() == "nested payload"
     assert stored.record == result.record
+
+
+@pytest.mark.parametrize("fault", ["format", "cardinality"])
+def test_dependency_artifact_contract_rejects_incompatible_producer(tmp_path: Path, fault: str) -> None:
+    _write_project(tmp_path)
+
+    class InvalidProducer(CopyAdapter):
+        def run(self, context):
+            artifacts = [Artifact("source", "text.json" if fault == "format" else "text.plain",
+                                  context.write_text("source", "one.txt", "hello"))]
+            if fault == "cardinality":
+                artifacts.append(Artifact("source", "text.plain", context.write_text("source", "two.txt", "world")))
+            return StepResult.succeeded(artifacts=tuple(artifacts))
+
+    project = _project(tmp_path, InvalidProducer(), UpperAdapter())
+    with pytest.raises(ExecutionError, match="format or cardinality"):
+        project.run(project.plan("example:all"))
+
+
+def test_closed_run_materialization_verifies_content_and_rejects_fake_signoff(tmp_path: Path) -> None:
+    from sigilicon.execution.artifact_reference import ArtifactReference
+    from sigilicon.adapters.release.run_evidence import execution_from_run
+    _write_project(tmp_path)
+    project = _project(tmp_path, CopyAdapter())
+    result = project.run(project.plan("example:check"))
+    materialization = RunStore(project.artifact_root).materialization_plan(
+        owner=result.owner, operation=result.operation, run_id=result.run_id,
+    )
+    selection = ArtifactReference("run", "source", "text.plain")
+    copied = materialization.materialize(selection, tmp_path / "export/value.txt")
+    assert copied.read_text() == "hello"
+    with pytest.raises((ValueError, json.JSONDecodeError)):
+        execution_from_run(materialization, selection)
+    artifact, = materialization.artifacts(selection)
+    artifact.path.chmod(0o644)
+    artifact.path.write_text("mutated")
+    with pytest.raises((RuntimeError, ContractError), match="changed|digest|size|identity|content"):
+        materialization.materialize(selection, tmp_path / "export/tampered.txt")

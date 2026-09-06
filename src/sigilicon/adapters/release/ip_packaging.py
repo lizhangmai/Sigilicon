@@ -208,35 +208,12 @@ def _publish_ip_release(
                 },
                 "availability": record["availability"],
             }
-            atomic_write_json(temporary / "manifest.json", manifest)
-            manifest_digest = hashlib.sha256(
-                read_nofollow_bytes(temporary / "manifest.json")
-            ).hexdigest()
-            ref = ReleaseRef(
-                plan.store,
-                manifest_digest,
+            published = store.publish(
+                plan.store, manifest,
+                {view["path"]: temporary / view["path"] for view in views},
+                validate=validate_ip_release_package,
             )
-            object_name = _release_object_name(ref)
-            try:
-                existing = os.stat(
-                    object_name,
-                    dir_fd=release_namespace.fd,
-                    follow_symlinks=False,
-                )
-            except FileNotFoundError:
-                SafeTree(temporary).make_readonly()
-                os.rename(
-                    temporary_name,
-                    object_name,
-                    src_dir_fd=release_namespace.fd,
-                    dst_dir_fd=release_namespace.fd,
-                )
-                installed = True
-            else:
-                if not stat.S_ISDIR(existing.st_mode):
-                    raise RuntimeError(
-                        f"release store object path is unsafe: {object_name}"
-                    )
+            ref = published.ref
         finally:
             if not installed:
                 try:
@@ -719,6 +696,26 @@ def _packaged_maturity_check(manifest: Mapping[str, Any], manifest_path: Path) -
 
 
 def validate_ip_release_package(package: ReleasePackage) -> None:
+    if package.manifest.get("release_kind") == "build-artifact-package":
+        from sigilicon.execution.materialization import validate_materialization_record
+        build = package.manifest.get("provenance", {}).get("build", {})
+        try:
+            proof = build["execution"]
+            validate_materialization_record(proof)
+            registered = proof["artifacts"]
+            for view in package.manifest["views"]:
+                generated = view.get("generated_from")
+                if generated is None:
+                    continue
+                reference = generated["artifact"]
+                if generated["run_id"] != proof["result"]["run_id"] or not any(
+                    item["step"] == reference["step"] and item["role"] == reference["role"]
+                    and item["kind"] == reference["kind"] and item["size"] == view["size"]
+                    and item["sha256"] == view["sha256"] for item in registered
+                ):
+                    raise ValueError("generated release view is outside the executed artifact closure")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(f"build release execution evidence is invalid: {exc}") from exc
     _packaged_interface_check(package.manifest, package.manifest_path)
     _packaged_maturity_check(package.manifest, package.manifest_path)
 

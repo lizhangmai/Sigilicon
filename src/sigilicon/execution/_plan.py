@@ -1,6 +1,14 @@
 """Compile immutable typed steps and validate the execution DAG."""
 
 from __future__ import annotations
+
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from sigilicon.execution.software import SoftwareIdentity
+
+def _capture_software():
+    from sigilicon.execution.software import SoftwareIdentity
+    return SoftwareIdentity.capture()
 from collections import deque
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -258,6 +266,7 @@ class ExecutionPlan:
     steps: tuple[Step, ...]
     sources: tuple[Source, ...]
     resources: tuple[ResourceBinding, ...] = field(repr=False)
+    software: SoftwareIdentity = field(default_factory=_capture_software)
     _composition_sources: tuple[Source, ...] = field(
         default=(),
         init=False,
@@ -325,9 +334,10 @@ class ExecutionPlan:
     @property
     def record(self) -> dict[str, Any]:
         return {
-            "schema": 16,
+            "schema": 17,
             "contract_kind": "execution-plan",
             "project_identity": self.project_identity,
+            "software": self.software.record,
             "owner": self.owner,
             "operation": self.operation,
             "variant": self.variant,

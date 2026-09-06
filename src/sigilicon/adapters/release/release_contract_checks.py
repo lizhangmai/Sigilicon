@@ -516,7 +516,7 @@ def _missing_views(contract: IpContract, level: str) -> list[str]:
 
 
 def _release_semantics(
-    contract: IpContract, level: str, *, collateral: tuple[ReleaseCollateralRecord, ...],
+    contract: IpContract, level: str, *, collateral: tuple[ReleaseCollateralRecord, ...], project: Project,
 ) -> dict[str, tuple[ReleaseAvailability, tuple[str, ...]]]:
     from sigilicon.adapters.release.release_semantics import ExportSemantics
 
@@ -525,7 +525,21 @@ def _release_semantics(
         by_name = {item.name: item for item in exported.collateral}
         def read_receipt(role: str):
             source = _project_path(contract.project_root, Path(by_name[role].source), f"{role} source")
-            return read_json_object(source, f"{role} receipt")
+            receipt = read_json_object(source, f"{role} receipt")
+            execution = receipt.get("execution", {})
+            if isinstance(execution, Mapping) and execution.get("kind") == "managed-run":
+                from sigilicon.execution.runs import RunStore
+                from sigilicon.canonical import canonical_digest
+                try:
+                    result = execution["proof"]["result"]
+                    audited = RunStore(project.artifact_root).materialization_plan(
+                        **{key: result[key] for key in ("owner", "operation", "variant", "run_id")}
+                    )
+                    if canonical_digest(audited.record) != canonical_digest(execution["proof"]):
+                        raise ValueError("receipt proof disagrees with its audited RunStore result")
+                except (KeyError, TypeError, OSError, RuntimeError) as exc:
+                    raise ValueError("receipt has no matching audited RunStore result") from exc
+            return receipt
         assessments[exported.name] = ExportSemantics.from_source(exported, level, collateral).assess(
             level, read_receipt,
         )

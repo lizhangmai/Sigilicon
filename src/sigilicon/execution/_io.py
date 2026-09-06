@@ -8,11 +8,12 @@ import re
 import stat
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
-from sigilicon.artifacts import copy_immutable_file, read_nofollow_bytes, read_nofollow_text
+from sigilicon.artifacts import SafeTree, copy_immutable_file, read_nofollow_bytes, read_nofollow_text
 from sigilicon.paths import validate_artifact_component, validate_artifact_id
 from sigilicon.execution._resources import Resources
 from sigilicon.execution._plan import Step
 from sigilicon.execution._result import Artifact, StepResult
+from sigilicon.execution.artifact_reference import ArtifactReference
 from sigilicon.execution._values import (
     ContractError,
     ExecutionError,
@@ -392,13 +393,55 @@ class ExecutionIO:
             source=source,
         )
 
-    def artifacts(self, dependency: str, role: str | None = None) -> tuple[Artifact, ...]:
-        try:
-            result = self._dependencies[dependency]
-        except KeyError as exc:
-            raise ExecutionError(f"step {self.step.id!r} has no dependency {dependency!r}") from exc
-        return tuple(
-            artifact
-            for artifact in result.artifacts
-            if role is None or artifact.role == role
-        )
+    def artifacts(self, reference: ArtifactReference) -> tuple[Artifact, ...]:
+        """Resolve a nonempty, format-checked dependency without silently filtering errors."""
+
+        if not isinstance(reference, ArtifactReference):
+            raise ExecutionError("artifact consumption requires an ArtifactReference")
+        result = self._dependencies.get(reference.step)
+        if result is None or result.status != "succeeded":
+            raise ExecutionError(f"dependency {reference.step!r} is missing or unsuccessful")
+        root = self._run_root / "outputs" / reference.step / reference.role
+        artifacts = tuple(item for item in result.artifacts if item.role == reference.role
+                          and (reference.path is None or item.path == root / reference.path))
+        if (not artifacts or (reference.cardinality == "one" and len(artifacts) != 1)
+                or any(item.kind != reference.kind for item in artifacts)):
+            raise ExecutionError(f"artifact {reference.step}/{reference.role} disagrees with its format or cardinality")
+        return artifacts
+
+    def materialize_artifact(self, reference: ArtifactReference, destination: Path) -> Path:
+        """Copy one registered artifact and verify the copied bytes against its digest."""
+
+        if reference.cardinality != "one":
+            raise ExecutionError("file materialization requires singular cardinality")
+        artifact, = self.artifacts(reference)
+        if artifact.sha256 is None:
+            raise ExecutionError("materialization requires a registered artifact identity")
+        destination = Path(destination).absolute()
+        if not destination.is_relative_to(self.work_directory):
+            raise ExecutionError("artifact materialization must stay in step scratch space")
+        copy_immutable_file(artifact.path, destination,
+                            expected_size=artifact.size, expected_sha256=artifact.sha256)
+        return destination
+
+    def artifact_directory(self, reference: ArtifactReference, directory: str) -> Path:
+        """Resolve an explicitly named bundle root and verify its complete file inventory."""
+
+        from sigilicon.contracts import require_relative_path
+
+        if reference.cardinality != "many":
+            raise ExecutionError("artifact directory requires multiple-file cardinality")
+        relative = require_relative_path(directory, "artifact bundle directory")
+        root = self._run_root / "outputs" / reference.step / reference.role / relative
+        artifacts = self.artifacts(reference)
+        expected = {}
+        for artifact in artifacts:
+            if not artifact.path.is_relative_to(root) or artifact.sha256 is None:
+                raise ExecutionError("artifact bundle does not match its declared root")
+            expected[artifact.path.relative_to(root).as_posix()] = (artifact.size, artifact.sha256)
+        inventory = SafeTree(root).inventory(verify_content=True)
+        actual = {path.as_posix(): (item.size, item.sha256)
+                  for path, item in inventory.files.items()}
+        if actual != expected:
+            raise ExecutionError("artifact bundle inventory or content drifted")
+        return root

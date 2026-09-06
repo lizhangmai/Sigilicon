@@ -215,7 +215,7 @@ def test_verifier_accepts_stream_producers_and_requires_real_reports(tmp_path: P
     plan = project.plan("example:verify")
     assert project.preflight(plan).ready
     if origin == "wrong-kind":
-        with pytest.raises(RuntimeError, match="declared format"):
+        with pytest.raises(RuntimeError, match="format or cardinality"):
             project.run(plan)
         assert not launched
         return
@@ -389,3 +389,38 @@ def test_manual_oa_export_plans_without_a_generator_and_binds_workspace(tmp_path
     (tmp_path / "virtuoso/cds.lib").write_text("DEFINE example ./another\n")
     with pytest.raises((ValueError, RuntimeError), match="drift|changed|blocked"):
         project.run(plan)
+
+
+def test_release_evidence_is_extracted_from_an_audited_typed_verifier_result(tmp_path: Path, monkeypatch) -> None:
+    from sigilicon.project import Project
+    from sigilicon.execution import RunStore
+    from sigilicon.execution.artifact_reference import ArtifactReference
+    from sigilicon.adapters.release.run_evidence import execution_from_run, validate_execution
+    from sigilicon.external_tools import ProcessResult
+
+    _verification_project(tmp_path, origin="source", check="lvs")
+
+    catalog = tmp_path / "ip/example/operations.toml"
+    catalog.write_text(catalog.read_text().replace('role = "diagnostic"', 'role = "signoff"'))
+
+    def verifier(request):
+        for name in ("lvs.rep", "lvs.rep.ext", "calibre_erc.db", "calibre_erc.sum"):
+            (Path(request.cwd) / name).write_text(" CORRECT TOP TOP\n")
+        (Path(request.cwd) / "svdb").mkdir()
+        (Path(request.cwd) / "svdb/TOP.sp").write_text(".subckt TOP a b\n.ends TOP\n")
+        return ProcessResult(0, "LVS completed. CORRECT.\n", "")
+
+    monkeypatch.setattr(physical_verification.managed_process, "run", verifier)
+    project = Project.open(tmp_path)
+    result = project.run(project.plan("example:verify"))
+    assert result.status == "succeeded"
+    materialization = RunStore(project.artifact_root).materialization_plan(
+        owner=result.owner, operation=result.operation, run_id=result.run_id,
+    )
+    receipt = execution_from_run(materialization, ArtifactReference(
+        "verify", "verification", "evidence.physical-verification", path="typed-evidence.json",
+    ))
+    assert validate_execution(receipt)
+    receipt["proof"]["result"]["status"] = "failed"
+    with pytest.raises(ValueError, match="identity"):
+        validate_execution(receipt)
