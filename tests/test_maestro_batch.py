@@ -7,13 +7,17 @@ import subprocess
 
 import pytest
 
-from sigilicon.external_tools import ConfirmedProcessGroupResult
+from sigilicon.external_tools import (
+    ConfirmedProcessGroupResult,
+    ProcessGroupCleanupUncertainError,
+)
 from sigilicon.execution._resources import Resources
 from sigilicon.virtuoso.maestro_batch import (
     render_isolated_maestro_run_skill,
     run_isolated_maestro,
 )
 from sigilicon.virtuoso.workspace import OperationPolicy
+from conftest import managed_execution_workspace
 
 
 NONCE = "a" * 32
@@ -49,7 +53,11 @@ def _run_with_fake_process(
     residual_group_cleaned_after_exit: bool = False,
     result_confirmed: bool = True,
     replace_rdb_after_confirmation: bool = False,
+    process_error: BaseException | None = None,
+    publish_logs=None,
 ):
+    if publish_logs is None:
+        publish_logs = lambda _log, _stdout: None
     client = object()
     work = tmp_path / "artifacts" / "run" / "work"
     work.mkdir(parents=True)
@@ -94,6 +102,8 @@ def _run_with_fake_process(
             "worker stdout\n",
             encoding="utf-8",
         )
+        if process_error is not None:
+            raise process_error
         rdb_path.write_text(
             "RDB_SCHEMA\t1\nSUMMARY\t1\t1\nOVERALL_SPEC\tt\n",
             encoding="utf-8",
@@ -145,6 +155,7 @@ def _run_with_fake_process(
             resources=runtime,
             result_completion_probe=lambda _history, _payload: result_confirmed,
             rdb_export=rdb_path,
+            publish_logs=publish_logs,
         )
     return result, captured, worker_log, rdb_path
 
@@ -250,6 +261,34 @@ def test_isolated_runner_rejects_unconfirmed_result(
         )
 
 
+def test_isolated_runner_publishes_logs_before_invalid_result_failure(
+    monkeypatch, workspace_factory, tmp_path: Path
+) -> None:
+    audited = managed_execution_workspace(tmp_path)
+    log_text = f"\\o FLOW_ISOLATED_MAESTRO_STARTED {NONCE} Run.1\n"
+
+    def publish_logs(log: str, stdout: str) -> None:
+        audited.write_text("logs", ("virtuoso-worker.log",), log)
+        audited.write_text("logs", ("virtuoso-worker.stdout.log",), stdout)
+
+    with pytest.raises(RuntimeError, match="confirmed simulator result"):
+        _run_with_fake_process(
+            monkeypatch,
+            workspace_factory,
+            tmp_path,
+            log_text=log_text,
+            result_confirmed=False,
+            publish_logs=publish_logs,
+        )
+
+    assert audited.path("logs", "virtuoso-worker.log").read_text(
+        encoding="utf-8"
+    ) == log_text
+    assert audited.path("logs", "virtuoso-worker.stdout.log").read_text(
+        encoding="utf-8"
+    ) == "worker stdout\n"
+
+
 def test_isolated_runner_accepts_owned_cleanup_after_exact_completion(
     monkeypatch, workspace_factory, tmp_path: Path
 ) -> None:
@@ -267,6 +306,74 @@ def test_isolated_runner_accepts_owned_cleanup_after_exact_completion(
 
     assert result.history == "Run.1"
     assert result.terminated_after_completion
+
+
+def test_isolated_runner_publishes_process_failure_logs_before_cleanup(
+    monkeypatch, workspace_factory, tmp_path: Path
+) -> None:
+    audited = managed_execution_workspace(tmp_path)
+    log_text = (
+        "SFE-868: model file /deleted/model.scs does not exist\n"
+        "native netlisting failed\n"
+    )
+
+    def publish_logs(log: str, stdout: str) -> None:
+        audited.write_text("logs", ("virtuoso-worker.log",), log)
+        audited.write_text("logs", ("virtuoso-worker.stdout.log",), stdout)
+
+    with pytest.raises(RuntimeError, match="leader exited while descendants remain"):
+        _run_with_fake_process(
+            monkeypatch,
+            workspace_factory,
+            tmp_path,
+            log_text=log_text,
+            process_error=RuntimeError("leader exited while descendants remain"),
+            publish_logs=publish_logs,
+        )
+
+    assert audited.path("logs", "virtuoso-worker.log").read_text(
+        encoding="utf-8"
+    ) == log_text
+    assert audited.path("logs", "virtuoso-worker.stdout.log").read_text(
+        encoding="utf-8"
+    ) == "worker stdout\n"
+
+
+def test_isolated_runner_keeps_cleanup_uncertainty_semantics_with_failure_logs(
+    monkeypatch, workspace_factory, tmp_path: Path
+) -> None:
+    published: list[tuple[str, str]] = []
+
+    with pytest.raises(ProcessGroupCleanupUncertainError, match="cleanup unknown"):
+        _run_with_fake_process(
+            monkeypatch,
+            workspace_factory,
+            tmp_path,
+            log_text="SFE-868: native failure\n",
+            process_error=ProcessGroupCleanupUncertainError("cleanup unknown"),
+            publish_logs=lambda log, stdout: published.append((log, stdout)),
+        )
+
+    assert published == [("SFE-868: native failure\n", "worker stdout\n")]
+
+
+def test_isolated_runner_does_not_replace_process_error_when_log_publish_fails(
+    monkeypatch, workspace_factory, tmp_path: Path
+) -> None:
+    def publish_logs(_log: str, _stdout: str) -> None:
+        raise RuntimeError("artifact write failed")
+
+    with pytest.raises(RuntimeError, match="leader exited while descendants remain") as raised:
+        _run_with_fake_process(
+            monkeypatch,
+            workspace_factory,
+            tmp_path,
+            log_text="SFE-868: native failure\n",
+            process_error=RuntimeError("leader exited while descendants remain"),
+            publish_logs=publish_logs,
+        )
+
+    assert any("artifact write failed" in note for note in raised.value.__notes__)
 
 
 def test_isolated_runner_remembers_start_marker_beyond_log_tail(
@@ -319,4 +426,5 @@ def test_isolated_runner_rejects_log_outside_direct_work(
                 resources=runtime,
                 result_completion_probe=lambda _history, _payload: True,
                 rdb_export=work / "maestro-rdb.tsv",
+                publish_logs=lambda _log, _stdout: None,
             )

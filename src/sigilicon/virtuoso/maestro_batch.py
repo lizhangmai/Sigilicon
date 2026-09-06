@@ -230,6 +230,40 @@ def _completion_state(log_text: str, nonce: str) -> tuple[list[str], int, bool]:
     return histories, len(completions), failed
 
 
+def _publish_logs(
+    *,
+    worker_log: Any,
+    worker_stdout: Any,
+    publish: Callable[[str, str], None],
+    error: BaseException | None = None,
+) -> tuple[str, str]:
+    """Read and publish worker diagnostics while their owned descriptors live."""
+
+    captured: list[str] = []
+    for label, output in (
+        ("worker log", worker_log),
+        ("worker stdout", worker_stdout),
+    ):
+        try:
+            captured.append(output.read_bytes().decode("utf-8", errors="replace"))
+        except BaseException as capture_error:
+            if error is None:
+                raise
+            error.add_note(
+                f"could not capture Maestro {label} after failure: {capture_error}"
+            )
+            captured.append("")
+    try:
+        publish(captured[0], captured[1])
+    except BaseException as publish_error:
+        if error is None:
+            raise
+        error.add_note(
+            f"could not publish Maestro failure logs: {publish_error}"
+        )
+    return captured[0], captured[1]
+
+
 def run_isolated_maestro(
     client: Any,
     *,
@@ -244,8 +278,17 @@ def run_isolated_maestro(
     resources: Any,
     result_completion_probe: Callable[[str, bytes], bool],
     rdb_export: Path,
+    publish_logs: Callable[[str, str], None],
 ) -> IsolatedMaestroRunResult:
-    """Run one exact headless worker until its stable simulator result exists."""
+    """Run one exact headless worker until its stable simulator result exists.
+
+    ``publish_logs`` receives the worker log and stdout before the caller may
+    clean the disposable tool directory.  It is called as soon as the
+    supervisor returns and before downstream result validation, so a malformed
+    or incomplete result still leaves an auditable log artifact.  If the
+    supervisor raises, publication failures are added to the original
+    exception without replacing it.
+    """
 
     require_workspace_capability(
         operation,
@@ -420,12 +463,29 @@ def run_isolated_maestro(
                         ),
                     )
                 except ProcessGroupCleanupUncertainError as exc:
+                    _publish_logs(
+                        worker_log=owned_log,
+                        worker_stdout=owned_stdout,
+                        publish=publish_logs,
+                        error=exc,
+                    )
                     operation.mark_uncertain(
                         f"isolated Maestro worker cleanup could not be proven: {exc}"
                     )
                     raise
-        log_text = owned_log.read_bytes().decode("utf-8", errors="replace")
-        stdout_text = owned_stdout.read_bytes().decode("utf-8", errors="replace")
+                except BaseException as exc:
+                    _publish_logs(
+                        worker_log=owned_log,
+                        worker_stdout=owned_stdout,
+                        publish=publish_logs,
+                        error=exc,
+                    )
+                    raise
+                log_text, stdout_text = _publish_logs(
+                    worker_log=owned_log,
+                    worker_stdout=owned_stdout,
+                    publish=publish_logs,
+                )
         owned_rdb.require_visible()
         rdb_payload = owned_rdb.read_bytes()
         if not rdb_payload:

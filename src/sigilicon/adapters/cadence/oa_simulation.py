@@ -302,6 +302,12 @@ def _run_native_oa_maestro_testbench_impl(
             )
             return True
 
+        def publish_worker_logs(log_text: str, stdout_text: str) -> None:
+            artifacts.write_text("logs", ("virtuoso-worker.log",), log_text)
+            artifacts.write_text(
+                "logs", ("virtuoso-worker.stdout.log",), stdout_text
+            )
+
         result = run_isolated_maestro(
             client,
             library=plan.library,
@@ -315,6 +321,7 @@ def _run_native_oa_maestro_testbench_impl(
             resources=resources,
             result_completion_probe=complete_results,
             rdb_export=rdb_export,
+            publish_logs=publish_worker_logs,
         )
         if parsed_results is None:
             raise RuntimeError("Maestro completed without an official RDB result")
@@ -330,7 +337,6 @@ def _run_native_oa_maestro_testbench_impl(
             ),
             final_netlist,
         )
-        artifacts.write_text("logs", ("virtuoso-worker.log",), result.worker_log_text)
         result_export = artifacts.write_bytes(
             "outputs", ("maestro-rdb.tsv",), result.rdb_payload
         )
