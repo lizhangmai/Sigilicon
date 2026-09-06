@@ -98,6 +98,13 @@ def validate_execution(record: Mapping) -> VerifiedExecution:
                 or any(evidence.get(key) != result.get(key) for key in ("run_id", "plan_identity", "owner"))
                 or evidence.get("step_id") != reference.step):
             raise ValueError("receipt tool verdict is not a proven execution conclusion")
+    elif adapter == "cadence.spectre" and reference.kind == "evidence.measurement":
+        action = planned["action"]
+        if (action.get("kind") != "spectre-measurement"
+                or any(evidence.get(key) != result.get(key) for key in ("run_id", "plan_identity", "owner"))
+                or evidence.get("step") != reference.step or evidence.get("subject") != action["top"]
+                or evidence.get("measurements", {}).get("passed") is not True):
+            raise ValueError("receipt measurement is not a proven execution conclusion")
     else:
         raise ValueError("adapter cannot supply release signoff evidence")
     action = planned["action"]
@@ -110,6 +117,13 @@ def validate_execution(record: Mapping) -> VerifiedExecution:
         if not rows:
             raise ValueError("checked input is absent from execution evidence")
         return identities(rows)
+    if adapter == "cadence.spectre":
+        inputs = identities(sources[path] for path in (action["circuit"], action["spec"], *action["inputs"]))
+        coverage = frozenset(key for key, value in evidence["measurements"].get("criteria", {}).items() if value is True)
+        outputs = identities(item for item in artifacts if item["step"] == reference.step
+                             and item["kind"] in {"raw.cadence-spectre", "table.measurement"})
+        return VerifiedExecution("measurement", result["owner"], action["top"], plan["variant"],
+                                 evidence["condition"], coverage, inputs, outputs)
     if adapter == "mentor.calibre":
         check = action["check"]
         if check not in {"drc", "lvs"} or (check == "lvs") != ("source" in evidence):

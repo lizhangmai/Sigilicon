@@ -29,16 +29,6 @@ ROLE_FORMATS = {
     "pex_netlist": frozenset({"dspf", "spice", "spectre"}),
 }
 
-# Purposes required by the native physical signoff domain. Owners bind these
-# purposes to exact, independently named views, including every required corner.
-NATIVE_SIGNOFF_BINDINGS = {
-    "schematic_layout_parity_receipt": (("circuit_netlist", "raw_macro_gds_or_oasis", "raw_macro_cdl_or_lvs_netlist"), ()),
-    "drc_receipt": (("raw_macro_gds_or_oasis",), ()),
-    "lvs_receipt": (("circuit_netlist", "raw_macro_gds_or_oasis", "raw_macro_cdl_or_lvs_netlist"), ()),
-    "characterization_receipt": (("pex_netlist",), ("raw_macro_liberty_or_db",)),
-}
-
-
 @dataclass(frozen=True)
 class ReceiptArtifact:
     """Content identity addressed by export-local name, independent of package paths."""
@@ -245,18 +235,12 @@ class ExportSemantics:
         physical_views = {role: tuple(view for view in by_role.get(role, ()) if view.name in self.required_views)
                           for role in IMPLEMENTATION_FORMATS}
         if self.kind != "rtl" and implementation:
-            for role in IMPLEMENTATION_FORMATS:
-                views = physical_views[role]
-                prefix = f"{self.name}:{role}"
-                if not views:
-                    problems.append(prefix)
-                elif any(not self._physical_view(view) or not view.supports("physical_implementation") for view in views):
-                    problems.append(f"{prefix}:format-identity-or-capability")
-        if self.kind != "rtl" and level == "signoff":
-            pex = by_role.get("pex_netlist", ())
-            if not pex or any(not self._physical_view(view) or not view.supports("circuit_simulation") for view in pex):
-                problems.append(f"{self.name}:pex_netlist:format-identity-or-capability")
-            problems.extend(self._native_signoff_coverage(by_name, by_role))
+            for name in self.required_views:
+                view = by_name.get(name)
+                if view is not None and view.role in {*IMPLEMENTATION_FORMATS, "pex_netlist"}:
+                    capability = "circuit_simulation" if view.role == "pex_netlist" else "physical_implementation"
+                    if not self._physical_view(view) or not view.supports(capability):
+                        problems.append(f"{self.name}:{name}:format-identity-or-capability")
         if level == "signoff" and not self.receipts:
             problems.append(f"{self.name}:missing-receipt-policy")
         for view in self.views:
@@ -286,9 +270,9 @@ class ExportSemantics:
         else:
             liberty = by_role.get("raw_macro_liberty_or_db", ())
             linkable = any(self._physical_view(view) and view.supports("synthesis") for view in liberty)
-            physical = implementation and all(
-                physical_views[role] and all(view.supports("physical_implementation") for view in physical_views[role])
-                for role in IMPLEMENTATION_FORMATS)
+            physical = implementation and bool(physical_views["raw_macro_gds_or_oasis"]) and all(
+                view.supports("physical_implementation")
+                for views in physical_views.values() for view in views)
             if self.kind == "circuit":
                 simulation = supports("circuit_netlist", "simulation")
                 synthesis = linkable
@@ -300,32 +284,6 @@ class ExportSemantics:
                                             for role in ("integration_adapter", "physical_blackbox"))
         valid = not problems
         return ReleaseAvailability(valid and simulation, valid and synthesis, valid and physical), tuple(sorted(set(problems)))
-
-    def _native_signoff_coverage(
-        self, by_name: Mapping[str, ReleaseView], by_role: Mapping[str, tuple[ReleaseView, ...]],
-    ) -> list[str]:
-        problems = []
-        for role, directions in NATIVE_SIGNOFF_BINDINGS.items():
-            receipts = [view for view in by_role.get(role, ()) if view.name in self.receipts]
-            if not receipts:
-                problems.append(f"{self.name}:{role}:missing-evidence")
-            for field, purposes in zip(("inputs", "outputs"), directions):
-                covered = set()
-                for receipt in receipts:
-                    names = getattr(self.receipts[receipt.name], field)
-                    selected = [by_name[name] for name in names if name in by_name]
-                    if not set(purposes).issubset({view.role for view in selected}):
-                        problems.append(f"{self.name}:{receipt.name}:{field}:evidence-purpose")
-                    covered.update(names)
-                    if role == "characterization_receipt" and field == "outputs":
-                        for view in selected:
-                            if view.role in purposes and "characterized" not in view.capabilities:
-                                problems.append(f"{self.name}:{receipt.name}:{view.name}:characterization-capability")
-                required = {view.name for purpose in purposes for view in by_role.get(purpose, ())
-                            if view.name in self.required_views}
-                if not required.issubset(covered):
-                    problems.append(f"{self.name}:{role}:{field}:incomplete-evidence-coverage")
-        return problems
 
     def _physical_view(self, view: ReleaseView) -> bool:
         return (((view.library, view.cell) == self.oa_identity[:2] and bool(view.view)
@@ -373,6 +331,7 @@ class ExportSemantics:
                 "synthesis_receipt": "synthesis",
                 "physical_implementation_receipt": "physical-implementation",
                 "characterization_receipt": "characterization",
+                "measurement_receipt": "measurement",
             }.get(by_role[role].role)
             if claim.check != expected_check:
                 problems.append(f"{prefix}:execution-check")
@@ -399,6 +358,10 @@ class ExportSemantics:
             problems.append(f"{prefix}:condition-or-variant")
         if set(receipt.coverage) != set(self.receipts[role].coverage):
             problems.append(f"{prefix}:coverage")
+        for name, required in self.receipts[role].output_capabilities.items():
+            output = by_role.get(name)
+            if output is None or not set(required).issubset(output.capabilities):
+                problems.append(f"{prefix}:{name}:required-output-capability")
         outputs = set(self.receipts[role].outputs)
         inputs = set(self.receipts[role].inputs)
         for field, values, expected in (("inputs", receipt.inputs, inputs), ("outputs", receipt.outputs, outputs)):

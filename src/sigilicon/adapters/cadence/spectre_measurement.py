@@ -31,6 +31,7 @@ from sigilicon.project import Project
 
 @dataclass(frozen=True)
 class MeasurementAction:
+    top: str
     program: str
     spec: str
     circuit: str
@@ -44,7 +45,7 @@ class MeasurementAction:
     @property
     def record(self) -> dict[str, object]:
         return {
-            "kind": "spectre-measurement", "program": self.program,
+            "kind": "spectre-measurement", "top": self.top, "program": self.program,
             "spec": self.spec, "circuit": self.circuit,
             "inputs": list(self.inputs), "platform": self.platform,
             "parameters": thaw_toml_document(self.parameters),
@@ -55,7 +56,7 @@ class MeasurementAction:
 
 def prepare_measurement(project: Project, step: Step, resources: Resources) -> AdapterPreparation:
     config = _strict_config(step, frozenset({
-        "program", "spec", "circuit", "inputs", "platform", "model_set", "parameters", "timeout_seconds",
+        "program", "spec", "circuit", "inputs", "platform", "model_set", "parameters", "timeout_seconds", "top",
     }))
     selected = {}
     for field in ("program", "spec", "circuit"):
@@ -84,7 +85,7 @@ def prepare_measurement(project: Project, step: Step, resources: Resources) -> A
     model_inputs = tuple((identities[asset.require_path()], relative.as_posix())
                          for asset, relative in models.members)
     action = MeasurementAction(
-        **selected, inputs=inputs, platform=_text(config, "platform"),
+        top=_text(config, "top"), **selected, inputs=inputs, platform=_text(config, "platform"),
         parameters=freeze_toml_document(parameters), models=model_inputs,
         sections=tuple(models.sections), timeout_seconds=_positive_integer(config, "timeout_seconds"),
     )
@@ -193,6 +194,7 @@ def run_measurement(context: ExecutionIO) -> StepResult:
             "schema": 1, "contract_kind": "measurement-evidence",
             "owner": context.owner, "plan_identity": context.plan_identity,
             "run_id": context.run_id, "step": context.step.id,
+            "subject": action.top,
             "condition": condition, "measurements": measurement,
             "product_qualification_conclusion": False,
         }

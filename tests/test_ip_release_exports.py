@@ -1317,12 +1317,9 @@ capabilities = {json.dumps(capabilities)}
         "lvs_receipt": (["circuit_netlist", "raw_macro_gds_or_oasis", "raw_macro_cdl_or_lvs_netlist"], []),
         "characterization_receipt": (["pex_netlist"], ["raw_macro_liberty_or_db"]),
     }
-    if evidence_fault == "wrong-input-purpose":
-        bindings["characterization_receipt"] = (["circuit_netlist"], ["raw_macro_liberty_or_db"])
-    if evidence_fault == "missing-drc-purpose":
-        collateral_rows = [row.replace('role = "drc_receipt"', 'role = "unrelated_receipt"') for row in collateral_rows]
     policies = "".join(f'[exports.receipts.{role}]\nauthority = "offline-fixture"\ninputs = {json.dumps(inputs)}\noutputs = {json.dumps(outputs)}\n'
                        for role, (inputs, outputs) in bindings.items())
+    policies += '[exports.receipts.characterization_receipt.output_capabilities]\nraw_macro_liberty_or_db = ["characterized"]\n'
     contract_path.write_text(contract_path.read_text().replace("[[collateral]]", policies + "\n[[collateral]]", 1))
     component.write_text(component.read_text().replace("[sources]", "[sources]\n" + "\n".join(source_rows)))
     contract_path.write_text(contract_path.read_text() + "".join(collateral_rows))
@@ -1352,9 +1349,8 @@ capabilities = {json.dumps(capabilities)}
     return contract_path, design_commit
 
 
-@pytest.mark.parametrize("fault", ["structural-liberty", "wrong-input-purpose", "missing-drc-purpose"])
-def test_native_signoff_requires_domain_evidence(tmp_path: Path, fault: str) -> None:
-    contract_path, _ = _signoff_contract_fixture(tmp_path, evidence_fault=fault)
+def test_native_signoff_requires_owner_declared_characterization(tmp_path: Path) -> None:
+    contract_path, _ = _signoff_contract_fixture(tmp_path, evidence_fault="structural-liberty")
     _commit_release_source(tmp_path, "evidence with incomplete domain coverage")
     project = Project.open(tmp_path)
     contract = load_ip_contract(contract_path, project=project)
@@ -1891,3 +1887,32 @@ def test_native_authored_circuit_release_accepts_ports_without_a_design_generato
     release = ip_release_planning.plan_ip_release_contract(contract, project=project, oa_source_inventory={oa_manifest: oa_plan.source}, oa_plan_inventory={oa_manifest: oa_plan})
     assert release.record["missing_items"] == []
     assert release.payload.exports[0].availability.simulation
+
+
+def test_analog_signoff_uses_owner_views_without_digital_macro_collateral() -> None:
+    from sigilicon.adapters.release.release_semantics import ExportSemantics, ReleaseView
+    from sigilicon.domain.ip_release import ReceiptPolicy
+
+    gds = ReleaseView('layout', 'raw_macro_gds_or_oasis', 'gds', frozenset({'physical_implementation'}),
+                      3, hashlib.sha256(b'gds').hexdigest(), cell='AMP', view='layout')
+    circuit = ReleaseView('circuit', 'circuit_netlist', 'spectre', frozenset({'circuit_simulation'}),
+                          3, hashlib.sha256(b'net').hexdigest(), cell='AMP')
+    receipt_view = ReleaseView('electrical', 'measurement_receipt', 'json', frozenset({'signoff'}),
+                               2, hashlib.sha256(b'{}').hexdigest())
+    semantics = ExportSemantics('amplifier', 'circuit', ('layout', 'circuit', 'electrical'),
+        (gds, circuit, receipt_view), subject={'kind': 'circuit', 'cell': 'AMP'},
+        receipts={'electrical': ReceiptPolicy(('circuit',), (), authority='owner-lab')})
+    receipt = {'schema': 4, 'contract_kind': 'release-receipt', 'name': 'electrical', 'status': 'passed',
+        'source_identity': semantics.source_identity, 'subject': dict(semantics.subject),
+        'execution': {'kind': 'external', 'authority': 'owner-lab', 'reference': 'offline-validator-fixture'},
+        'tool': {'name': 'spectre', 'version': 'fixture'},
+        'inputs': [{'name': 'circuit', 'size': circuit.size, 'sha256': circuit.sha256}], 'outputs': [],
+        'variant': None, 'condition': {}, 'coverage': []}
+    available, problems = semantics.assess('signoff', lambda _: receipt)
+    assert not problems
+    assert available.simulation and available.physical_implementation
+    assert not available.synthesis
+    missing = ExportSemantics('amplifier', 'circuit', (*semantics.required_views, 'pex'),
+        semantics.views, subject=semantics.subject, receipts=semantics.receipts)
+    _, problems = missing.assess('signoff', lambda _: receipt)
+    assert 'amplifier:pex' in problems

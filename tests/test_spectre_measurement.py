@@ -40,7 +40,7 @@ owner = "fixture"
 [operations.measure]
 uses = "cadence.spectre"
 filesets = [{{ component = "fixture", fileset = "measurement" }}]
-config = {{ program = "measure.py", spec = "spec.toml", circuit = "circuit.scs", inputs = {json.dumps(inputs)}, platform = "testpdk", model_set = "nominal", parameters = {{ mode = "{mode}" }}, timeout_seconds = 10 }}
+config = {{ top = "fixture", program = "measure.py", spec = "spec.toml", circuit = "circuit.scs", inputs = {json.dumps(inputs)}, platform = "testpdk", model_set = "nominal", parameters = {{ mode = "{mode}" }}, timeout_seconds = 10 }}
 evidence = {{ role = "regression", level = "l1", scope = "fixture" }}
 ''')
     component = write_component_owner(tmp_path, "fixture", filesets={
@@ -113,3 +113,23 @@ def test_measurement_preserves_nested_model_includes_and_duplicate_basenames(tmp
     result = project.run(project.plan('fixture:measure'))
     assert result.status == 'succeeded'
     assert observed == ['// nmos model\n', '// pmos model\n']
+
+
+def test_owner_measurement_can_supply_a_bound_qualification_claim(tmp_path: Path) -> None:
+    from sigilicon.adapters.release.run_evidence import execution_from_run, validate_execution
+    from sigilicon.execution.artifact_reference import ArtifactReference
+
+    _measurement_project(tmp_path, 'pass')
+    catalog = tmp_path / 'ip/fixture/operations.toml'
+    catalog.write_text(catalog.read_text().replace('role = "regression"', 'role = "qualification"'))
+    project = Project.open(tmp_path)
+    result = project.run(project.plan('fixture:measure'))
+    materialization = RunStore(project.artifact_root).materialization_plan(
+        owner=result.owner, operation=result.operation, run_id=result.run_id)
+    execution = execution_from_run(materialization, ArtifactReference(
+        'run', 'measurement', 'evidence.measurement', path='measurements.json'))
+    claim = validate_execution(execution)
+    assert claim.check == 'measurement'
+    assert claim.subject == 'fixture'
+    assert claim.condition == {'corner': 'tt'}
+    assert claim.inputs and claim.outputs

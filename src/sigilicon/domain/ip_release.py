@@ -121,11 +121,12 @@ class ReceiptPolicy:
     outputs: tuple[str, ...]
     coverage: tuple[str, ...] = ()
     authority: str | None = None
+    output_capabilities: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
     @classmethod
     def from_record(cls, value: object) -> ReceiptPolicy:
         row = _table(value, "receipt policy")
-        _reject_unknown(row, {"inputs", "outputs", "coverage", "authority"}, "receipt policy")
+        _reject_unknown(row, {"inputs", "outputs", "coverage", "authority", "output_capabilities"}, "receipt policy")
         groups = []
         for field in ("inputs", "outputs"):
             items = row.get(field)
@@ -142,11 +143,19 @@ class ReceiptPolicy:
         authority = row.get("authority")
         if authority is not None:
             authority = _string(authority, "external receipt authority")
-        return cls(*groups, tuple(coverage), authority)
+        capabilities = {}
+        for name, values in _table(row.get("output_capabilities", {}), "receipt output capabilities").items():
+            if name not in groups[1] or not isinstance(values, (list, tuple)) or not values or any(
+                not isinstance(value, str) or not value for value in values
+            ) or len(set(values)) != len(values):
+                raise ValueError("receipt output capabilities must qualify declared outputs")
+            capabilities[name] = tuple(values)
+        return cls(*groups, tuple(coverage), authority, MappingProxyType(capabilities))
 
     @property
-    def record(self) -> dict[str, list[str]]:
-        return {"inputs": list(self.inputs), "outputs": list(self.outputs), "coverage": list(self.coverage), **({"authority": self.authority} if self.authority else {})}
+    def record(self) -> dict[str, object]:
+        return {"inputs": list(self.inputs), "outputs": list(self.outputs), "coverage": list(self.coverage), **({"authority": self.authority} if self.authority else {}),
+                "output_capabilities": {name: list(values) for name, values in self.output_capabilities.items()}}
 
 
 def receipt_policies(value: object) -> Mapping[str, ReceiptPolicy]:
