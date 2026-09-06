@@ -3,10 +3,18 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+from conftest import write_test_platform
+from sigilicon.project import Project
+from sigilicon.domain.platform import load_platform
+from sigilicon.virtuoso.models import OaModelInputs
+
 from sigilicon.virtuoso.bridge import decode_skill_output
 
 from sigilicon.virtuoso.attestation import (
     compare_native_setup_attestation_output,
+    attest_native_setup,
 )
 
 
@@ -144,3 +152,17 @@ def test_attestation_diagnostics_identify_the_changed_result_contract_field() ->
     assert result["checks"]["waveform_outputs"] is False
     assert result["diagnostics"]["waveform_outputs"]["missing"] == [["wave", "/OUT"]]
     assert [item["check"] for item in result["mismatches"]] == ["waveform_outputs"]
+
+
+def test_attestation_marks_failed_hdb_cleanup_uncertain(tmp_path, workspace_factory):
+    write_test_platform(tmp_path)
+    models = load_platform(Project.open(tmp_path), "testpdk").simulation.default
+    inputs = OaModelInputs.capture(models, {path: path for path in models.paths})
+    client = SimpleNamespace(execute_skill=lambda *_args, **_kwargs: SimpleNamespace(
+        output="", errors=["HDB preflight close uncertain; preserved exact scope handle"]
+    ))
+    with pytest.raises(RuntimeError, match="HDB preflight close uncertain"):
+        with workspace_factory(client, library="fixture_lib") as operation:
+            attest_native_setup(_spec(), client, operation=operation, model_inputs=inputs)
+    assert operation.uncertain_reason is not None
+    assert "HDB/Maestro cleanup" in operation.uncertain_reason

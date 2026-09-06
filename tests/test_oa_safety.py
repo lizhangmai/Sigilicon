@@ -10,6 +10,7 @@ import pytest
 from sigilicon.virtuoso.locks import (
     exclusive_flow_operation,
     inspect_flow_operation_lock,
+    require_clean_oa_cell,
     require_clean_oa_view,
 )
 from sigilicon.virtuoso.oa import (
@@ -174,6 +175,47 @@ def test_config_lock_is_detected_and_only_current_vts_owner_can_update(
         view,
         allowed_config_owner_pid=os.getpid(),
     ) == ()
+    assert lock.is_file()
+
+
+def test_mutation_scope_rejects_live_config_lock_after_write(
+    monkeypatch, workspace_factory
+) -> None:
+    monkeypatch.setattr(
+        "sigilicon.virtuoso.workspace.virtuoso_pid",
+        lambda _client: os.getpid(),
+    )
+    monkeypatch.setattr(
+        "sigilicon.virtuoso.workspace.require_clean_oa_cell",
+        require_clean_oa_cell,
+    )
+
+    client = object()
+    operation = None
+    lock = None
+    with pytest.raises(RuntimeError, match="OpenAccess lock files exist"):
+        with workspace_factory(client, library="lib") as operation:
+            cell = operation.root / "lib" / "cell"
+            lock = cell / "config" / "expand.cfg.cdslck"
+            lock.parent.mkdir(parents=True)
+            _write_lock(lock, host=socket.gethostname(), pid=os.getpid())
+
+            with operation.mutation_scope(
+                "lib",
+                cells=("cell",),
+                phase="config lock lifecycle",
+                allow_current_config_lock=True,
+            ):
+                operation.require_active_mutation(
+                    client,
+                    "lib",
+                    "cell",
+                    phase="config lock lifecycle write",
+                )
+
+    assert operation is not None
+    assert operation.uncertain_reason is not None
+    assert lock is not None
     assert lock.is_file()
 
 

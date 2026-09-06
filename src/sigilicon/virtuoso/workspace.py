@@ -564,6 +564,20 @@ class OaMutationScope:
     library_identity: tuple[int, int] | None = None
     cell_identities: dict[str, tuple[int, int]] = field(default_factory=dict)
 
+    def _allows_current_config_lock(self, checkpoint: str) -> bool:
+        """Allow this Virtuoso's config lock only while a write is dispatched.
+
+        A config lock may legitimately appear while the SKILL callback is
+        opening and saving the target.  Once that callback returns, however,
+        keeping the lock would mean that HDB cleanup was incomplete.  Do not
+        let the normal ``allow_current_config_lock`` exception turn that
+        incomplete cleanup into a successful mutation.
+        """
+
+        return self.allow_current_config_lock and (
+            checkpoint == "entry" or checkpoint.startswith("dispatch:")
+        )
+
     @staticmethod
     def _bind_directory_identity(
         path: Path,
@@ -655,11 +669,11 @@ class OaMutationScope:
                         require_clean_oa_cell(
                             candidate,
                             quarantine_root=quarantine,
-                            allowed_config_owner_pid=virtuoso_pid(
-                                self.operation.client
-                            )
-                            if self.allow_current_config_lock
-                            else None,
+                            allowed_config_owner_pid=(
+                                virtuoso_pid(self.operation.client)
+                                if self._allows_current_config_lock(checkpoint)
+                                else None
+                            ),
                         )
         else:
             for cell in sorted(self.cells):
@@ -692,7 +706,9 @@ class OaMutationScope:
                     self.operation,
                     self.library,
                     cell,
-                    allow_current_config_lock=self.allow_current_config_lock,
+                    allow_current_config_lock=self._allows_current_config_lock(
+                        checkpoint
+                    ),
                     quarantine_root=quarantine,
                 )
                 identity = self._bind_directory_identity(

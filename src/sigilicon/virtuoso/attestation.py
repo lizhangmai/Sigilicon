@@ -14,6 +14,7 @@ from sigilicon.virtuoso.models import OaModelInputs
 
 from sigilicon.virtuoso.capability import WorkspaceAuthority, require_workspace_capability
 from sigilicon.virtuoso.confirmation import require_bridge_confirmation
+from sigilicon.virtuoso.config import own_synchronous_config_skill
 from sigilicon.virtuoso.oa import (
     audit_cellview_delta_skill,
     own_synchronous_cellview_delta_skill,
@@ -56,7 +57,7 @@ def build_native_setup_attestation_skill(library: str, cell: str) -> str:
 
     lib = _skill_text(library)
     tb = _skill_text(cell)
-    return f'''let((cfg path pc masterGen master instGen inst bind
+    return f'''let((cfg configBag configInBag path pc masterGen master instGen inst bind
   session setupDb tests test toolArgs testSession analyses analysis analysisName
   analysisOptions option envOptions testModel corners corner cornerNames models modelNames model
   outputs output specAttempt overallAttempt beforeSessions afterSessions
@@ -74,6 +75,8 @@ def build_native_setup_attestation_skill(library: str, cell: str) -> str:
   beforeSessions = maeGetSessions()
   attestationText = ""
   cfg = nil
+  configBag = nil
+  configInBag = nil
   path = nil
   pc = nil
   session = nil
@@ -81,6 +84,11 @@ def build_native_setup_attestation_skill(library: str, cell: str) -> str:
     progn(
       cfg = hdbOpen({lib} {tb} "config" "r" "CDBA")
       unless(cfg error("native attestation could not open config"))
+      configBag = hdbCreateConfigBag()
+      unless(configBag error("native attestation could not create HDB config bag"))
+      unless(hdbAddConfigToBag(configBag cfg)
+        error("native attestation could not retain HDB config in bag"))
+      configInBag = t
       attestationText = strcat(attestationText sprintf(nil "CONFIG|%s|%s|%s|%s|%s|%s\\n"
         funcall(flowText hdbGetLibName(cfg))
         funcall(flowText hdbGetCellName(cfg))
@@ -121,7 +129,6 @@ def build_native_setup_attestation_skill(library: str, cell: str) -> str:
           master = pcdbNextInstMaster(masterGen)))
       when(pc pcdbClose(pc) pc = nil)
       when(path hdbDestroyPathVector(path) path = nil)
-      when(cfg hdbClose(cfg) cfg = nil)
 
       session = maeOpenSetup({lib} {tb} "maestro"
         ?application "Explorer" ?mode "r")
@@ -281,7 +288,17 @@ def build_native_setup_attestation_skill(library: str, cell: str) -> str:
     progn(
       when(pc pcdbClose(pc))
       when(path hdbDestroyPathVector(path))
-      when(cfg hdbClose(cfg))
+      when(configBag
+        unless(hdbCloseConfigsInBag(configBag)
+          error("native attestation HDB config bag cleanup failed"))
+        configBag = nil
+        when(configInBag
+          cfg = nil
+          configInBag = nil))
+      when(cfg
+        unless(hdbClose(cfg)
+          error("native attestation HDB config cleanup failed"))
+        cfg = nil)
       when(session
         errset(maeCloseSession(?session session ?forceClose nil) t))
     )
@@ -1078,7 +1095,11 @@ def attest_native_setup(
         )
     source = audit_cellview_delta_skill(
         own_synchronous_cellview_delta_skill(
-            build_native_setup_attestation_skill(spec.library, spec.cell),
+            own_synchronous_config_skill(
+                build_native_setup_attestation_skill(spec.library, spec.cell),
+                library=spec.library,
+                cell=spec.cell,
+            ),
             label=f"native setup semantic attestation {spec.library}/{spec.cell}",
         ),
         label=f"native setup semantic attestation {spec.library}/{spec.cell}",
@@ -1089,6 +1110,9 @@ def attest_native_setup(
         lambda: client.execute_skill(source, timeout=timeout),
     )
     if result.errors:
+        operation.mark_uncertain(
+            f"native setup query did not confirm HDB/Maestro cleanup: {result.errors[0]}"
+        )
         raise RuntimeError(result.errors[0])
     comparison = compare_native_setup_attestation_output(
         spec,

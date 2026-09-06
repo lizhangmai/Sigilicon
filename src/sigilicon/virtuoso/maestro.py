@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import re
 
-from sigilicon.virtuoso.oa import skill_quote
+from sigilicon.virtuoso.config import own_synchronous_config_skill
+from sigilicon.virtuoso.oa import own_synchronous_cellview_delta_skill, skill_quote
 
 
 def build_owned_maestro_setup_transaction_skill(
@@ -42,29 +43,7 @@ def build_owned_maestro_setup_transaction_skill(
         error(sprintf(nil
           "native Maestro setup test identity mismatch: %L" flowFinalTests)))
 '''
-    return f'''let((flowBeforeViews flowAfterViews flowOwnedViews
-  flowCurrentViews flowWindows flowVisible flowRecord
-  flowCleanup flowCleanupFailures flowSessions flowComplete
-  flowOpenAttempt flowOpenAttempted flowOwnershipComplete
-  flowTargetConflicts flowExistingTests flowExistingTest flowFinalTests
-  session toolSession sessionType ok)
-  when(boundp('flowMaestroOwnedScopes) && flowMaestroOwnedScopes
-    error("another owned Maestro view scope is still active"))
-  flowBeforeViews = dbGetOpenCellViews()
-  flowTargetConflicts = setof(flowCv flowBeforeViews
-    equal(flowCv~>libName {skill_quote(lib)}) &&
-    equal(flowCv~>cellName {skill_quote(cell)}))
-  when(flowTargetConflicts
-    error(sprintf(nil
-      "Maestro setup target became busy before atomic dispatch: %L"
-      flowTargetConflicts)))
-  flowCleanupFailures = nil
-  flowComplete = nil
-  flowOpenAttempted = nil
-  flowOwnershipComplete = nil
-  flowRecord = nil
-  session = nil
-  unwindProtect(
+    transaction = f'''unwindProtect(
     progn(
       flowOpenAttempted = t
       flowOpenAttempt = errset(
@@ -142,25 +121,47 @@ def build_owned_maestro_setup_transaction_skill(
                   else flowCleanupFailures = cons(
                     "owned Maestro session close failed"
                     flowCleanupFailures)))
-              unless(flowCleanupFailures
-                flowCurrentViews = dbGetOpenCellViews()
-                foreach(flowOwnedCv flowOwnedViews
-                  when(member(flowOwnedCv flowCurrentViews)
-                    flowCleanupFailures = cons(
-                      sprintf(nil
-                        "exact owned identity still has unproven references %L"
-                        flowOwnedCv)
-                      flowCleanupFailures))))
               unless(flowCleanupFailures flowComplete = t)))
-      when(flowComplete
-        flowMaestroOwnedScopes = remove(
-          flowRecord flowMaestroOwnedScopes))
       when(flowCleanupFailures
         error(sprintf(nil
           "Maestro setup cleanup incomplete/uncertain; preserved scope: %L"
           reverse(flowCleanupFailures))))
     )
-  )
+  )'''
+    owned_transaction = own_synchronous_cellview_delta_skill(
+        own_synchronous_config_skill(transaction, library=lib, cell=cell),
+        label=f"Maestro setup {lib}/{cell}",
+    )
+    return f'''let((flowBeforeViews flowAfterViews flowOwnedViews
+  flowCurrentViews flowWindows flowVisible flowRecord
+  flowCleanup flowCleanupFailures flowSessions flowComplete
+  flowOpenAttempt flowOpenAttempted flowOwnershipComplete
+  flowTargetConflicts flowExistingTests flowExistingTest flowFinalTests
+  session toolSession sessionType ok)
+  when(boundp('flowMaestroOwnedScopes) && flowMaestroOwnedScopes
+    error("another owned Maestro view scope is still active"))
+  flowBeforeViews = dbGetOpenCellViews()
+  flowTargetConflicts = setof(flowCv flowBeforeViews
+    equal(flowCv~>libName {skill_quote(lib)}) &&
+    equal(flowCv~>cellName {skill_quote(cell)}))
+  when(flowTargetConflicts
+    error(sprintf(nil
+      "Maestro setup target became busy before atomic dispatch: %L"
+      flowTargetConflicts)))
+  flowCleanupFailures = nil
+  flowComplete = nil
+  flowOpenAttempted = nil
+  flowOwnershipComplete = nil
+  flowRecord = nil
+  session = nil
+  {owned_transaction}
+  flowCurrentViews = dbGetOpenCellViews()
+  foreach(flowOwnedCv flowOwnedViews
+    when(member(flowOwnedCv flowCurrentViews)
+      error(sprintf(nil
+        "exact owned identity still has unproven references %L" flowOwnedCv))))
+  when(flowComplete
+    flowMaestroOwnedScopes = remove(flowRecord flowMaestroOwnedScopes))
   t
 )'''
 
