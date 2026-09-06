@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from collections.abc import Mapping
-import os
 from typing import Any
 
 from sigilicon.domain.netlist import (
@@ -14,9 +12,7 @@ from sigilicon.domain.netlist import (
     parse_spectre_pwl_sources,
 )
 from sigilicon.domain.oa_simulation import OASimulationSpec
-from sigilicon.domain.platform import SimulationModelSet
 from sigilicon.domain.source import TextSourceSnapshot
-from sigilicon.execution._workspace import ExecutionWorkspace
 from sigilicon.virtuoso.ade import (
     create_oa_native_config_view,
     create_oa_native_maestro_view,
@@ -27,32 +23,11 @@ from sigilicon.virtuoso.oa import cell_exists, cell_view_exists, delete_cell
 from sigilicon.virtuoso.schematic import set_instance_parameters
 from sigilicon.virtuoso.text_view import import_oa_text_view
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
+from sigilicon.virtuoso.models import OaModelInputs
 from sigilicon.adapters.cadence.hierarchy_import import plan_hierarchy
 
 
 _TESTBENCH_VIEWS = ("netlist", "schematic", "config", "measurement", "maestro")
-
-
-def materialize_oa_models(
-    model_set: SimulationModelSet,
-    sealed_paths: Mapping[Path, Path],
-    artifacts: ExecutionWorkspace,
-) -> Path:
-    """Keep native model names and relative includes in persistent run inputs."""
-
-    paths = model_set.paths
-    missing = set(paths) - sealed_paths.keys()
-    if missing:
-        raise ValueError(f"OA models are outside the sealed input closure: {sorted(missing)}")
-    root = Path(os.path.commonpath([path.parent for path in paths]))
-    staged: dict[Path, Path] = {}
-    for path in paths:
-        relative = path.relative_to(root)
-        artifacts.directory("inputs", "models", *relative.parent.parts)
-        staged[path] = artifacts.copy_file(
-            "inputs", ("models", *relative.parts), sealed_paths[path],
-        )
-    return staged[model_set.file.require_path()]
 
 
 def _testbench_pdk(spec: OASimulationSpec) -> Any:
@@ -97,7 +72,7 @@ def sync_oa_testbench(
     canonical_source: Path | NetlistSnapshot,
     client: Any,
     *,
-    model_file: Path,
+    model_inputs: OaModelInputs,
     resources: Any,
     overwrite: bool = False,
     timeout: int = 300,
@@ -117,7 +92,7 @@ def sync_oa_testbench(
             spec,
             canonical_source,
             client,
-            model_file=model_file,
+            model_inputs=model_inputs,
             resources=resources,
             overwrite=overwrite,
             timeout=timeout,
@@ -132,7 +107,7 @@ def _sync_oa_testbench_impl(
     canonical_source: Path | NetlistSnapshot,
     client: Any,
     *,
-    model_file: Path,
+    model_inputs: OaModelInputs,
     resources: Any,
     overwrite: bool = False,
     timeout: int = 300,
@@ -189,6 +164,7 @@ def _sync_oa_testbench_impl(
             raise RuntimeError(
                 "testbench library does not resolve inside the project workspace"
             )
+        model_file = model_inputs.install(expected_library)
         if cell_exists(client, spec.library, spec.cell):
             if not overwrite:
                 raise RuntimeError(

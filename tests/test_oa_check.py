@@ -19,7 +19,6 @@ from sigilicon.adapters.cadence.oa_library import (
     plan_oa_library_rebuild,
 )
 from sigilicon.adapters.cadence.oa_library_execution import rebuild_oa_library
-from sigilicon.adapters.cadence.oa_testbench import materialize_oa_models
 from sigilicon.domain.platform import load_platform
 from sigilicon.domain.oa_library import OACellViewSource
 from sigilicon.domain.source import load_text_source_snapshot
@@ -27,33 +26,6 @@ from sigilicon.adapters.cadence.oa_library_execution import check_oa_parity
 
 
 OA_RESOURCES = Resources()
-
-
-def test_native_oa_models_keep_sealed_bytes_names_and_relative_includes(tmp_path: Path) -> None:
-    write_test_platform(tmp_path)
-    platform_root = tmp_path / "configs/platform/testpdk"
-    contract = platform_root / "simulation.toml"
-    contract.write_text(contract.read_text() + 'support_files = ["devices/core.scs"]\n')
-    top = platform_root / "model.scs"
-    top.write_text('include "devices/core.scs"\n')
-    support = platform_root / "devices/core.scs"
-    support.parent.mkdir()
-    support.write_text("// selected model bytes\n")
-    model_set = load_platform(Project.open(tmp_path), "testpdk").simulation.default
-    sealed = tmp_path / "sealed"
-    sealed.mkdir()
-    paths = {}
-    for i, source in enumerate(model_set.paths):
-        captured = sealed / f"resource-{i}"
-        captured.write_bytes(source.read_bytes())
-        paths[source] = captured
-        source.write_text("changed after planning\n")
-
-    staged = materialize_oa_models(model_set, paths, managed_execution_workspace(tmp_path))
-
-    assert staged.name == "model.scs"
-    assert staged.read_text() == 'include "devices/core.scs"\n'
-    assert (staged.parent / "devices/core.scs").read_text() == "// selected model bytes\n"
 
 
 def test_read_only_check_workspace_does_not_create_flow_lock(

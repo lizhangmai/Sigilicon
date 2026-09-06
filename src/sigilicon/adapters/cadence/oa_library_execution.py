@@ -25,7 +25,8 @@ from sigilicon.adapters.cadence.oa_library import (
     OALibraryRebuildPlan,
     TestbenchRebuildStep,
 )
-from sigilicon.adapters.cadence.oa_testbench import materialize_oa_models, sync_oa_testbench
+from sigilicon.adapters.cadence.oa_testbench import sync_oa_testbench
+from sigilicon.virtuoso.models import OaModelInputs
 from sigilicon.adapters.cadence.oa_text_view import sync_oa_text_view
 
 
@@ -60,6 +61,7 @@ def attest_oa_testbench(
     step: TestbenchRebuildStep,
     client: Any,
     *,
+    model_inputs: OaModelInputs,
     timeout: int = 300,
     operation_id: str | None = None,
     bind_operation: Any | None = None,
@@ -98,6 +100,7 @@ def attest_oa_testbench(
             spec,
             client,
             operation=operation,
+            model_inputs=model_inputs,
             timeout=min(timeout, 300),
         )
     return {
@@ -646,16 +649,15 @@ def rebuild_oa_library(
             f"testbench {index}/{len(selected_testbenches)}: rebuild "
             f"{plan.library}/{step.cell}"
         )
-        model_file = materialize_oa_models(
+        model_inputs = OaModelInputs.capture(
             step.simulation.native_setup.pdk.simulation.default,
             {**source_paths, **resource_paths},
-            artifacts.scoped(f"testbench-{step.cell}"),
         )
         sync_oa_testbench(
             step.simulation,
             step.source_snapshot,
             client,
-            model_file=model_file,
+            model_inputs=model_inputs,
             resources=resources,
             overwrite=True,
             timeout=timeout,

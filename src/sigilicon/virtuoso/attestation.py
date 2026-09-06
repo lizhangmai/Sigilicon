@@ -10,6 +10,7 @@ import re
 from typing import Any
 
 from sigilicon.virtuoso.bridge import decode_skill_output
+from sigilicon.virtuoso.models import OaModelInputs
 
 from sigilicon.virtuoso.capability import WorkspaceAuthority, require_workspace_capability
 from sigilicon.virtuoso.confirmation import require_bridge_confirmation
@@ -57,7 +58,7 @@ def build_native_setup_attestation_skill(library: str, cell: str) -> str:
     tb = _skill_text(cell)
     return f'''let((cfg path pc masterGen master instGen inst bind
   session setupDb tests test toolArgs testSession analyses analysis analysisName
-  analysisOptions option envOptions corners corner cornerNames models modelNames model
+  analysisOptions option envOptions testModel corners corner cornerNames models modelNames model
   outputs output specAttempt overallAttempt beforeSessions afterSessions
   variables varNames varName varAttempt varHandle varEnabled testVarEnabled
   currentRunMode runOptions optionName optionHandle sweepsEnabled allVarsDisabled
@@ -217,6 +218,11 @@ def build_native_setup_attestation_skill(library: str, cell: str) -> str:
           )
         )
         envOptions = maeGetEnvOption(test ?includeEmpty t ?session session)
+        foreach(testModel funcall(flowPair "modelFiles" envOptions)
+          attestationText = strcat(attestationText
+            sprintf(nil "TEST_MODEL|%s|%s|%s\\n" funcall(flowText test)
+              funcall(flowText car(testModel))
+              funcall(flowText cadr(testModel)))))
         foreach(option envOptions
           when(member(car(option) list("modelFiles" "amsIEsList"
               "useIeSetup" "ieUseUcmAsDefault"))
@@ -401,6 +407,7 @@ def _parse_rows(output: str) -> dict[str, Any]:
         "environment": [],
         "outputs": [],
         "models": [],
+        "test_models": [],
         "spec_status": [],
         "overall_spec_status": [],
         "variables": [],
@@ -424,6 +431,7 @@ def _parse_rows(output: str) -> dict[str, Any]:
             "ENV",
             "OUTPUT",
             "MODEL",
+            "TEST_MODEL",
             "SPEC_OVERALL",
             "VARIABLE",
             "VARIABLE_ENABLED",
@@ -513,6 +521,10 @@ def _parse_rows(output: str) -> dict[str, Any]:
                     "name": fields[2],
                     "status": fields[9],
                 }
+            )
+        elif kind == "TEST_MODEL" and len(fields) == 4:
+            parsed["test_models"].append(
+                {"test": fields[1], "file": fields[2], "section": fields[3]}
             )
         elif kind == "MODEL" and len(fields) >= 5:
             parsed["models"].append(
@@ -699,7 +711,8 @@ def compare_native_setup_attestation(
         )
     )
     actual_models = {
-        (Path(str(row.get("file"))).name, row.get("section")) for row in models
+        (Path(str(row.get("file"))).name, row.get("section"))
+        for row in [*models, *attestation.get("test_models", [])]
     }
     actual_corners = {str(row.get("corner")) for row in models}
     actual_simulators = sorted({str(row.get("simulator")) for row in tests})
@@ -757,7 +770,7 @@ def compare_native_setup_attestation(
         "corner": bool(models)
         and (not contract or set(contract.corners).issubset({row.get("corner") for row in models})),
         "model_file_section": bool(actual_models)
-        and expected_models.issubset(actual_models),
+        and expected_models == actual_models,
         "ams_interface": spec.simulator != "ams"
         or any(
             row.get("name") == "amsIEsList" and row.get("value") not in {"", "nil"}
@@ -1049,6 +1062,7 @@ def attest_native_setup(
     client: Any,
     *,
     operation: Any,
+    model_inputs: OaModelInputs,
     timeout: int = 300,
 ) -> dict[str, Any]:
     """Query and compare one existing config/Maestro pair without mutation."""
@@ -1080,6 +1094,10 @@ def attest_native_setup(
         spec,
         decode_skill_output(result.output or ""),
     )
+    library = operation.require_project_library_target(client, spec.library)
+    observed = comparison["observations"]
+    with model_inputs.verify(library, [*observed["models"], *observed["test_models"]]) as proof:
+        comparison["model_inputs"] = proof
     payload = {
         "schema": ATTESTATION_SCHEMA,
         "kind": "cadence-native-setup-semantic-attestation",

@@ -107,6 +107,18 @@ def test_attestation_uses_explicit_nondefault_setup_model_identity() -> None:
     ]
 
 
+def test_attestation_rejects_unexpected_test_environment_model_section() -> None:
+    fixture = Path(__file__).parent / "fixtures" / "oa_native_attestation_output.txt"
+    transcript = decode_skill_output(fixture.read_text(encoding="utf-8"))
+    result = compare_native_setup_attestation_output(
+        _spec(), transcript + "\nTEST_MODEL|tran_main|/pdk/toplevel.scs|top_ff\n"
+    )
+
+    assert result["passed"] is False
+    assert result["checks"]["model_file_section"] is False
+    assert result["observations"]["test_models"][0]["section"] == "top_ff"
+
+
 def test_attestation_diagnostics_identify_the_changed_result_contract_field() -> None:
     result = compare_native_setup_attestation_output(
         _spec(),

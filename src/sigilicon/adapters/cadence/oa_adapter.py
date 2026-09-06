@@ -41,6 +41,7 @@ from sigilicon.adapters.cadence._common import (
     _validate_oa_plan_sources,
 )
 from sigilicon.adapters.cadence.oa_library import OALibraryRebuildPlan
+from sigilicon.virtuoso.models import OaModelInputs
 
 
 @dataclass(frozen=True)
@@ -196,6 +197,10 @@ class NativeOaAdapter:
                     operation_id=context.operation_id,
                     bind_operation=context.register_mutation,
                     resources=context.runtime,
+                    model_inputs=OaModelInputs.capture(
+                        selected.simulation.native_setup.pdk.simulation.default,
+                        {**action.inputs.source_paths(context), **action.inputs.resource_paths(context)},
+                    ),
                     record_uncertainty=uncertainty.append,
                     timeout=action.timeout_seconds,
                 )
@@ -602,6 +607,10 @@ class OaAttestAdapter:
             action.plan,
             matches[0],
             get_client(context.runtime),
+            model_inputs=OaModelInputs.capture(
+                matches[0].simulation.native_setup.pdk.simulation.default,
+                {**action.inputs.source_paths(context), **action.inputs.resource_paths(context)},
+            ),
             timeout=action.timeout_seconds,
             operation_id=context.operation_id,
             bind_operation=context.register_mutation,

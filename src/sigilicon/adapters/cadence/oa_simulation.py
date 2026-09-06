@@ -13,6 +13,7 @@ from sigilicon.domain.native_diagnostics import NativeDiagnosticReport
 from sigilicon.domain.netlist import NetlistSnapshot
 from sigilicon.domain.source import TextSourceSnapshot
 from sigilicon.virtuoso.attestation import attest_native_setup
+from sigilicon.virtuoso.models import OaModelInputs
 from sigilicon.virtuoso.maestro_batch import run_isolated_maestro
 from sigilicon.virtuoso.maestro_rdb import parse_native_maestro_rdb_export
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
@@ -233,6 +234,7 @@ def _run_native_oa_maestro_testbench_impl(
     operation_id: str,
     bind_operation: Callable[[Any], None],
     resources: Any,
+    model_inputs: OaModelInputs,
     record_uncertainty: Callable[[str], None] | None = None,
 ) -> OAMaestroExecutionResult:
     """Run one source-owned setup and consume Cadence's read-only RDB API."""
@@ -280,6 +282,7 @@ def _run_native_oa_maestro_testbench_impl(
             spec,
             client,
             operation=operation,
+            model_inputs=model_inputs,
             timeout=min(timeout, 300),
         )
         artifacts.write_json(
@@ -302,27 +305,32 @@ def _run_native_oa_maestro_testbench_impl(
             )
             return True
 
-        def publish_worker_logs(log_text: str, stdout_text: str) -> None:
+        def publish_logs(log_text: str, stdout_text: str) -> None:
             artifacts.write_text("logs", ("virtuoso-worker.log",), log_text)
             artifacts.write_text(
                 "logs", ("virtuoso-worker.stdout.log",), stdout_text
             )
 
-        result = run_isolated_maestro(
-            client,
-            library=plan.library,
-            cell=step.cell,
-            variables={},
-            work_dir=artifacts.directory("work"),
-            worker_log=artifacts.path("work", "virtuoso.log"),
-            nonce=nonce,
-            timeout=timeout,
-            operation=operation,
-            resources=resources,
-            result_completion_probe=complete_results,
-            rdb_export=rdb_export,
-            publish_logs=publish_worker_logs,
-        )
+        with model_inputs.verify(
+            operation.require_project_library_target(client, plan.library),
+            [*setup_attestation["observations"]["models"],
+             *setup_attestation["observations"]["test_models"]],
+        ):
+            result = run_isolated_maestro(
+                client,
+                library=plan.library,
+                cell=step.cell,
+                variables={},
+                work_dir=artifacts.directory("work"),
+                worker_log=artifacts.path("work", "virtuoso.log"),
+                nonce=nonce,
+                timeout=timeout,
+                operation=operation,
+                resources=resources,
+                result_completion_probe=complete_results,
+                rdb_export=rdb_export,
+                publish_logs=publish_logs,
+            )
         if parsed_results is None:
             raise RuntimeError("Maestro completed without an official RDB result")
         final_netlist = _elaborated_netlist(
@@ -521,6 +529,7 @@ def execute_oa_maestro_testbench(
     operation_id: str,
     bind_operation: Callable[[Any], None],
     resources: Any,
+    model_inputs: OaModelInputs,
     record_uncertainty: Callable[[str], None] | None = None,
     before_adapter: Callable[[], None] | None = None,
     timeout: int = 600,
@@ -545,5 +554,6 @@ def execute_oa_maestro_testbench(
         operation_id=operation_id,
         bind_operation=bind_operation,
         resources=resources,
+        model_inputs=model_inputs,
         record_uncertainty=record_uncertainty,
     )
