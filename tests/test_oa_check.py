@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from dataclasses import replace
+from contextlib import nullcontext
 import sys
 from types import SimpleNamespace
 
@@ -15,11 +16,13 @@ from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 from sigilicon.adapters.cadence.oa_check import check_oa_library
 from sigilicon.adapters.cadence.oa_library import (
     OALibraryRebuildPlan,
+    TestbenchRebuildStep as _TestbenchRebuildStep,
     ViewRebuildStep,
     plan_oa_library_rebuild,
 )
 from sigilicon.adapters.cadence.oa_library_execution import rebuild_oa_library
 from sigilicon.domain.platform import load_platform
+from sigilicon.domain.netlist import load_netlist_snapshot
 from sigilicon.domain.oa_library import OACellViewSource
 from sigilicon.domain.source import load_text_source_snapshot
 from sigilicon.adapters.cadence.oa_library_execution import check_oa_parity
@@ -210,6 +213,247 @@ def test_oa_parity_checks_native_master_content_and_persistence(
     assert result["passed"] is (state == "local")
     if state != "local":
         assert "MODEL/spectre" in result["stale_or_modified_views"]
+
+
+@pytest.mark.parametrize(
+    ("live_vdd_net", "live_model_vdd"),
+    (
+        ("VDD", "VDD"),
+        ("STALE_VDD", "VDD"),
+        ("VDD", "STALE_VDD"),
+    ),
+)
+def test_oa_parity_checks_testbench_schematic_connectivity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    live_vdd_net: str,
+    live_model_vdd: str,
+) -> None:
+    plan = _typed_oa_plan(tmp_path)
+    source = tmp_path / "ip/fixture/cells/TB/testbench.scs"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "subckt TB IN OUT VDD VSS\n"
+        "VDD_SRC (VDD 0) vsource dc=1\n"
+        "XMODEL (IN OUT VDD VSS) MODEL\n"
+        "ends TB\n",
+        encoding="utf-8",
+    )
+    step = _TestbenchRebuildStep(
+        cell="TB",
+        source_snapshot=load_netlist_snapshot(source),
+        dependencies=(),
+        simulation=SimpleNamespace(),
+    )
+    plan = replace(
+        plan,
+        cells=("TB",),
+        designs=(),
+        layouts=(),
+        views=(),
+        testbenches=(step,),
+        expected_views={
+            "TB": ("netlist", "schematic", "config", "measurement", "maestro")
+        },
+    )
+    monkeypatch.setattr(
+        "sigilicon.adapters.cadence.oa_library_execution.list_cells",
+        lambda *args, **kwargs: {
+            "cells": [
+                {
+                    "name": "TB",
+                    "views": [
+                        "netlist",
+                        "schematic",
+                        "config",
+                        "measurement",
+                        "maestro",
+                    ],
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        "sigilicon.adapters.cadence.oa_testbench_schematic.read_schematic",
+        lambda *args, **kwargs: {
+            "instances": [
+                {
+                    "name": "gnd0",
+                    "cell": "gnd",
+                    "terms": {"GND": "gnd!"},
+                    "params": {},
+                },
+                {
+                    "name": "VDD_SRC",
+                    "cell": "vsource",
+                    "terms": {"PLUS": live_vdd_net, "MINUS": "0"},
+                    "params": {"vdc": "1", "srcType": "dc"},
+                },
+                {
+                    "name": "XMODEL",
+                    "cell": "MODEL",
+                    "terms": {
+                        "IN": "IN",
+                        "OUT": "OUT",
+                        "VDD": live_model_vdd,
+                        "VSS": "VSS",
+                    },
+                    "params": {},
+                },
+            ],
+            "pins": {"IN": {}, "OUT": {}, "VDD": {}, "VSS": {}},
+        },
+    )
+    operation = SimpleNamespace(
+        view_lease=lambda *args, **kwargs: nullcontext(),
+    )
+
+    result = check_oa_parity(plan, object(), operation=operation)
+
+    expected_passed = live_vdd_net == "VDD" and live_model_vdd == "VDD"
+    assert result["passed"] is expected_passed
+    assert result["testbench_schematic"]["TB"]["passed"] is expected_passed
+    if not expected_passed:
+        assert "TB/schematic+netlist" in result["stale_or_modified_views"]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_passed"),
+    (
+        ("none", True),
+        ("dc-value", False),
+        ("pwl-value", False),
+        ("pwl-time", False),
+        ("terminal-order", False),
+        ("dc-type", False),
+        ("voltage-gain", False),
+        ("transconductance", False),
+        ("pdk-terminal-order", False),
+    ),
+)
+def test_oa_parity_checks_testbench_source_parameters_and_terminal_order(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mutation: str,
+    expected_passed: bool,
+) -> None:
+    plan = _typed_oa_plan(tmp_path)
+    source = tmp_path / "ip/fixture/cells/TB/testbench.scs"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "subckt TB IN VDD\n"
+        "VDD_SRC (VDD 0) vsource dc=0.9\n"
+        "VSTEP (IN 0) vsource type=pwl wave=[0 0 1n 0.9]\n"
+        "EGAIN (IN 0 VDD 0) vcvs gain=2\n"
+        "GGAIN (IN 0 VDD 0) vccs gm=1m\n"
+        "CAP (IN 0) pdk_cap c=1f\n"
+        "ends TB\n",
+        encoding="utf-8",
+    )
+    step = _TestbenchRebuildStep(
+        cell="TB",
+        source_snapshot=load_netlist_snapshot(source),
+        dependencies=(),
+        simulation=SimpleNamespace(),
+    )
+    plan = replace(
+        plan,
+        cells=("TB",),
+        designs=(),
+        layouts=(),
+        views=(),
+        testbenches=(step,),
+        platform_documents={
+            source.parent / "pdk.toml": {"primitive_subcircuits": {"pdk_cap": ("TOP", "BOTTOM")}}
+        },
+        expected_views={
+            "TB": ("netlist", "schematic", "config", "measurement", "maestro")
+        },
+    )
+    monkeypatch.setattr(
+        "sigilicon.adapters.cadence.oa_library_execution.list_cells",
+        lambda *args, **kwargs: {
+            "cells": [
+                {
+                    "name": "TB",
+                    "views": [
+                        "netlist",
+                        "schematic",
+                        "config",
+                        "measurement",
+                        "maestro",
+                    ],
+                }
+            ]
+        },
+    )
+    vdd_terms = {"PLUS": "VDD", "MINUS": "0"}
+    if mutation == "terminal-order":
+        vdd_terms = {"PLUS": "0", "MINUS": "VDD"}
+    vdd_params = {
+        "vdc": "900m" if mutation != "dc-value" else "800m",
+        "srcType": "dc" if mutation != "dc-type" else "pulse",
+    }
+    pwl_params = {
+        "srcType": "pwl",
+        "pwlEntryMethod": "Voltage/Time points",
+        "tvpairs": "2",
+        "t1": "0",
+        "v1": "0",
+        "t2": "1n" if mutation != "pwl-time" else "2n",
+        "v2": "900m" if mutation != "pwl-value" else "800m",
+    }
+    monkeypatch.setattr(
+        "sigilicon.adapters.cadence.oa_testbench_schematic.read_schematic",
+        lambda *args, **kwargs: {
+            "instances": [
+                {
+                    "name": "VDD_SRC",
+                    "cell": "vsource",
+                    "terms": vdd_terms,
+                    "params": vdd_params,
+                },
+                {
+                    "name": "VSTEP",
+                    "cell": "vsource",
+                    "terms": {"PLUS": "IN", "MINUS": "0"},
+                    "params": pwl_params,
+                },
+                {
+                    "name": "EGAIN", "cell": "vcvs",
+                    "terms": {"PLUS": "IN", "MINUS": "0", "NC+": "VDD", "NC-": "0"},
+                    "params": {"egain": "2" if mutation != "voltage-gain" else "3"},
+                },
+                {
+                    "name": "GGAIN", "cell": "vccs",
+                    "terms": {"PLUS": "IN", "MINUS": "0", "NC+": "VDD", "NC-": "0"},
+                    "params": {"ggain": "0.001" if mutation != "transconductance" else "0.002"},
+                },
+                {
+                    "name": "CAP", "cell": "pdk_cap",
+                    "terms": (
+                        {"TOP": "IN", "BOTTOM": "0"} if mutation != "pdk-terminal-order"
+                        else {"TOP": "0", "BOTTOM": "IN"}
+                    ),
+                    "params": {"c": "1f"},
+                },
+            ],
+            "pins": {"IN": {}, "VDD": {}},
+        },
+    )
+    operation = SimpleNamespace(
+        view_lease=lambda *args, **kwargs: nullcontext(),
+    )
+
+    result = check_oa_parity(plan, object(), operation=operation)
+
+    assert result["passed"] is expected_passed
+    report = result["testbench_schematic"]["TB"]
+    assert report["passed"] is expected_passed
+    if mutation in {"terminal-order", "pdk-terminal-order"}:
+        assert report["terminal_mismatches"]
+    elif mutation != "none":
+        assert report["parameter_mismatches"]
 
 
 @pytest.mark.parametrize(

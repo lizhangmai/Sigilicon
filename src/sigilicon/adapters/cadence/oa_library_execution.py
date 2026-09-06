@@ -25,6 +25,7 @@ from sigilicon.adapters.cadence.oa_library import (
     OALibraryRebuildPlan,
     TestbenchRebuildStep,
 )
+from sigilicon.adapters.cadence.oa_testbench_schematic import check_testbench_schematic_parity
 from sigilicon.adapters.cadence.oa_testbench import sync_oa_testbench
 from sigilicon.virtuoso.models import OaModelInputs
 from sigilicon.adapters.cadence.oa_text_view import sync_oa_text_view
@@ -145,6 +146,7 @@ def _testbench_dependency_cells(
     return tuple(cell for cell in plan.cells if cell in selected)
 
 
+
 def check_oa_parity(
     plan: OALibraryRebuildPlan,
     client: Any,
@@ -218,6 +220,7 @@ def check_oa_parity(
     design_reports: list[dict[str, object]] = []
     layout_reports: list[dict[str, object]] = []
     text_view_reports: list[dict[str, object]] = []
+    testbench_schematic_reports: dict[str, dict[str, object]] = {}
     for step in plan.views:
         if step.native_snapshot is None or step.cell not in scoped_cell_set:
             continue
@@ -336,6 +339,32 @@ def check_oa_parity(
                 "view": step.view.name,
             }
         )
+    for step in plan.testbenches:
+        if testbench is not None and step.cell != testbench:
+            continue
+        if step.cell not in scoped_actual:
+            continue
+        try:
+            report = check_testbench_schematic_parity(
+                plan,
+                step,
+                client,
+                timeout=timeout,
+                acquire_flow_lock=acquire_flow_lock,
+                record_incident=record_incident,
+                operation_id=operation_id,
+                bind_operation=bind_operation,
+                operation=operation,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            stale_or_modified[f"{step.cell}/schematic+netlist"] = str(exc)
+            continue
+        testbench_schematic_reports[step.cell] = report
+        if report["passed"] is not True:
+            stale_or_modified[f"{step.cell}/schematic+netlist"] = (
+                "live OA schematic differs from the canonical testbench netlist: "
+                f"{report}"
+            )
     passed = not any(
         (
             missing_cells,
@@ -361,6 +390,7 @@ def check_oa_parity(
         "layouts": layout_reports,
         "testbenches": testbench_reports,
         "text_views": text_view_reports,
+        "testbench_schematic": testbench_schematic_reports,
     }
 
 

@@ -81,3 +81,22 @@ def test_readonly_schematic_source_closes_its_handle(
                 include_positions=False,
                 operation=operation,
             )
+
+
+def test_schematic_parameters_keep_saved_precision_and_cdf_defaults(
+    workspace_factory,
+) -> None:
+    client = RecordingClient((
+        'INSTANCES\nINST|GINT|analogLib|vccs\n'
+        'PARAM|ggain|"-370.37037037n"\nPARAM|csType|"linear"\n'
+        'NETS\nPINS\nEND\n',
+        'GINT|ggain|"-3.703703703703704e-7"\n'
+        'GINT|unrelatedMetadata|"hidden"\n',
+    ))
+    with workspace_factory(client, library="lib") as operation:
+        schematic = read_schematic(
+            client, "lib", "cell", include_positions=False, operation=operation
+        )
+
+    parameters = schematic["instances"][0]["params"]
+    assert parameters == {"ggain": "-3.703703703703704e-7", "csType": "linear"}

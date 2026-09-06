@@ -9,7 +9,6 @@ from sigilicon.domain.netlist import (
     NetlistSnapshot,
     load_netlist_snapshot,
     materialize_netlist_snapshot,
-    parse_spectre_pwl_sources,
 )
 from sigilicon.domain.oa_simulation import OASimulationSpec
 from sigilicon.domain.source import TextSourceSnapshot
@@ -20,7 +19,7 @@ from sigilicon.virtuoso.ade import (
 from sigilicon.virtuoso.disposable import DisposableWork
 from sigilicon.virtuoso.importer import check_and_save_schematic, import_schematic
 from sigilicon.virtuoso.oa import cell_exists, cell_view_exists, delete_cell
-from sigilicon.virtuoso.schematic import set_instance_parameters
+from sigilicon.adapters.cadence.oa_testbench_schematic import restore_source_parameters
 from sigilicon.virtuoso.text_view import import_oa_text_view
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 from sigilicon.virtuoso.models import OaModelInputs
@@ -37,34 +36,6 @@ def _testbench_pdk(spec: OASimulationSpec) -> Any:
 def _native_setup_source(spec: OASimulationSpec) -> TextSourceSnapshot:
     return spec.native_setup.source_snapshot
 
-
-def _materialize_inline_pwl_tables(
-    spec: OASimulationSpec,
-    snapshot: NetlistSnapshot,
-    client: Any,
-    *,
-    operation: Any,
-) -> None:
-    """Map canonical inline Spectre PWL data to native analogLib CDF fields."""
-
-    for source in parse_spectre_pwl_sources(snapshot, spec.cell):
-        parameters = {
-            "srcType": "pwl",
-            "pwlEntryMethod": "Voltage/Time points",
-            "tvpairs": str(len(source.points)),
-        }
-        for index, (time, value) in enumerate(source.points, start=1):
-            parameters[f"t{index}"] = time
-            parameters[f"v{index}"] = value
-        set_instance_parameters(
-            client,
-            spec.library,
-            spec.cell,
-            source.instance,
-            parameters,
-            operation=operation,
-            invoke_callbacks=False,
-        )
 
 
 def sync_oa_testbench(
@@ -215,10 +186,11 @@ def _sync_oa_testbench_impl(
                 operation=operation,
                 resources=resources,
             )
-            _materialize_inline_pwl_tables(
-                spec,
+            restore_source_parameters(
                 snapshot,
                 client,
+                library=spec.library,
+                cell=spec.cell,
                 operation=operation,
             )
         with operation.mutation_scope(

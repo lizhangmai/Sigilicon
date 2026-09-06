@@ -74,7 +74,10 @@ class _SchematicReadClient:
                 "unsupported virtuoso-bridge owned schematic reader source"
             )
         protected = audit_cellview_delta_skill(
-            stripped_source,
+            own_synchronous_cellview_delta_skill(
+                stripped_source,
+                label=self._label,
+            ),
             label=self._label,
         )
         return require_bridge_confirmation(
@@ -110,7 +113,7 @@ def read_schematic(
         operation=operation,
     )
     try:
-        return bridge_read_schematic(
+        schematic = bridge_read_schematic(
             safe_client,
             library,
             cell,
@@ -118,8 +121,65 @@ def read_schematic(
             param_filters=None,
             timeout=timeout,
         )
+        saved = _read_saved_string_parameters(
+            client, library, cell, operation=operation, timeout=timeout
+        )
+        for instance in schematic["instances"]:
+            parameters = instance.get("params", {})
+            for name, value in saved.get(instance["name"], {}).items():
+                if name in parameters:
+                    parameters[name] = value
+        return schematic
     except RuntimeError as exc:
         raise RuntimeError(f"cannot read schematic {library}/{cell}: {exc}") from exc
+
+
+def _read_saved_string_parameters(
+    client: Any,
+    library: str,
+    cell: str,
+    *,
+    operation: Any,
+    timeout: int,
+) -> dict[str, dict[str, str]]:
+    """Read saved expressions before CDF applies display precision formatting."""
+
+    source = f'''let((cv out)
+  out = ""
+  unwindProtect(
+    progn(
+      cv = dbOpenCellViewByType({skill_quote(library)} {skill_quote(cell)} "schematic" "schematic" "r")
+      unless(cv error("cannot read saved schematic parameters"))
+      foreach(inst cv~>instances
+        foreach(prop inst~>prop
+          when(equal(prop~>valueType "string")
+            out = strcat(out sprintf(nil "%s|%s|%L\\n"
+              inst~>name prop~>name prop~>value)))))
+      out)
+    when(cv unless(dbClose(cv) error("saved parameter reader close failed"))))
+)'''
+    label = f"saved schematic parameters {library}/{cell}"
+    result = require_bridge_confirmation(
+        operation,
+        label,
+        lambda: client.execute_skill(
+            audit_cellview_delta_skill(
+                own_synchronous_cellview_delta_skill(source, label=label),
+                label=label,
+            ),
+            timeout=timeout,
+        ),
+    )
+    if result.errors:
+        raise RuntimeError(f"{label}: {result.errors[0]}")
+    saved: dict[str, dict[str, str]] = {}
+    for row in decode_skill_output(result.output or "").splitlines():
+        fields = row.split("|", 2)
+        if len(fields) != 3:
+            raise RuntimeError(f"{label}: invalid saved parameter row")
+        instance, name, value = fields
+        saved.setdefault(instance, {})[name] = decode_skill_output(value)
+    return saved
 
 
 def normalize_instance_parameters(params: Mapping[str, str]) -> dict[str, str]:
@@ -234,6 +294,17 @@ def set_instance_parameters(
         if invoke_callbacks
         else ""
     )
+    # CDF numeric formatting can round string-valued source expressions. With
+    # callbacks disabled, retain the caller's exact spelling after CDF update.
+    exact_strings = (
+        f'''        foreach(name list({names})
+          param = get(cCDF name)
+          when(equal(param~>paramType "string")
+            unless(dbReplaceProp(inst name "string" arrayref(paramVals name))
+              error(sprintf(nil "cannot preserve exact CDF value: %s" name)))))'''
+        if not invoke_callbacks
+        else ""
+    )
     source = f'''let((cv inst iCDF cCDF saved paramVals param callback attempt)
   cv = nil
   cCDF = nil
@@ -264,6 +335,7 @@ def set_instance_parameters(
             else param~>value = arrayref(paramVals name)))
 {callbacks}
         cdfUpdateInstParam(inst)
+{exact_strings}
         schCheck(cv)
         unless(dbSave(cv) error("schematic save failed"))
         t
