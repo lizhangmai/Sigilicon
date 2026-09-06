@@ -85,3 +85,31 @@ def test_measurement_preserves_raw_outputs_before_owner_evaluation(tmp_path: Pat
         saved = json.loads(evidence.path.read_text())
         assert saved["plan_identity"] == plan.identity
         assert saved["measurements"]["passed"] is (mode == "pass")
+
+
+def test_measurement_preserves_nested_model_includes_and_duplicate_basenames(tmp_path: Path, monkeypatch) -> None:
+    _measurement_project(tmp_path, 'pass')
+    platform = tmp_path / 'configs/platform/testpdk'
+    for directory in ('nmos', 'pmos'):
+        write_file(platform / directory / 'device.scs', f'// {directory} model\n')
+    (platform / 'model.scs').write_text('include "nmos/device.scs"\ninclude "pmos/device.scs"\n')
+    simulation = platform / 'simulation.toml'
+    simulation.write_text(simulation.read_text() + 'support_files = ["nmos/device.scs", "pmos/device.scs"]\n')
+    from sigilicon.external_tools import managed_process
+    run_process = managed_process.run
+    observed = []
+
+    def inspect_process(request):
+        if '-format' in request.argv:
+            deck = Path(request.argv[-1]).read_text()
+            entry = Path(deck.split('"')[1])
+            for line in entry.read_text().splitlines():
+                relative = line.split('"')[1]
+                observed.append((entry.parent / relative).read_text())
+        return run_process(request)
+
+    monkeypatch.setattr(managed_process, 'run', inspect_process)
+    project = Project.open(tmp_path)
+    result = project.run(project.plan('fixture:measure'))
+    assert result.status == 'succeeded'
+    assert observed == ['// nmos model\n', '// pmos model\n']

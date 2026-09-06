@@ -33,13 +33,12 @@ class OaModelInputs:
         missing = set(paths) - sealed_paths.keys()
         if missing:
             raise ValueError(f"OA models are outside the sealed input closure: {sorted(missing)}")
-        root = Path(os.path.commonpath([path.parent for path in paths]))
         files = []
-        for path in sorted(paths):
-            source = sealed_paths[path]
+        for asset, relative in sorted(model_set.members, key=lambda row: row[1]):
+            source = sealed_paths[asset.require_path()]
             metadata, digest = _inspect_nofollow_file(source)
-            files.append(_ModelFile(path.relative_to(root), source, metadata.st_size, digest))
-        return cls(model_set.file.require_path().relative_to(root), tuple(files))
+            files.append(_ModelFile(Path(relative), source, metadata.st_size, digest))
+        return cls(Path(model_set.members[0][1]), tuple(files))
 
     @property
     def identity(self) -> str:

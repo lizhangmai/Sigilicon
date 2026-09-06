@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import InitVar, dataclass, field
 from pathlib import Path, PurePosixPath
+import posixpath
 import re
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Iterator, Mapping, Protocol, runtime_checkable
@@ -93,6 +94,13 @@ class SimulationModelSet:
     @property
     def files(self) -> tuple[PlatformAsset, ...]:
         return (self.file, *self.support_files)
+
+    @property
+    def members(self) -> tuple[tuple[PlatformAsset, PurePosixPath], ...]:
+        """Preserve the declared include tree independently of deployment paths."""
+
+        root = PurePosixPath(posixpath.commonpath([str(asset.logical.parent) for asset in self.files]))
+        return tuple((asset, asset.logical.relative_to(root)) for asset in self.files)
 
     @property
     def paths(self) -> tuple[Path, ...]:

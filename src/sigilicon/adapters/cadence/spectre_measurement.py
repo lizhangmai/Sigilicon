@@ -81,9 +81,8 @@ def prepare_measurement(project: Project, step: Step, resources: Resources) -> A
     except KeyError as exc:
         raise ContractError(f"unknown platform model set: {model_name}") from exc
     identities = model_resource_identities(platform, models)
-    model_inputs = tuple((identities[path], path.name) for path in models.paths)
-    if len({name for _, name in model_inputs}) != len(model_inputs):
-        raise ContractError("Spectre model support filenames collide")
+    model_inputs = tuple((identities[asset.require_path()], relative.as_posix())
+                         for asset, relative in models.members)
     action = MeasurementAction(
         **selected, inputs=inputs, platform=_text(config, "platform"),
         parameters=freeze_toml_document(parameters), models=model_inputs,
@@ -157,8 +156,10 @@ def run_measurement(context: ExecutionIO) -> StepResult:
             "circuit": workspace.copy_file("inputs", ("circuit.scs",), context.source_path(action.circuit)),
         }
         for index, (identity, name) in enumerate(action.models):
+            relative = Path(name)
+            workspace.directory("inputs", "models", *relative.parts[:-1])
             staged["model" if index == 0 else f"support_{index}"] = workspace.copy_file(
-                "inputs", ("models", name), context.resource_path(identity),
+                "inputs", ("models", *relative.parts), context.resource_path(identity),
             )
         def render(paths: Mapping[str, str]) -> str:
             value = template
