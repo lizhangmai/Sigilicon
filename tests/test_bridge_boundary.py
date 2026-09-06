@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+import json
 
 import pytest
 
@@ -100,3 +101,16 @@ def test_schematic_parameters_keep_saved_precision_and_cdf_defaults(
 
     parameters = schematic["instances"][0]["params"]
     assert parameters == {"ggain": "-3.703703703703704e-7", "csType": "linear"}
+
+
+def test_saved_schematic_expression_preserves_quotes_and_backslashes(workspace_factory):
+    expression = 'pPar("width") + strlen("a\\b")'
+    client = RecordingClient((
+        'INSTANCES\nINST|M0|pdk|nmos\nPARAM|w|"formatted"\nNETS\nPINS\nEND\n',
+        json.dumps('M0|w|' + json.dumps(expression) + '\n'),
+    ))
+    with workspace_factory(client, library="lib") as operation:
+        result = read_schematic(
+            client, "lib", "cell", include_positions=False, operation=operation
+        )
+    assert result["instances"][0]["params"]["w"] == expression

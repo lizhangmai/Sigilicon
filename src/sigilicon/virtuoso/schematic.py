@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Mapping
 
@@ -173,12 +174,17 @@ def _read_saved_string_parameters(
     if result.errors:
         raise RuntimeError(f"{label}: {result.errors[0]}")
     saved: dict[str, dict[str, str]] = {}
-    for row in decode_skill_output(result.output or "").splitlines():
+    raw = (result.output or "").strip()
+    output = json.loads(raw) if raw.startswith('"') else raw
+    for row in output.splitlines():
         fields = row.split("|", 2)
         if len(fields) != 3:
             raise RuntimeError(f"{label}: invalid saved parameter row")
         instance, name, value = fields
-        saved.setdefault(instance, {})[name] = decode_skill_output(value)
+        decoded = json.loads(value)
+        if not isinstance(decoded, str):
+            raise RuntimeError(f"{label}: saved expression is not a string")
+        saved.setdefault(instance, {})[name] = decoded
     return saved
 
 
@@ -285,7 +291,8 @@ def set_instance_parameters(
         for name, value in normalized.items()
     )
     callbacks = (
-        f'''        foreach(name list({names})
+        f'''        cdfgData = cCDF
+        foreach(name list({names})
           param = get(cCDF name)
           callback = param~>callback
           when(callback && callback != ""
@@ -305,7 +312,7 @@ def set_instance_parameters(
         if not invoke_callbacks
         else ""
     )
-    source = f'''let((cv inst iCDF cCDF saved paramVals param callback attempt)
+    source = f'''let((cv inst iCDF cCDF saved paramVals param callback attempt cdfgData)
   cv = nil
   cCDF = nil
   saved = nil
