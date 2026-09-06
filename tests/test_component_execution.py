@@ -133,3 +133,46 @@ def test_plan_identity_includes_execution_software_content(tmp_path: Path) -> No
         stream.write("\n# changed implementation source\n")
     after = subprocess.check_output([sys.executable, "-c", script, str(tmp_path)], env=environment, text=True)
     assert before != after
+
+
+@pytest.mark.parametrize('owner', ['parent', 'child'])
+def test_nested_components_keep_source_identity_separate_from_owner(tmp_path: Path, monkeypatch, owner: str) -> None:
+    _composite(tmp_path)
+    owner_root = tmp_path / 'ip' / owner
+    for name, parent in [('alu', owner_root / 'component.toml'),
+                         ('adder', owner_root / 'alu/component.toml')]:
+        directory = owner_root / name
+        directory.mkdir()
+        (directory / 'rtl.sv').write_text(f'module {name}; endmodule\n')
+        (directory / 'component.toml').write_text(f'''schema = 6
+contract_kind = "ip-component"
+path_scope = "owner"
+owner = "{owner}"
+name = "{name}"
+root = "ip/{owner}"
+kind = "rtl-ip"
+[sources]
+rtl = "ip/{owner}/{name}/rtl.sv"
+[filesets]
+rtl = ["rtl"]
+''')
+        parent.write_text(parent.read_text() + f'\n[[component]]\nname = "{name}"\ncontract = "ip/{owner}/{name}/component.toml"\n')
+    catalog = tmp_path / 'ip/parent/operations.toml'
+    catalog.write_text(catalog.read_text().replace('{ component = "child", fileset = "rtl" }',
+        '{ component = "alu", fileset = "rtl" }, { component = "adder", fileset = "rtl" }'))
+
+    def simulate(request):
+        selected = [Path(argument).read_text() for argument in request.argv if argument.endswith('.sv')]
+        Path(request.argv[request.argv.index('-log') + 1]).write_text('offline process boundary\n')
+        return ProcessResult(0, 'FIXTURE_COMPLETE\n' + ''.join(selected), '')
+
+    monkeypatch.setattr(xcelium.managed_process, 'run', simulate)
+    project = Project.open(tmp_path)
+    result = project.run(project.plan('parent:rtl'))
+    assert result.status == 'succeeded'
+    stdout = next(a for a in result.outcomes[0].result.artifacts if a.path.name == 'stdout.log')
+    assert 'module alu; endmodule' in stdout.read_text()
+    assert 'module adder; endmodule' in stdout.read_text()
+    references = project.source_inventory('parent')
+    assert references[owner_root / 'adder/rtl.sv'].component == 'adder'
+    assert project.require_owner(owner_root / 'adder/rtl.sv').name == owner

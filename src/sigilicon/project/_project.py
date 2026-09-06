@@ -374,7 +374,7 @@ class Project:
             for identity, relative in component.sources.items():
                 path = self.project_root.joinpath(*relative.parts)
                 actual = self.owner_for(path)
-                if actual is not None and actual.name != component.name:
+                if actual is not None and actual.name != component.owner:
                     continue
                 reference = SourceReference(component.name, identity)
                 if path in inventory and inventory[path].component != reference.component:

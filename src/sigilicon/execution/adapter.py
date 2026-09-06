@@ -167,7 +167,7 @@ def plan_execution(
             path = source.location
             source_owner = project.owner_for(path)
             if (source_owner is not None and source_owner.root.resolve() != owner_root
-                    and (source.reference is None or source.reference.component != source_owner.name)):
+                    and (source.reference is None or inventory.get(path) != source.reference)):
                 raise ContractError(
                     f"adapter {step.uses!r} selected source outside the source-level "
                     f"component graph of {draft.owner!r}: {path}"
