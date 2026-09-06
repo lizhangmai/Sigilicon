@@ -555,6 +555,7 @@ def _run(
             plan_identity,
             status,
             tuple(outcomes),
+            paths.root,
         )
         result_path = record.write_json(
             "outputs",

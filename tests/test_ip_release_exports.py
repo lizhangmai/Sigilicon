@@ -184,7 +184,7 @@ release = ["release"]
     )
     contract = configs / "release.toml"
     contract.write_text(
-        """schema = 3
+        """schema = 4
 contract_kind = "ip-release"
 path_scope = "owner"
 owner = "fixture-ip"
@@ -201,6 +201,7 @@ schematic_view = "schematic"
 layout_view = "layout"
 [exports.interface]
 kind = "oa-mixed-signal"
+bindings = { interface_contract = "interface_contract" }
 contract = "configs/left_interface.toml"
 physical = "LEFT:physical"
 logical = "left_model:logical"
@@ -220,6 +221,7 @@ schematic_view = "schematic"
 layout_view = "layout"
 [exports.interface]
 kind = "oa-mixed-signal"
+bindings = { interface_contract = "interface_contract" }
 contract = "configs/right_interface.toml"
 physical = "RIGHT:physical"
 logical = "right_model:logical"
@@ -320,7 +322,7 @@ release = ["release"]
     )
     contract = configs / "release.toml"
     contract.write_text(
-        '''schema = 3
+        '''schema = 4
 contract_kind = "ip-release"
 path_scope = "owner"
 owner = "rtl-fixture"
@@ -332,6 +334,7 @@ default_maturity = "development"
 name = "rtl-top"
 [exports.interface]
 kind = "rtl"
+bindings = { interface_contract = "interface_contract" }
 contract = "configs/interface.toml"
 module = "rtl_top"
 source_view = "rtl_source"
@@ -552,7 +555,7 @@ release = ["release"]
     )
     contract = configs / "release.toml"
     contract.write_text(
-        '''schema = 3
+        '''schema = 4
 contract_kind = "ip-release"
 path_scope = "owner"
 owner = "native-fixture"
@@ -569,6 +572,7 @@ schematic_view = "schematic"
 layout_view = "layout"
 [exports.interface]
 kind = "oa-native"
+bindings = { interface_contract = "interface_contract", oa_port_contract = "oa_port_contract", circuit_netlist = "circuit_netlist" }
 contract = "configs/interface.toml"
 [exports.maturity.development]
 required_views = ["interface_contract", "oa_port_contract", "circuit_netlist"]
@@ -1358,7 +1362,7 @@ def test_native_signoff_requires_domain_evidence(tmp_path: Path, fault: str) -> 
     assert project.preflight(project.plan(f"{contract.owner}:release")).ready is False
 
 
-def test_release_rejects_ambiguous_interface_views(tmp_path: Path) -> None:
+def test_release_selects_explicit_interface_view_among_same_role_views(tmp_path: Path) -> None:
     contract_path = _rtl_contract_fixture(tmp_path)
     with contract_path.open("a") as stream:
         stream.write('''\n[[collateral]]
@@ -1371,8 +1375,8 @@ package_path = "exports/rtl-top/another-interface.toml"
 format = "toml"
 ''')
     _commit_release_source(tmp_path, "ambiguous interface views")
-    with pytest.raises(ValueError, match="interface role interface_contract requires one view"):
-        Project.open(tmp_path).plan("rtl-fixture:release")
+    project = Project.open(tmp_path)
+    assert project.preflight(project.plan("rtl-fixture:release")).ready
 
 
 def _damage_receipt(receipt: dict, fault: str) -> None:
@@ -1710,3 +1714,28 @@ capabilities = ["synthesis", "physical_implementation", "circuit_simulation"]
     artifact.path.write_text("tampered\n")
     with pytest.raises(RuntimeError, match="content changed"):
         package.select("native-top", ViewSelector("raw_macro_liberty_or_db", "nominal", {"process": "ss"}))
+
+
+def test_native_circuit_release_keeps_conditioned_views_and_canonical_binding(tmp_path: Path) -> None:
+    contract_path = _native_oa_contract_fixture(tmp_path)
+    with contract_path.open("a") as stream:
+        stream.write('''\n[[collateral]]
+export = "native-top"
+name = "circuit_ff"
+role = "circuit_netlist"
+component = "native-fixture"
+source = "circuit"
+package_path = "exports/native-top/ff.scs"
+format = "spectre-source"
+condition = {corner = "ff"}
+capabilities = ["circuit_simulation"]
+''')
+    _commit_release_source(tmp_path, "native circuit with multiple conditions")
+    project = Project.open(tmp_path)
+    built = _publish_release(contract_path, project=project)
+    manifest = _built_manifest(project, built)
+    audited = ip_packaging.audit_ip_release_manifest(manifest)
+    circuit = ip_packaging.resolve_release_view(audited, manifest, "circuit_netlist", export="native-top")
+    assert "subckt NATIVE_CHILD" in circuit.read_text()
+    alternate = ip_packaging.release_view(audited, "circuit_ff", export="native-top")
+    assert alternate["condition"] == {"corner": "ff"}

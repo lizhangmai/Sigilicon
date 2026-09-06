@@ -74,6 +74,7 @@ class IpCollateral:
 class OaMixedSignalIpInterface:
     kind: Literal["oa-mixed-signal"]
     contract: PurePosixPath
+    bindings: Mapping[str, str]
     library: str
     cell: str
     schematic_view: str
@@ -88,6 +89,7 @@ class OaNativeIpInterface:
 
     kind: Literal["oa-native"]
     contract: PurePosixPath
+    bindings: Mapping[str, str]
     library: str
     cell: str
     schematic_view: str
@@ -98,6 +100,7 @@ class OaNativeIpInterface:
 class RtlIpInterface:
     kind: Literal["rtl"]
     contract: PurePosixPath
+    bindings: Mapping[str, str]
     module: str
     source_view: str
     variant: str | None = None
@@ -288,7 +291,7 @@ def _parse_ip_contract(
         interface_kind = _string(
             interface.get("kind"), f"exports[{index}].interface.kind"
         )
-        interface_fields = {"kind", "contract"}
+        interface_fields = {"kind", "contract", "bindings"}
         if interface_kind == "oa-mixed-signal":
             interface_fields.update({"physical", "logical"})
         elif interface_kind == "rtl":
@@ -298,6 +301,10 @@ def _parse_ip_contract(
             interface_fields,
             f"exports[{index}].interface",
         )
+        bindings = MappingProxyType({
+            _string(role, "interface binding role"): _string(view, "interface binding view")
+            for role, view in _table(interface.get("bindings"), "interface.bindings").items()
+        })
         interface_contract = require_relative_path(
             interface.get("contract"),
             f"exports[{index}].interface.contract",
@@ -311,6 +318,7 @@ def _parse_ip_contract(
             )
             oa_identity = {
                 "contract": interface_contract,
+                "bindings": bindings,
                 "library": _string(
                     oa.get("library"), f"exports[{index}].oa.library"
                 ),
@@ -355,6 +363,7 @@ def _parse_ip_contract(
             parsed_interface = RtlIpInterface(
                 kind="rtl",
                 contract=interface_contract,
+                bindings=bindings,
                 module=_string(
                     interface.get("module"),
                     f"exports[{index}].interface.module",
@@ -545,6 +554,10 @@ def _parse_ip_contract(
                     f"{exported.interface.library}/{exported.interface.cell}"
                 )
             oa_identities.add(oa_identity)
+        by_name = {item.name: item for item in exported.collateral}
+        for role, view in exported.interface.bindings.items():
+            if view not in by_name or by_name[view].role != role:
+                raise ValueError(f"interface binding {role} must select a named view with that role")
         present = {item.name for item in exported.collateral}
         development = set(exported.required_views["development"])
         if not development.issubset(present):

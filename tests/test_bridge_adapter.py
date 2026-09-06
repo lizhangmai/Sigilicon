@@ -152,3 +152,17 @@ def test_bound_client_rejects_a_different_runtime_endpoint() -> None:
 
     with pytest.raises(RuntimeError, match="different runtime endpoint"):
         client_adapter.bind_client(client, second)
+
+
+def test_unavailable_bridge_is_an_execution_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    from sigilicon.execution._values import ExecutionError
+
+    class UnavailableClient:
+        def test_connection(self) -> bool:
+            return False
+
+    monkeypatch.setattr(client_adapter, "create_client", lambda resources: UnavailableClient())
+    with pytest.raises(ExecutionError, match="start the managed daemon"):
+        client_adapter.get_client(Resources(values={
+            "virtuoso-bridge.host": "127.0.0.1", "virtuoso-bridge.port": "65432",
+        }))

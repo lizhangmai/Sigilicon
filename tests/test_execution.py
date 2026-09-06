@@ -1697,6 +1697,7 @@ def test_public_execution_values_validate_behavior_and_are_immutable() -> None:
             "9" * 64,
             "failed",
             (outcome,),
+            Path("/run"),
         )
 
 
@@ -2067,3 +2068,20 @@ print(json.dumps(sorted(name for name in sys.modules if name.startswith('sigilic
         ))
         for name in modules
     )
+
+
+def test_nested_artifact_names_survive_run_store_roundtrip(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+
+    class NestedOutput(CopyAdapter):
+        def run(self, context: ExecutionIO) -> StepResult:
+            path = context.write_text("bundle", "outputs/run/value.txt", "nested payload")
+            return StepResult.succeeded(artifacts=(Artifact("bundle", "text.plain", path),))
+
+    project = _project(tmp_path, NestedOutput())
+    result = project.run(project.plan("example:check"))
+    stored = RunStore(project.artifact_root).read(
+        owner="example", operation="check", run_id=result.run_id,
+    )
+    assert stored.outcomes[0].result.artifacts[0].read_text() == "nested payload"
+    assert stored.record == result.record

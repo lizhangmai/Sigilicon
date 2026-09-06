@@ -92,7 +92,7 @@ endmodule
             view["module"] = module
         views.append(view)
     manifest = {
-        "schema": 3,
+        "schema": 4,
         "contract_kind": "ip-release-manifest",
         "release_kind": "source-package",
         "ip_name": "fixture-ip",
@@ -109,6 +109,7 @@ endmodule
                 },
                 "interface": {
                     "kind": "oa-mixed-signal",
+                    "bindings": {role: role for role in ("interface_contract", "oa_port_contract", "circuit_netlist", "physical_blackbox", "integration_adapter", "transaction_model")},
                     "physical": "fixture_macro:oa-1-pin",
                     "logical": "fixture_model:transaction-1-port",
                 },
@@ -151,6 +152,7 @@ def test_mixed_signal_release_audits_independently_named_views(tmp_path: Path) -
     for view in manifest["views"]:
         view["name"] = "named-" + view["role"]
     manifest["exports"][0]["maturity"]["required_views"] = [view["name"] for view in manifest["views"]]
+    manifest["exports"][0]["interface"]["bindings"] = {view["role"]: view["name"] for view in manifest["views"]}
     manifest_path.write_text(json.dumps(manifest))
     assert audit_ip_release_manifest(manifest_path)["availability"]["simulation"] is True
 
@@ -199,7 +201,7 @@ ports = [{ name = "clk", direction = "input", width = 1 }]
         },
     ]
     manifest = {
-        "schema": 3,
+        "schema": 4,
         "contract_kind": "ip-release-manifest",
         "release_kind": "source-package",
         "ip_name": "fixture-ip",
@@ -210,6 +212,7 @@ ports = [{ name = "clk", direction = "input", width = 1 }]
                 "name": "rtl",
                 "interface": {
                     "kind": "rtl",
+                    "bindings": {"interface_contract": "interface_contract"},
                     "contract": "ip/fixture/configs/interface.toml",
                     "module": "fixture_rtl",
                     "source_view": "rtl_source",
@@ -388,6 +391,7 @@ domains = []
     }
     exported["interface"] = {
         "kind": "oa-native",
+        "bindings": {role: role for role in ("interface_contract", "oa_port_contract", "circuit_netlist")},
         "contract": "ip/fixture/configs/interface.toml",
     }
     selected_roles = {
@@ -470,7 +474,7 @@ source = ["manifest"]
         encoding="utf-8",
     )
     (dependency_root / "configs/release.toml").write_text(
-        '''schema = 3
+        '''schema = 4
 contract_kind = "ip-release"
 path_scope = "owner"
 owner = "fixture-ip"
@@ -1068,6 +1072,7 @@ def test_native_oa_planner_takes_interface_identity_from_provider_export(
     }
     interface = {
         "kind": "oa-native",
+        "bindings": {role: role for role in ("interface_contract", "oa_port_contract", "circuit_netlist")},
         "contract": "ip/fixture/configs/interface.toml",
     }
     oa["cell"] = "drifted"

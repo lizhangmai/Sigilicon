@@ -14,12 +14,18 @@ from sigilicon.artifacts import read_nofollow_text
 
 CONFIG_SCHEMA = 1
 _CONFIG_SCHEMAS = {
+    **dict.fromkeys((
+        "cell-design", "cell-layout", "ip-interface", "oa-cell",
+        "oa-assembly", "oa-source-root", "platform-catalog", "platform-definition",
+        "platform-simulation", "platform-oa", "platform-stream",
+        "physical-verification-policy", "layout-technology",
+    ), 1),
     "platform-layout": 2,
     "platform-verification": 2,
     "ip-dependency-lock": 3,
     "ip-component": 5,
     "ip-catalog": 2,
-    "ip-release": 3,
+    "ip-release": 4,
     "ip-operating-variant": 2,
     "verification-cell": 2,
     "owner-operations": 5,
@@ -349,10 +355,10 @@ class DocumentStore:
                 raise ValueError(f"{label} source document drift: {path}")
 
 
-def contract_schema(contract_kind: str) -> int:
-    """Return the one supported schema for a typed configuration domain."""
+def contract_schema(contract_kind: str) -> int | None:
+    """Return a framework schema; owner-defined domains own their versioning."""
 
-    return _CONFIG_SCHEMAS.get(contract_kind, CONFIG_SCHEMA)
+    return _CONFIG_SCHEMAS.get(contract_kind)
 
 
 def require_config_header(
@@ -362,12 +368,14 @@ def require_config_header(
     contract_kind: str | tuple[str, ...],
     path_scope: str | tuple[str, ...],
     owner: str | None = None,
-    schema: int = CONFIG_SCHEMA,
+    schema: int | None = CONFIG_SCHEMA,
 ) -> ConfigHeader:
     """Validate the common header without flattening the domain payload."""
 
     actual_schema = raw.get("schema")
-    if isinstance(actual_schema, bool) or actual_schema != schema:
+    if type(actual_schema) is not int or actual_schema < 1:
+        raise ValueError(f"{path}: schema must be a positive integer")
+    if schema is not None and actual_schema != schema:
         raise ValueError(f"{path}: schema must be {schema}")
     actual_kind = require_text(raw.get("contract_kind"), f"{path}: contract_kind")
     allowed_kinds = (contract_kind,) if isinstance(contract_kind, str) else contract_kind
@@ -385,7 +393,7 @@ def require_config_header(
     actual_owner = require_text(raw.get("owner"), f"{path}: owner")
     if owner is not None and actual_owner != owner:
         raise ValueError(f"{path}: owner must be {owner!r}, got {actual_owner!r}")
-    return ConfigHeader(schema, actual_kind, actual_scope, actual_owner)
+    return ConfigHeader(actual_schema, actual_kind, actual_scope, actual_owner)
 
 
 def read_toml(path: Path) -> dict[str, Any]:

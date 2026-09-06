@@ -3,7 +3,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Mapping
 from sigilicon.artifacts import read_nofollow_bytes
 from sigilicon.paths import validate_artifact_id
@@ -131,6 +131,7 @@ class RunResult:
     plan_identity: str
     status: str
     outcomes: tuple[StepOutcome, ...]
+    run_root: Path = field(repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "owner", _identifier(self.owner, "run owner"))
@@ -163,7 +164,7 @@ class RunResult:
             raise ContractError("run status disagrees with its step outcomes")
         for outcome in self.outcomes:
             for artifact in outcome.result.artifacts:
-                _run_artifact_path(outcome.step, artifact.path)
+                _run_artifact_path(self.run_root, outcome.step, artifact.path)
 
     @property
     def record(self) -> dict[str, Any]:
@@ -188,7 +189,7 @@ class RunResult:
                             "role": artifact.role,
                             "kind": artifact.kind,
                             "path": _run_artifact_path(
-                                outcome.step,
+                                self.run_root, outcome.step,
                                 artifact.path,
                             ),
                         }
@@ -200,22 +201,16 @@ class RunResult:
         }
 
 
-def _run_artifact_path(step: str, path: Path) -> str:
-    """Recover the canonical stored reference without retaining a run root."""
+def _run_artifact_path(run_root: Path, step: str, path: Path) -> str:
+    """Serialize against the actual run root, irrespective of nested filenames."""
 
-    parts = Path(path).absolute().parts
-    positions = tuple(
-        index
-        for index in range(len(parts) - 2)
-        if parts[index : index + 2] == ("outputs", step)
-    )
-    if not positions:
-        raise ContractError(
-            f"step {step!r} published outside its managed output root"
-        )
-    relative = PurePosixPath(*parts[positions[-1] :])
-    if len(relative.parts) < 3:
-        raise ContractError(f"step {step!r} published no artifact filename")
+    try:
+        relative = Path(path).absolute().relative_to(Path(run_root).absolute())
+    except ValueError as exc:
+        raise ContractError(f"step {step!r} published outside its managed output root") from exc
+    if (relative.parts[:2] != ("outputs", step) or len(relative.parts) < 3
+            or ".." in relative.parts):
+        raise ContractError(f"step {step!r} published outside its managed output root")
     return relative.as_posix()
 
 

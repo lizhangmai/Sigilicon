@@ -153,7 +153,7 @@ A = "input"
     manifest.write_text(
         json.dumps(
             {
-                "schema": 3,
+                "schema": 4,
                 "contract_kind": "ip-release-manifest",
                 "release_kind": "source-package",
                 "release_id": "development-0123456789ab",
@@ -171,6 +171,7 @@ A = "input"
                         },
                         "interface": {
                             "kind": "oa-native",
+                            "bindings": {role: role for role in ("interface_contract", "oa_port_contract", "circuit_netlist")},
                             "contract": "ip/macro_provider/configs/interface.toml",
                         },
                         "maturity": {"required_views": [

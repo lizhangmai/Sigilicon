@@ -525,6 +525,7 @@ class RunStore:
                 result["plan_identity"],
                 result["status"],
                 tuple(outcomes),
+                root,
             )
         except (ContractError, KeyError, TypeError, ValueError) as exc:
             raise RunStoreError(f"persisted run result is malformed: {exc}") from exc

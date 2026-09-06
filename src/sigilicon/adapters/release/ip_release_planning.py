@@ -530,12 +530,14 @@ def _export_interface_manifest(
             ),
             NativeOaReleaseInterface(
                 contract=(contract.producer / interface.contract).as_posix(),
+                bindings=interface.bindings,
             ),
         )
     return (
         None,
         RtlReleaseInterface(
             contract=(contract.producer / interface.contract).as_posix(),
+                bindings=interface.bindings,
             module=interface.module,
             source_view=interface.source_view,
             variant=interface.variant,
@@ -554,18 +556,10 @@ def _native_oa_spectre_bundle(
     interface = exported.interface
     if not isinstance(interface, OaNativeIpInterface):
         raise TypeError("native OA Spectre bundling requires a native OA export")
-    circuit = [
-        item for item in exported.collateral if item.role == "circuit_netlist"
-    ]
-    if len(circuit) != 1:
-        raise ValueError(
-            f"native OA export {exported.name} must have one circuit_netlist role"
-        )
-    if circuit[0].format != "spectre-source":
-        raise ValueError(
-            f"native OA export {exported.name} circuit_netlist must use "
-            "spectre-source format"
-        )
+    circuit = next(item for item in exported.collateral
+                   if item.name == interface.bindings["circuit_netlist"])
+    if circuit.format != "spectre-source":
+        raise ValueError(f"native OA export {exported.name} canonical circuit must use spectre-source format")
     if library.name != interface.library:
         raise ValueError(
             f"native OA export {exported.name} library identity drifted"
@@ -582,7 +576,7 @@ def _native_oa_spectre_bundle(
     )
     expected_source = _project_path(
         contract.project_root,
-        Path(circuit[0].source),
+        Path(circuit.source),
         "native OA circuit source",
     )
     if hierarchy.definitions[interface.cell].source_path != expected_source:
@@ -681,7 +675,7 @@ def _plan_loaded_ip_release(
                 exported,
                 library=oa_library,
             )
-            key = (exported.name, next(item.name for item in exported.collateral if item.role == "circuit_netlist"))
+            key = (exported.name, exported.interface.bindings["circuit_netlist"])
             native_bundle_metadata[key] = metadata
             native_bundles[key] = text
     collateral_source_identity: dict[tuple[str, str], tuple[int, str]] = {}

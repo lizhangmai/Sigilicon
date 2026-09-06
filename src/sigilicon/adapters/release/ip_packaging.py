@@ -185,7 +185,7 @@ def _publish_ip_release(
                         view[field] = expected[field]
                 views.append(view)
             manifest: dict[str, Any] = {
-                "schema": 3,
+                "schema": 4,
                 "contract_kind": "ip-release-manifest",
                 "release_kind": "source-package",
                 "ip_name": record["ip_name"],
@@ -268,6 +268,14 @@ def _manifest_exports(manifest: Mapping[str, Any]) -> dict[str, Mapping[str, Any
     return exports
 
 
+def _interface_binding(interface: Mapping[str, Any], role: str) -> str:
+    bindings = interface.get("bindings", {}) if isinstance(interface, Mapping) else {}
+    name = bindings.get(role) if isinstance(bindings, Mapping) else None
+    if not isinstance(name, str) or not name:
+        raise RuntimeError(f"interface role {role} requires an explicit named binding")
+    return name
+
+
 def release_view(
     manifest: Mapping[str, Any], selection: str | ViewSelector, *, export: str
 ) -> Mapping[str, Any]:
@@ -300,7 +308,7 @@ def _packaged_rtl_interface_check(
     export_name: str,
     interface: Mapping[str, Any],
 ) -> None:
-    required_fields = {"kind", "contract", "module", "source_view"}
+    required_fields = {"kind", "contract", "bindings", "module", "source_view"}
     fields = set(interface)
     if fields != required_fields and fields != required_fields | {"variant"}:
         raise RuntimeError(
@@ -330,10 +338,10 @@ def _packaged_rtl_interface_check(
     except ValueError as exc:
         raise RuntimeError(str(exc)) from exc
     contract_path = resolve_release_view(
-        manifest, manifest_path, ViewSelector("interface_contract"), export=export_name
+        manifest, manifest_path, _interface_binding(interface, "interface_contract"), export=export_name
     )
     contract_view = release_view(
-        manifest, ViewSelector("interface_contract"), export=export_name
+        manifest, _interface_binding(interface, "interface_contract"), export=export_name
     )
     if contract_view.get("source") != contract_source:
         raise RuntimeError(
@@ -384,7 +392,7 @@ def _packaged_native_oa_interface_check(
     exported: Mapping[str, Any],
     interface: Mapping[str, Any],
 ) -> None:
-    if set(interface) != {"kind", "contract"}:
+    if set(interface) != {"kind", "contract", "bindings"}:
         raise RuntimeError(
             f"packaged {export_name} native OA interface fields are invalid"
         )
@@ -410,10 +418,10 @@ def _packaged_native_oa_interface_check(
         )
 
     contract_path = resolve_release_view(
-        manifest, manifest_path, ViewSelector("interface_contract"), export=export_name
+        manifest, manifest_path, _interface_binding(interface, "interface_contract"), export=export_name
     )
     contract_view = release_view(
-        manifest, ViewSelector("interface_contract"), export=export_name
+        manifest, _interface_binding(interface, "interface_contract"), export=export_name
     )
     if contract_view.get("source") != contract_source:
         raise RuntimeError(
@@ -433,20 +441,20 @@ def _packaged_native_oa_interface_check(
         )
         port_contract_source = port_contract_relative.as_posix()
         if release_view(
-            manifest, ViewSelector("oa_port_contract"), export=export_name
+            manifest, _interface_binding(interface, "oa_port_contract"), export=export_name
         ).get("source") != port_contract_source:
             raise ValueError("OA port contract provenance drifted")
         port_contract_path = resolve_release_view(
-            manifest, manifest_path, ViewSelector("oa_port_contract"), export=export_name
+            manifest, manifest_path, _interface_binding(interface, "oa_port_contract"), export=export_name
         )
         expected_ports = _oa_port_contract(read_toml(port_contract_path))
         if len(expected_ports) != port_count:
             raise ValueError("OA port count disagrees with the interface")
         circuit_path = resolve_release_view(
-            manifest, manifest_path, ViewSelector("circuit_netlist"), export=export_name
+            manifest, manifest_path, _interface_binding(interface, "circuit_netlist"), export=export_name
         )
         circuit_view = release_view(
-            manifest, ViewSelector("circuit_netlist"), export=export_name
+            manifest, _interface_binding(interface, "circuit_netlist"), export=export_name
         )
         if circuit_view.get("composition") != "reachable-spectre-hierarchy":
             raise ValueError(
@@ -512,6 +520,12 @@ def _packaged_interface_check(
         interface = exported.get("interface")
         if not isinstance(interface, Mapping):
             raise RuntimeError(f"IP release export {export_name} has no interface")
+        bindings = interface.get("bindings")
+        if not isinstance(bindings, Mapping):
+            raise RuntimeError("release interface requires explicit named bindings")
+        for role, name in bindings.items():
+            if release_view(manifest, name, export=export_name).get("role") != role:
+                raise RuntimeError(f"interface binding {role} selects a view with a different role")
         interface_kind = interface.get("kind")
         if interface_kind == "rtl":
             if "oa" in exported:
@@ -557,7 +571,7 @@ def _packaged_interface_check(
             raise RuntimeError(str(exc)) from exc
 
         contract_path = resolve_release_view(
-            manifest, manifest_path, ViewSelector("interface_contract"), export=export_name
+            manifest, manifest_path, _interface_binding(interface, "interface_contract"), export=export_name
         )
         try:
             raw = read_toml(contract_path)
@@ -584,7 +598,7 @@ def _packaged_interface_check(
             )
         for role, module in expected_modules.items():
             if not isinstance(module, str) or release_view(
-                manifest, ViewSelector(role), export=export_name
+                manifest, _interface_binding(interface, role), export=export_name
             ).get("module") != module:
                 raise RuntimeError(
                     f"packaged {export_name}/{role} module disagrees with its interface"
@@ -600,7 +614,7 @@ def _packaged_interface_check(
             ) from exc
         sources = {
             role: resolve_release_view(
-                manifest, manifest_path, ViewSelector(role), export=export_name
+                manifest, manifest_path, _interface_binding(interface, role), export=export_name
             )
             for role in (
                 "transaction_model",

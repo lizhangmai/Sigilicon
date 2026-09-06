@@ -13,6 +13,8 @@ from sigilicon.adapters.synopsys.fc_adapter import FcAdapter
 from sigilicon.adapters.synopsys.hspice_adapter import HspiceAdapter
 from sigilicon.adapters.synopsys.vcs_adapter import VcsAdapter
 from sigilicon.execution import Step
+from sigilicon.execution._source import Source
+from sigilicon.source import SourceReference
 from sigilicon.project import Project
 from sigilicon.execution._values import ContractError, ExecutionError
 from sigilicon.execution._resources import Resources
@@ -31,6 +33,14 @@ def _context(
 ) -> ExecutionIO:
     project_root = next(path for path in (tmp_path, *tmp_path.parents) if (path / "sigilicon.toml").is_file())
     adapters = {adapter.name: adapter for adapter in (VcsAdapter(), DcAdapter(), FcAdapter(), HspiceAdapter())}
+    captured = []
+    for path in step.sources:
+        location = tmp_path / "run/inputs/sources" / path
+        if not location.exists():
+            _file(location)
+        captured.append(replace(Source.capture(location, root=tmp_path / "run/inputs/sources"),
+                                reference=SourceReference("fixture", path)))
+    step = replace(step, source_closure=tuple(captured))
     step = replace(step, action=adapters[step.uses].prepare(Project.open(project_root), step, resources).action)
     run_root = tmp_path / "run"
     roots = (
@@ -63,15 +73,15 @@ def test_synopsys_adapters_reject_unknown_configuration_fields(adapter, tmp_path
         "synopsys.vcs": {
             **common,
             "target": "rtl",
-            "rtl_root": "rtl",
-            "testbench_root": "dv",
+            "rtl_sources": [{"component": "fixture", "source": "rtl/design.sv"}],
+            "testbench_sources": [{"component": "fixture", "source": "dv/testbench.sv"}],
             "success_marker": "passed",
         },
         "synopsys.dc": {
             **common,
             "constraints": "flow/constraints.sdc",
             "corner": "tt",
-            "rtl_root": "rtl",
+            "rtl_sources": [{"component": "fixture", "source": "rtl/design.sv"}],
         },
         "synopsys.fc": {
             **common,
@@ -129,8 +139,8 @@ printf 'managed vcs\n'
             "runner": runner.relative_to(sources).as_posix(),
             "target": "rtl",
             "variant": "test",
-            "rtl_root": "rtl",
-            "testbench_root": "dv",
+            "rtl_sources": [{"component": "fixture", "source": name} for name in ("rtl/design.sv", "rtl/aaa_legacy.v")],
+            "testbench_sources": [{"component": "fixture", "source": "dv/testbench.sv"}],
             "success_marker": "managed vcs",
             "timeout_seconds": 10,
         },
@@ -220,8 +230,8 @@ printf 'tampered\n' >>"$source_file"
             "runner": runner.relative_to(sources).as_posix(),
             "target": "rtl",
             "variant": "test",
-            "rtl_root": "rtl",
-            "testbench_root": "dv",
+            "rtl_sources": [{"component": "fixture", "source": "rtl/design.sv"}],
+            "testbench_sources": [{"component": "fixture", "source": "dv/testbench.sv"}],
             "success_marker": "must not reach completion",
             "timeout_seconds": 10,
         },
@@ -296,7 +306,7 @@ ln -s ../mapped.ddc "$SIGILICON_DC_OUTPUT_ROOT/cache/current.ddc"
             "variant": "test",
             "corner": "tt",
             "evaluator": "tools/evaluate.py",
-            "rtl_root": "rtl",
+            "rtl_sources": [{"component": "fixture", "source": "rtl/design.sv"}],
             "timeout_seconds": 10,
             "reports": ("check_design.rpt", "area.rpt"),
             "verdict_report": "verdict.json",

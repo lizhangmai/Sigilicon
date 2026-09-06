@@ -127,14 +127,15 @@ def _inspect(
     )
 
 
+@pytest.mark.parametrize("owner_schema", (1, 2, 7))
 def test_project_configuration_follows_context_owner_roots(
-    tmp_path: Path,
+    tmp_path: Path, owner_schema: int,
 ) -> None:
     _write_selected_catalogs(tmp_path)
     _write(
         tmp_path,
         "ip/alpha/contract.toml",
-        """schema = 1
+        f"""schema = {owner_schema}
 contract_kind = "test-contract"
 path_scope = "owner"
 owner = "alpha"

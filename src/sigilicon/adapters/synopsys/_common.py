@@ -190,21 +190,6 @@ def _safe_relative(value: str, label: str) -> str:
         raise ContractError(str(exc)) from exc
 
 
-def _source_members(
-    step: Step,
-    root_name: str,
-    *,
-    suffix: str | tuple[str, ...],
-) -> tuple[str, ...]:
-    root = _safe_relative(_text(step.config, root_name), root_name)
-    prefix = f"{root}/"
-    return tuple(
-        source
-        for source in step.sources
-        if source.startswith(prefix) and source.endswith(suffix)
-    )
-
-
 def _runner(step: Step) -> str:
     runner = _safe_relative(_text(step.config, "runner"), "runner")
     if runner not in step.sources:

@@ -23,7 +23,7 @@ ports = [{ name = "a", direction = "input", width = 1 }]
 ''')
     availability = {"simulation": True, "synthesis": False, "physical_implementation": False}
     manifest = {
-        "schema": 3,
+        "schema": 4,
         "contract_kind": "ip-release-manifest",
         "release_kind": "source-package",
         "ip_name": "fixture",
@@ -31,7 +31,7 @@ ports = [{ name = "a", direction = "input", width = 1 }]
         "source_commit": "a" * 40,
         "exports": [{
             "name": "fixture",
-            "interface": {"kind": "rtl", "contract": "interface.toml", "module": "fixture", "source_view": "payload"},
+            "interface": {"kind": "rtl", "bindings": {"interface_contract": "interface_contract"}, "contract": "interface.toml", "module": "fixture", "source_view": "payload"},
             "maturity": {"required_views": ["interface_contract", "payload"], "missing_items": []},
             "availability": availability,
         }],

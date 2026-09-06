@@ -134,3 +134,13 @@ Path(option("-LOG")).write_text(json.dumps({
     (work_dir / f"source.{suffix}").unlink()
     assert not native_source.is_symlink()
     assert native_source.read_text() == expected_source
+
+
+@pytest.mark.parametrize(("expression", "width"), [
+    ("7 / 2", 3), ("(-7) / (-2)", 3), ("7 % (-3)", 1),
+    ("1 ? 8 : 4", 8), ("0 ? 8 : 4", 4), ("(-1) ? 8 : 4", 8),
+    ("$clog2(18446744073709551617)", 65),
+])
+def test_systemverilog_integer_elaboration(expression: str, width: int) -> None:
+    source = f"module dut #(parameter W = {expression})(input logic [W-1:0] a); endmodule"
+    assert module_port_signatures(source, "dut")["a"].width == width

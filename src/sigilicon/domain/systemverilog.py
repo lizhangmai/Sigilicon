@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
-import math
+import operator
 import re
 from typing import Mapping
 
@@ -89,7 +89,7 @@ def _integer_expression(expression: str, parameters: Mapping[str, int]) -> int:
         operand = _integer_expression(operand_text, parameters)
         if operand <= 0:
             raise ValueError(f"cannot elaborate $clog2 operand: {operand_text}")
-        replacement = str(math.ceil(math.log2(operand)))
+        replacement = str((operand - 1).bit_length())
         value = value[: match.start()] + replacement + value[closing + 1 :]
 
     while len(value) >= 2 and value[0] == "(" and _matching(
@@ -133,10 +133,6 @@ def _integer_expression(expression: str, parameters: Mapping[str, int]) -> int:
         if colon is None:
             raise ValueError(f"unterminated SystemVerilog ternary expression: {expression}")
         condition = _integer_expression(value[:question], parameters)
-        if not isinstance(condition, bool):
-            raise ValueError(
-                f"SystemVerilog ternary condition is not boolean: {value[:question]}"
-            )
         branch = value[question + 1 : colon] if condition else value[colon + 1 :]
         return _integer_expression(branch, parameters)
 
@@ -146,38 +142,35 @@ def _integer_expression(expression: str, parameters: Mapping[str, int]) -> int:
         tree = ast.parse(value, mode="eval")
     except SyntaxError as exc:
         raise ValueError(f"unsupported SystemVerilog integer expression: {expression}") from exc
-    allowed = (
-        ast.Expression,
-        ast.Constant,
-        ast.UnaryOp,
-        ast.UAdd,
-        ast.USub,
-        ast.BinOp,
-        ast.Add,
-        ast.Sub,
-        ast.Mult,
-        ast.FloorDiv,
-        ast.Div,
-        ast.Mod,
-        ast.Compare,
-        ast.Lt,
-        ast.LtE,
-        ast.Gt,
-        ast.GtE,
-        ast.Eq,
-        ast.NotEq,
-        ast.BoolOp,
-        ast.And,
-        ast.Or,
-    )
-    if any(not isinstance(node, allowed) for node in ast.walk(tree)):
+    binary = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+              ast.LShift: operator.lshift, ast.RShift: operator.rshift,
+              ast.BitAnd: operator.and_, ast.BitOr: operator.or_, ast.BitXor: operator.xor}
+    comparisons = {ast.Lt: operator.lt, ast.LtE: operator.le, ast.Gt: operator.gt,
+                   ast.GtE: operator.ge, ast.Eq: operator.eq, ast.NotEq: operator.ne}
+    unary = {ast.UAdd: operator.pos, ast.USub: operator.neg, ast.Invert: operator.invert}
+
+    def evaluate(node: ast.AST) -> int:
+        if isinstance(node, ast.Constant) and type(node.value) is int:
+            return node.value
+        if isinstance(node, ast.UnaryOp) and type(node.op) in unary:
+            return unary[type(node.op)](evaluate(node.operand))
+        if isinstance(node, ast.BinOp):
+            left, right = evaluate(node.left), evaluate(node.right)
+            if isinstance(node.op, (ast.Div, ast.Mod)):
+                if right == 0:
+                    raise ValueError("division by zero in SystemVerilog integer expression")
+                quotient = (abs(left) // abs(right)) * (-1 if (left < 0) != (right < 0) else 1)
+                return quotient if isinstance(node.op, ast.Div) else left - quotient * right
+            if type(node.op) in binary:
+                return binary[type(node.op)](left, right)
+        if isinstance(node, ast.Compare) and len(node.ops) == 1 and type(node.ops[0]) in comparisons:
+            return int(comparisons[type(node.ops[0])](evaluate(node.left), evaluate(node.comparators[0])))
+        if isinstance(node, ast.BoolOp):
+            values = (evaluate(item) != 0 for item in node.values)
+            return int(all(values) if isinstance(node.op, ast.And) else any(values))
         raise ValueError(f"unsupported SystemVerilog integer expression: {expression}")
-    result = eval(compile(tree, "<systemverilog-width>", "eval"), {"__builtins__": {}}, {})
-    if not isinstance(result, (bool, int, float)) or (
-        not isinstance(result, bool) and int(result) != result
-    ):
-        raise ValueError(f"non-integer SystemVerilog expression: {expression}")
-    return result if isinstance(result, bool) else int(result)
+
+    return evaluate(tree.body)
 
 
 def _parameters(source: str, module: str) -> tuple[dict[str, int], str, str]:

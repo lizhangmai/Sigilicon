@@ -159,6 +159,7 @@ class ReleaseOaIdentity:
 @dataclass(frozen=True)
 class RtlReleaseInterface:
     contract: str
+    bindings: Mapping[str, str]
     module: str
     source_view: str
     variant: str | None = None
@@ -169,6 +170,7 @@ class RtlReleaseInterface:
         value: dict[str, object] = {
             "kind": self.kind,
             "contract": self.contract,
+            "bindings": dict(self.bindings),
             "module": self.module,
             "source_view": self.source_view,
         }
@@ -180,6 +182,7 @@ class RtlReleaseInterface:
 @dataclass(frozen=True)
 class MixedSignalReleaseInterface:
     contract: str
+    bindings: Mapping[str, str]
     physical: str
     logical: str
     interfaces_are_distinct: bool
@@ -193,6 +196,7 @@ class MixedSignalReleaseInterface:
         return {
             "kind": self.kind,
             "contract": self.contract,
+            "bindings": dict(self.bindings),
             "physical": self.physical,
             "logical": self.logical,
             "interfaces_are_distinct": self.interfaces_are_distinct,
@@ -202,11 +206,12 @@ class MixedSignalReleaseInterface:
 @dataclass(frozen=True)
 class NativeOaReleaseInterface:
     contract: str
+    bindings: Mapping[str, str]
     kind: Literal["oa-native"] = field(default="oa-native", init=False)
 
     @property
-    def record(self) -> dict[str, str]:
-        return {"kind": self.kind, "contract": self.contract}
+    def record(self) -> dict[str, object]:
+        return {"kind": self.kind, "contract": self.contract, "bindings": dict(self.bindings)}
 
 
 ReleaseInterface: TypeAlias = (

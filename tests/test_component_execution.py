@@ -79,3 +79,35 @@ def test_composite_rtl_cannot_select_sources_without_a_source_edge(tmp_path: Pat
     project, _ = _composite(tmp_path, edge=edge)
     with pytest.raises(ValueError, match="source-level dependency"):
         project.plan("parent:rtl")
+
+
+def test_synopsys_composite_compiles_qualified_sources_in_declared_order(tmp_path: Path) -> None:
+    _composite(tmp_path)
+    parent = tmp_path / "ip/parent"
+    runner = write_file(parent / "run.sh", """#!/bin/bash
+set -eu
+while read -r source; do cat "$source"; done < "$SIGILICON_VCS_RTL_FILELIST"
+printf 'COMPOSITE_COMPLETE\\n'
+""", executable=True)
+    component = parent / "component.toml"
+    component.write_text(component.read_text().replace('[sources]', '[sources]\nrunner = "ip/parent/run.sh"').replace('rtl = ["rtl"]', 'rtl = ["rtl", "runner"]'))
+    (parent / "operations.toml").write_text('''schema = 5
+contract_kind = "owner-operations"
+path_scope = "owner"
+owner = "parent"
+[runtime.vcs.tools]
+SIGILICON_RUNNER_SHELL = "runtime.bash"
+SIGILICON_SYNOPSYS_VCS = "synopsys.vcs"
+[operations.rtl]
+uses = "synopsys.vcs"
+runtime = "vcs"
+filesets = [{ component = "parent", fileset = "rtl" }, { component = "child", fileset = "rtl" }]
+config = { runner = "run.sh", variant = "test", target = "structural", rtl_sources = [{component = "child", source = "rtl"}, {component = "parent", source = "rtl"}], success_marker = "COMPOSITE_COMPLETE", timeout_seconds = 10 }
+''')
+    with (tmp_path / "sigilicon.toml").open("a") as stream:
+        stream.write('"runtime.bash" = "/bin/bash"\n"synopsys.vcs" = "/bin/true"\n')
+    project = Project.open(tmp_path)
+    result = project.run(project.plan("parent:rtl"))
+    assert result.status == "succeeded"
+    stdout = next(artifact for artifact in result.outcomes[0].result.artifacts if artifact.path.name == "stdout.log")
+    assert "module child; endmodule\nmodule parent; endmodule" in stdout.read_text()

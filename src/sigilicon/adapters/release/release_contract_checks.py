@@ -58,13 +58,14 @@ def _table(value: object, label: str) -> Mapping[str, Any]:
 
 
 def _interface_views(exported: IpExport, roles: set[str]) -> dict[str, IpCollateral]:
-    """Resolve the singular interface views without discarding ambiguous matches."""
+    """Resolve explicit canonical names, independently of other views of a role."""
+    by_name = {item.name: item for item in exported.collateral}
     result = {}
     for role in roles:
-        matches = [item for item in exported.collateral if item.role == role]
-        if len(matches) != 1:
-            raise ValueError(f"{exported.name}: interface role {role} requires one view, got {len(matches)}")
-        result[role] = matches[0]
+        name = exported.interface.bindings.get(role)
+        if name not in by_name or by_name[name].role != role:
+            raise ValueError(f"{exported.name}: interface role {role} requires a named binding")
+        result[role] = by_name[name]
     return result
 
 

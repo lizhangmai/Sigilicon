@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from sigilicon.execution._values import ExecutionError
 from sigilicon.execution._resources import ResourceBinding, Resources
 from sigilicon.virtuoso.bridge import VIRTUOSO_BRIDGE_HOST, VIRTUOSO_BRIDGE_PORT, create_client
 
@@ -40,7 +41,7 @@ def bind_client(client: Any, resources: Resources) -> OaClient:
 def get_client(resources: Resources) -> OaClient:
     raw = create_client(resources)
     if not raw.test_connection():
-        raise RuntimeError(
+        raise ExecutionError(
             "Virtuoso bridge rejected the explicit runtime endpoint; "
             "start the managed daemon and verify its host and port"
         )
