@@ -366,10 +366,26 @@ class ExportSemantics:
                 problems.append(f"{prefix}:untrusted-external-authority")
         else:
             from sigilicon.adapters.release.run_evidence import validate_execution
-            closure = validate_execution(receipt.execution)
-            identities = {(item.get("size"), item.get("sha256")) for item in closure}
-            if any((item.size, item.sha256) not in identities for item in (*receipt.inputs, *receipt.outputs)):
-                problems.append(f"{prefix}:artifact-outside-executed-closure")
+            claim = validate_execution(receipt.execution)
+            expected_check = {
+                "drc_receipt": "drc", "lvs_receipt": "lvs",
+                "schematic_layout_parity_receipt": "lvs",
+                "synthesis_receipt": "synthesis",
+                "physical_implementation_receipt": "physical-implementation",
+                "characterization_receipt": "characterization",
+            }.get(by_role[role].role)
+            if claim.check != expected_check:
+                problems.append(f"{prefix}:execution-check")
+            if claim.subject != receipt.subject.get("cell", receipt.subject.get("module")):
+                problems.append(f"{prefix}:execution-subject")
+            if (claim.variant != receipt.variant
+                    or canonical_json(dict(claim.condition)) != canonical_json(dict(receipt.condition))
+                    or not set(receipt.coverage).issubset(claim.coverage)):
+                problems.append(f"{prefix}:execution-applicability")
+            for field in ("inputs", "outputs"):
+                if any((item.size, item.sha256) not in getattr(claim, field)
+                       for item in getattr(receipt, field)):
+                    problems.append(f"{prefix}:{field}:artifact-outside-checked-closure")
         if receipt.status != "passed":
             problems.append(f"{prefix}:status")
         if receipt.name != role:

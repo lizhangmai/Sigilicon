@@ -28,6 +28,7 @@ class DcAdapter(RunnerAdapter):
         environment.update(
             {
                 "SIGILICON_DESIGN_VARIANT": action.invocation.variant,
+                "SIGILICON_DESIGN_TOP": action.top,
                 "SIGILICON_DESIGN_CORNER": action.corner,
                 "SIGILICON_DC_RTL_FILELIST": str(
                     _write_filelist(

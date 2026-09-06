@@ -157,6 +157,7 @@ class VcsAction(Action):
 
 @dataclass(frozen=True)
 class DcAction(Action):
+    top: str
     kind: ClassVar[str] = "synopsys.dc"
     invocation: Invocation
     corner: str
@@ -170,10 +171,10 @@ class DcAction(Action):
     def compile(cls, step: Step) -> DcAction:
         config = _strict_config(step, frozenset({
             "runner", "variant", "timeout_seconds", "corner", "constraints",
-            "evaluator", "rtl_sources", "reports", "verdict_report",
+            "evaluator", "rtl_sources", "reports", "verdict_report", "top",
         }))
         return cls(
-            Invocation.compile(step, "SIGILICON_SYNOPSYS_DC_SHELL"), _text(config, "corner"),
+            Invocation.compile(step, "SIGILICON_SYNOPSYS_DC_SHELL"), _text(config, "top"), _text(config, "corner"),
             source(step, "constraints"), source(step, "evaluator"),
             hdl_sources(step, "rtl_sources"),
             tuple(_safe_relative(name, "DC report") for name in _strings(config, "reports")),

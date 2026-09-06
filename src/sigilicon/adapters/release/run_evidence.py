@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import hashlib
 import json
 from typing import Mapping
@@ -22,7 +23,21 @@ def execution_from_run(plan: MaterializationPlan, reference: ArtifactReference) 
     return record
 
 
-def validate_execution(record: Mapping) -> tuple[Mapping, ...]:
+@dataclass(frozen=True)
+class VerifiedExecution:
+    """The specific claim proven by one audited adapter invocation."""
+
+    check: str
+    owner: str
+    subject: str
+    variant: str | None
+    condition: Mapping
+    coverage: frozenset[str]
+    inputs: frozenset[tuple[int, str]]
+    outputs: frozenset[tuple[int, str]]
+
+
+def validate_execution(record: Mapping) -> VerifiedExecution:
     """Validate execution, artifact identity and adapter-specific conclusion together."""
 
     if not isinstance(record, Mapping) or set(record) != {"kind", "proof", "reference", "payload"} or record["kind"] != "managed-run":
@@ -85,4 +100,43 @@ def validate_execution(record: Mapping) -> tuple[Mapping, ...]:
             raise ValueError("receipt tool verdict is not a proven execution conclusion")
     else:
         raise ValueError("adapter cannot supply release signoff evidence")
-    return tuple([*plan.get("sources", []), *artifacts])
+    action = planned["action"]
+    sources = {item["path"]: item for item in plan["sources"]}
+    def identities(rows):
+        return frozenset((item["size"], item["sha256"]) for item in rows)
+    def checked_digest(value):
+        digest = value.removeprefix("sha256-")
+        rows = [item for item in (*sources.values(), *artifacts) if item["sha256"] == digest]
+        if not rows:
+            raise ValueError("checked input is absent from execution evidence")
+        return identities(rows)
+    if adapter == "mentor.calibre":
+        check = action["check"]
+        if check not in {"drc", "lvs"} or (check == "lvs") != ("source" in evidence):
+            raise ValueError("physical evidence check disagrees with its action")
+        if layout["name"] != action["cell"] or action["owner"] != result["owner"]:
+            raise ValueError("checked subject disagrees with its action")
+        inputs = checked_digest(layout["artifact_identity"])
+        if check == "lvs":
+            source = evidence["source"]
+            if source["name"] != layout["name"] or source["owner"] != result["owner"]:
+                raise ValueError("LVS source subject disagrees with checked layout")
+            inputs |= checked_digest(source["artifact_identity"])
+        outputs = identities(item for item in artifacts if item["step"] == reference.step
+                             and item["kind"] == "netlist.cdl")
+        return VerifiedExecution(check, result["owner"], layout["name"], plan["variant"], {},
+                                 frozenset(), inputs, outputs)
+    check = "synthesis" if adapter == "synopsys.dc" else "physical-implementation"
+    if (evidence.get("stage") != check or evidence.get("variant") != action["invocation"]["variant"]
+            or evidence.get("corner") != action["corner"]):
+        raise ValueError("tool verdict applicability disagrees with its action")
+    if adapter == "synopsys.dc":
+        inputs = identities(sources[path] for path in (*action["rtl"], action["constraints"]))
+    else:
+        inputs = identities(item for item in artifacts
+            if (item["step"] == action["synthesis_step"] and item["role"] in {"mapped-netlist", "mapped-constraints"})
+            or (item["step"] == action["reference_step"] and item["role"] == "reference-library"))
+    outputs = identities(item for item in artifacts if item["step"] == reference.step
+                         and not item["kind"].startswith(("evidence.", "log.", "report.")))
+    return VerifiedExecution(check, result["owner"], action["top"], action["invocation"]["variant"],
+                             {"corner": action["corner"]}, frozenset(checks), inputs, outputs)

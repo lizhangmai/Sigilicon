@@ -463,3 +463,58 @@ config = {owner = "example", timeout_seconds = 60}
     platform = tmp_path / "configs/platform/testpdk/oa.toml"
     platform.write_text(platform.read_text().replace('technology_library = "techLib"', 'technology_library = "anotherTech"'))
     assert not project.preflight(plan).ready
+
+
+@pytest.mark.parametrize('fault', [None, 'check', 'subject', 'input', 'output', 'condition', 'coverage'])
+def test_release_receipt_consumes_only_the_specific_checked_claim(tmp_path: Path, monkeypatch, fault) -> None:
+    import hashlib
+    from sigilicon.external_tools import ProcessResult
+    from sigilicon.project import Project
+    from sigilicon.execution import RunStore
+    from sigilicon.execution.artifact_reference import ArtifactReference
+    from sigilicon.adapters.release.run_evidence import execution_from_run
+    from sigilicon.adapters.release.release_semantics import ExportSemantics, ReleaseView
+    from sigilicon.domain.ip_release import ReceiptPolicy
+
+    _verification_project(tmp_path, origin='source', check='lvs')
+    owner = tmp_path / 'ip/example'
+    (owner / 'unused.sv').write_text('module unused; endmodule\n')
+    component = owner / 'component.toml'
+    component.write_text(component.read_text().replace('[sources]', '[sources]\nunused = "ip/example/unused.sv"')
+                         .replace('verify = [', 'verify = ["unused", '))
+    catalog = owner / 'operations.toml'
+    catalog.write_text(catalog.read_text().replace('role = "diagnostic"', 'role = "signoff"'))
+
+    def verifier(request):
+        for name in ('lvs.rep', 'lvs.rep.ext', 'calibre_erc.db', 'calibre_erc.sum'):
+            (Path(request.cwd) / name).write_text(' CORRECT TOP TOP\n')
+        (Path(request.cwd) / 'svdb').mkdir()
+        (Path(request.cwd) / 'svdb/TOP.sp').write_text('.subckt TOP a b\n.ends TOP\n')
+        return ProcessResult(0, 'LVS completed. CORRECT.\n', '')
+
+    monkeypatch.setattr(physical_verification.managed_process, 'run', verifier)
+    project = Project.open(tmp_path)
+    result = project.run(project.plan('example:verify'))
+    proof = RunStore(project.artifact_root).materialization_plan(
+        owner=result.owner, operation=result.operation, run_id=result.run_id)
+    execution = execution_from_run(proof, ArtifactReference(
+        'verify', 'verification', 'evidence.physical-verification', path='typed-evidence.json'))
+    data = (owner / ('unused.sv' if fault == 'input' else 'layout.gds')).read_bytes()
+    view = ReleaseView('design', 'raw_macro_gds_or_oasis', 'gds', frozenset(),
+                       len(data), hashlib.sha256(data).hexdigest())
+    evidence = ReleaseView('check', 'synthesis_receipt' if fault == 'check' else 'lvs_receipt',
+                           'json', frozenset(), 0, '0' * 64)
+    outputs = ('design',) if fault == 'output' else ()
+    policy = ReceiptPolicy(() if outputs else ('design',), outputs,
+                           ('unmeasured',) if fault == 'coverage' else ())
+    semantics = ExportSemantics('example', 'circuit', ('design', 'check'), (view, evidence),
+        subject={'kind': 'circuit', 'cell': 'OTHER' if fault == 'subject' else 'TOP'}, receipts={'check': policy})
+    binding = {'name': 'design', 'size': view.size, 'sha256': view.sha256}
+    receipt = {'schema': 4, 'contract_kind': 'release-receipt', 'name': 'check', 'status': 'passed',
+        'source_identity': semantics.source_identity, 'subject': dict(semantics.subject),
+        'execution': execution, 'tool': {'name': 'mentor.calibre', 'version': 'offline-fixture'},
+        'inputs': [] if outputs else [binding], 'outputs': [binding] if outputs else [],
+        'variant': None, 'condition': {'corner': 'ff'} if fault == 'condition' else {},
+        'coverage': list(policy.coverage)}
+    _, problems = semantics.assess('development', lambda _: receipt)
+    assert bool(problems) == (fault is not None)

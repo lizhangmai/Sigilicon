@@ -304,6 +304,7 @@ ln -s ../mapped.ddc "$SIGILICON_DC_OUTPUT_ROOT/cache/current.ddc"
         {
             "runner": runner.relative_to(sources).as_posix(),
             "constraints": "impl/syn/constraints.sdc",
+            "top": "design",
             "variant": "test",
             "corner": "tt",
             "evaluator": "tools/evaluate.py",
