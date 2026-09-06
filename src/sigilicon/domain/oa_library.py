@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
 _VIEW_KINDS = {
+    "native_oa",
     "spectre_netlist",
     "spectre_model",
     "schematic",
@@ -341,7 +342,7 @@ def _load_cell(
         )
     if len({view.name for view in views}) != len(views):
         raise ValueError(f"duplicate OA view names in {cell_manifest}")
-    if role == "design":
+    if role == "design" and any(view.kind in {"schematic", "symbol"} for view in views):
         required = {"netlist", "schematic", "symbol"}
         missing = required - {view.name for view in views}
         if missing:

@@ -16,11 +16,11 @@ from sigilicon.domain.ip_release import (
     IpCollateral,
     IpContract,
     IpExport,
-    OaMixedSignalIpInterface,
-    OaNativeIpInterface,
+    MixedSignalIpInterface,
+    CircuitIpInterface,
     RtlIpInterface,
 )
-from sigilicon.domain.netlist import subckt_ports
+from sigilicon.domain.netlist import subckt_ports, load_netlist_snapshot, resolve_netlist_hierarchy
 from sigilicon.domain.systemverilog import (
     ModulePort,
     module_port_signatures,
@@ -150,12 +150,9 @@ def _oa_port_contract_document(
     project: Project,
     design_inventory: Mapping[Path, DesignSpec] | None,
 ) -> Mapping[str, Any]:
-    if design_inventory is None:
+    if design_inventory is None or path not in design_inventory:
         return read_toml(path)
-    try:
-        design_snapshot = design_inventory[path]
-    except KeyError as exc:
-        raise ValueError(f"OA design inventory has no {path} entry") from exc
+    design_snapshot = design_inventory[path]
     from sigilicon.domain.design import resolve_design_spec
 
     design = resolve_design_spec(
@@ -171,6 +168,37 @@ def _oa_port_contract_document(
     if not path.is_relative_to(producer_root):
         raise ValueError("OA port contract must stay inside the release producer")
     return design.source_documents[path]
+
+
+def validate_circuit_boundary(raw: Mapping[str, Any], *, top: str, netlist: Path) -> tuple[str, ...]:
+    """Validate a closed electrical boundary without an OA authoring dependency."""
+    require_config_header(raw, netlist, contract_kind="circuit-interface", schema=1, path_scope="owner")
+    circuit = _table(raw.get("circuit"), "circuit")
+    ports = circuit.get("ports")
+    primitives = circuit.get("primitive_masters", ())
+    if circuit.get("top") != top or not isinstance(ports, (list, tuple)) or not ports:
+        raise ValueError("circuit interface top and ordered ports are required")
+    if any(not isinstance(port, str) or not port for port in ports) or len(set(ports)) != len(ports):
+        raise ValueError("circuit interface ports must be unique names")
+    if not isinstance(primitives, (list, tuple)) or any(not isinstance(name, str) or not name for name in primitives):
+        raise ValueError("circuit primitive masters must be names")
+    hierarchy = resolve_netlist_hierarchy((load_netlist_snapshot(netlist),), top=top, primitive_masters=primitives)
+    if hierarchy.unreachable_subckts or hierarchy.definitions[top].ports != tuple(ports):
+        raise ValueError("circuit netlist closure or pin order disagrees with its interface")
+    return tuple(ports)
+
+
+def _circuit_development_check(contract: IpContract, exported: IpExport) -> ReleaseCheck:
+    interface = exported.interface
+    views = _interface_views(exported, {"interface_contract", "circuit_netlist"})
+    path = contract.project_root / contract.producer / interface.contract
+    if views["interface_contract"].source != path.relative_to(contract.project_root):
+        raise ValueError("circuit interface binding disagrees with its contract")
+    raw = contract.interface_documents[path]
+    if raw.get("owner") != contract.owner:
+        raise ValueError("circuit interface owner disagrees with its release")
+    ports = validate_circuit_boundary(raw, top=interface.top, netlist=contract.project_root / views["circuit_netlist"].source)
+    return InterfaceConsistencyCheck(export=exported.name, interface_kind=interface.kind, module=interface.top, port_count=len(ports))
 
 
 def _development_interface_check(
@@ -198,7 +226,9 @@ def _development_interface_check_with_design_inventory(
 
     if isinstance(exported.interface, RtlIpInterface):
         return _rtl_development_interface_check(contract, exported)
-    if isinstance(exported.interface, OaNativeIpInterface):
+    if isinstance(exported.interface, CircuitIpInterface):
+        if exported.interface.authoring is None:
+            return _circuit_development_check(contract, exported)
         return _native_oa_development_interface_check(
             contract,
             exported,
@@ -335,7 +365,7 @@ def _native_oa_development_interface_check(
     """Validate a native OA boundary without imposing a digital adapter schema."""
 
     interface = exported.interface
-    if not isinstance(interface, OaNativeIpInterface):
+    if not isinstance(interface, CircuitIpInterface):
         raise TypeError("native OA validation requires a native OA export")
     root = contract.project_root
     producer = _project_path(root, Path(contract.producer), "IP producer")
@@ -351,8 +381,8 @@ def _native_oa_development_interface_check(
         raw,
         path=interface_path,
         owner=contract.owner,
-        library=interface.library,
-        cell=interface.cell,
+        library=interface.authoring.library,
+        cell=interface.authoring.cell,
     )
 
     required_views = {
@@ -389,13 +419,13 @@ def _native_oa_development_interface_check(
     )
     if not circuit_source.is_relative_to(producer):
         raise ValueError("canonical circuit netlist must stay inside the release producer")
-    if subckt_ports(circuit_source, interface.cell) != tuple(oa_ports):
+    if subckt_ports(circuit_source, interface.authoring.cell) != tuple(oa_ports):
         raise ValueError("canonical circuit pin order disagrees with the OA port contract")
     return InterfaceConsistencyCheck(
         export=exported.name,
         interface_kind=interface.kind,
-        oa_library=interface.library,
-        oa_cell=interface.cell,
+        oa_library=interface.authoring.library,
+        oa_cell=interface.authoring.cell,
         physical_port_count=len(oa_ports),
         native_oa_port_contract_checked=True,
     )

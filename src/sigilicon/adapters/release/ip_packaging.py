@@ -47,6 +47,7 @@ from sigilicon.release_store import (
 )
 from sigilicon.adapters.release.source_control import inspect_checkout, verify_source_commit
 from sigilicon.adapters.release.release_contract_checks import (
+    validate_circuit_boundary,
     _identity_module,
     _interface_ports,
     _native_oa_interface_contract,
@@ -185,7 +186,7 @@ def _publish_ip_release(
                         view[field] = expected[field]
                 views.append(view)
             manifest: dict[str, Any] = {
-                "schema": 4,
+                "schema": 5,
                 "contract_kind": "ip-release-manifest",
                 "release_kind": "source-package",
                 "ip_name": record["ip_name"],
@@ -369,7 +370,7 @@ def _packaged_native_oa_interface_check(
     exported: Mapping[str, Any],
     interface: Mapping[str, Any],
 ) -> None:
-    if set(interface) != {"kind", "contract", "bindings"}:
+    if set(interface) != {"kind", "contract", "bindings", "top"}:
         raise RuntimeError(
             f"packaged {export_name} native OA interface fields are invalid"
         )
@@ -393,6 +394,9 @@ def _packaged_native_oa_interface_check(
         raise RuntimeError(
             f"packaged {export_name} native OA identity is invalid"
         )
+
+    if interface.get("top") != oa["cell"]:
+        raise RuntimeError("packaged circuit top disagrees with OA authoring cell")
 
     contract_path = resolve_release_view(
         manifest, manifest_path, _interface_binding(interface, "interface_contract"), export=export_name
@@ -516,7 +520,15 @@ def _packaged_interface_check(
                 interface=interface,
             )
             continue
-        if interface_kind == "oa-native":
+        if interface_kind == "circuit" and "oa" not in exported:
+            path = resolve_release_view(manifest, manifest_path, _interface_binding(interface, "interface_contract"), export=export_name)
+            netlist = resolve_release_view(manifest, manifest_path, _interface_binding(interface, "circuit_netlist"), export=export_name)
+            try:
+                validate_circuit_boundary(read_toml(path), top=interface.get("top"), netlist=netlist)
+            except (OSError, ValueError) as exc:
+                raise RuntimeError(f"packaged circuit boundary is invalid: {exc}") from exc
+            continue
+        if interface_kind == "circuit":
             _packaged_native_oa_interface_check(
                 manifest,
                 manifest_path,
@@ -525,7 +537,7 @@ def _packaged_interface_check(
                 interface=interface,
             )
             continue
-        if interface_kind != "oa-mixed-signal":
+        if interface_kind != "mixed-signal":
             raise RuntimeError(
                 f"IP release export {export_name} interface kind is unsupported"
             )

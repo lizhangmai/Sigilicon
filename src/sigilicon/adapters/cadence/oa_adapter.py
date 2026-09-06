@@ -250,6 +250,7 @@ class _OaRebuildAction:
     plan: OALibraryRebuildPlan
     inputs: _CadenceInputs
     timeout_seconds: int
+    cell: str | None
 
     def __post_init__(self) -> None:
         if not isinstance(self.plan, OALibraryRebuildPlan):
@@ -257,7 +258,7 @@ class _OaRebuildAction:
 
     @property
     def record(self) -> dict[str, object]:
-        return {"kind": "oa-rebuild", "inputs": self.inputs.record, "timeout_seconds": self.timeout_seconds}
+        return {"kind": "oa-rebuild", "inputs": self.inputs.record, "timeout_seconds": self.timeout_seconds, "cell": self.cell}
 
     @property
     def identity(self) -> str:
@@ -292,7 +293,8 @@ _OA_ATTEST_FIELDS = frozenset({"owner", "testbench", "timeout_seconds"})
 
 
 def _oa_config(step: Step, fields: frozenset[str]) -> Mapping[str, Any]:
-    config = _strict_config(step, fields)
+    required = fields - {"cell"} if "cell" in fields and "cell" not in step.config else fields
+    config = _strict_config(step, required)
     _text(config, "owner")
     _positive_integer(config, "timeout_seconds")
     if "testbench" in fields:
@@ -492,7 +494,7 @@ class OaRebuildAdapter:
         return _oa_preflight(
             step,
             resources,
-            fields=_OA_FIELDS,
+            fields=_OA_FIELDS | {"cell"},
             action_type=_OaRebuildAction,
         )
 
@@ -506,10 +508,13 @@ class OaRebuildAdapter:
             project,
             step,
             resources,
-            fields=_OA_FIELDS,
+            fields=_OA_FIELDS | {"cell"},
             operation="rebuild",
         )
-        return prepared.bind(_OaRebuildAction(planning, prepared.inputs, _positive_integer(config, "timeout_seconds")))
+        cell = config.get("cell")
+        if cell is not None and (not isinstance(cell, str) or cell not in planning.expected_views):
+            raise ContractError("OA rebuild cell must identify an owned cell")
+        return prepared.bind(_OaRebuildAction(planning, prepared.inputs, _positive_integer(config, "timeout_seconds"), cell))
 
     def run(self, context: ExecutionIO) -> StepResult:
         from sigilicon.adapters.cadence.oa_client import get_client
@@ -536,6 +541,7 @@ class OaRebuildAdapter:
             resource_paths=action.inputs.resource_paths(context),
             resources=context.runtime,
             artifacts=context.workspace("oa", {}).scoped("layouts"),
+            cell=action.cell,
             timeout=action.timeout_seconds,
             operation_id=context.operation_id,
             bind_operation=context.register_mutation,

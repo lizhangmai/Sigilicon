@@ -17,7 +17,7 @@ def _composite(root: Path, *, edge: str = "source") -> tuple[Project, Path]:
         directory.mkdir(parents=True, exist_ok=True)
         relative = directory.relative_to(root).as_posix()
         (directory / "top.sv").write_text(f"module {name}; endmodule\n")
-        (directory / "component.toml").write_text(f'''schema = 5
+        (directory / "component.toml").write_text(f'''schema = 6
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "{name}"
@@ -35,7 +35,9 @@ rtl = ["rtl"]
             stream.write(f'\n[components.{name}]\ncontract = "{relative}/component.toml"\n')
     if edge != "absent":
         with (parent / "component.toml").open("a") as stream:
-            stream.write(f'\n[[component]]\nname = "child"\ncontract = "{child.relative_to(root)}/component.toml"\n')
+            stream.write('\n[[component]]\nname = "child"\n')
+            if edge == "source":
+                stream.write(f'contract = "{child.relative_to(root)}/component.toml"\n')
             if edge == "release":
                 stream.write('[component.release]\nexport = "child"\nrequired_maturity = "development"\nviews = ["rtl"]\n')
     (parent / "operations.toml").write_text('''schema = 5

@@ -71,29 +71,32 @@ class IpCollateral:
 
 
 @dataclass(frozen=True)
-class OaMixedSignalIpInterface:
-    kind: Literal["oa-mixed-signal"]
-    contract: PurePosixPath
-    bindings: Mapping[str, str]
+class OaAuthoring:
     library: str
     cell: str
     schematic_view: str
     layout_view: str
+
+
+@dataclass(frozen=True)
+class MixedSignalIpInterface:
+    kind: Literal["mixed-signal"]
+    contract: PurePosixPath
+    bindings: Mapping[str, str]
+    authoring: OaAuthoring | None
     physical: str
     logical: str
 
 
 @dataclass(frozen=True)
-class OaNativeIpInterface:
-    """A native OA circuit boundary without a synthesized transaction shell."""
+class CircuitIpInterface:
+    """Electrical circuit boundary, optionally authored in OpenAccess."""
 
-    kind: Literal["oa-native"]
+    kind: Literal["circuit"]
     contract: PurePosixPath
     bindings: Mapping[str, str]
-    library: str
-    cell: str
-    schematic_view: str
-    layout_view: str
+    top: str
+    authoring: OaAuthoring | None
 
 
 @dataclass(frozen=True)
@@ -106,8 +109,8 @@ class RtlIpInterface:
     variant: str | None = None
 
 
-OaIpInterface = OaMixedSignalIpInterface | OaNativeIpInterface
-IpInterface = OaIpInterface | RtlIpInterface
+CircuitBoundary = MixedSignalIpInterface | CircuitIpInterface
+IpInterface = CircuitBoundary | RtlIpInterface
 
 
 @dataclass(frozen=True)
@@ -296,7 +299,9 @@ def _parse_ip_contract(
             interface.get("kind"), f"exports[{index}].interface.kind"
         )
         interface_fields = {"kind", "contract", "bindings"}
-        if interface_kind == "oa-mixed-signal":
+        if interface_kind == "circuit":
+            interface_fields.add("top")
+        if interface_kind == "mixed-signal":
             interface_fields.update({"physical", "logical"})
         elif interface_kind == "rtl":
             interface_fields.update({"module", "source_view", "variant"})
@@ -313,51 +318,23 @@ def _parse_ip_contract(
             interface.get("contract"),
             f"exports[{index}].interface.contract",
         )
-        if interface_kind in {"oa-mixed-signal", "oa-native"}:
-            oa = _table(entry.get("oa"), f"exports[{index}].oa")
-            _reject_unknown(
-                oa,
-                {"library", "cell", "schematic_view", "layout_view"},
-                f"exports[{index}].oa",
-            )
-            oa_identity = {
-                "contract": interface_contract,
-                "bindings": bindings,
-                "library": _string(
-                    oa.get("library"), f"exports[{index}].oa.library"
-                ),
-                "cell": _string(oa.get("cell"), f"exports[{index}].oa.cell"),
-                "schematic_view": _string(
-                    oa.get("schematic_view"),
-                    f"exports[{index}].oa.schematic_view",
-                ),
-                "layout_view": _string(
-                    oa.get("layout_view"),
-                    f"exports[{index}].oa.layout_view",
-                ),
-            }
-            if interface_kind == "oa-native":
-                if "physical" in interface or "logical" in interface:
-                    raise ValueError(
-                        f"exports[{index}] native OA interface cannot declare "
-                        "mixed-signal interface identities"
-                    )
-                parsed_interface = OaNativeIpInterface(
-                    kind="oa-native",
-                    **oa_identity,
-                )
+        if interface_kind in {"mixed-signal", "circuit"}:
+            authoring = None
+            if "oa" in entry:
+                oa = _table(entry["oa"], f"exports[{index}].oa")
+                fields = ("library", "cell", "schematic_view", "layout_view")
+                _reject_unknown(oa, set(fields), f"exports[{index}].oa")
+                authoring = OaAuthoring(**{key: _string(oa.get(key), f"oa.{key}") for key in fields})
+            common = dict(contract=interface_contract, bindings=bindings, authoring=authoring)
+            if interface_kind == "circuit":
+                top = _string(interface.get("top", authoring.cell if authoring else None), "interface.top")
+                if authoring and top != authoring.cell:
+                    raise ValueError("circuit top disagrees with OA authoring cell")
+                parsed_interface = CircuitIpInterface(kind="circuit", top=top, **common)
             else:
-                parsed_interface = OaMixedSignalIpInterface(
-                    kind="oa-mixed-signal",
-                    physical=_string(
-                        interface.get("physical"),
-                        f"exports[{index}].interface.physical",
-                    ),
-                    logical=_string(
-                        interface.get("logical"),
-                        f"exports[{index}].interface.logical",
-                    ),
-                    **oa_identity,
+                parsed_interface = MixedSignalIpInterface(
+                    kind="mixed-signal", physical=_string(interface.get("physical"), "interface.physical"),
+                    logical=_string(interface.get("logical"), "interface.logical"), **common,
                 )
         elif interface_kind == "rtl":
             if "oa" in entry:
@@ -549,13 +526,13 @@ def _parse_ip_contract(
             receipts=values["receipts"],
         )
         if isinstance(
-            exported.interface, (OaMixedSignalIpInterface, OaNativeIpInterface)
-        ):
-            oa_identity = (exported.interface.library, exported.interface.cell)
+            exported.interface, (MixedSignalIpInterface, CircuitIpInterface)
+        ) and exported.interface.authoring is not None:
+            oa_identity = (exported.interface.authoring.library, exported.interface.authoring.cell)
             if oa_identity in oa_identities:
                 raise ValueError(
                     "duplicate IP export OA identity: "
-                    f"{exported.interface.library}/{exported.interface.cell}"
+                    f"{exported.interface.authoring.library}/{exported.interface.authoring.cell}"
                 )
             oa_identities.add(oa_identity)
         by_name = {item.name: item for item in exported.collateral}
@@ -592,8 +569,8 @@ def _parse_ip_contract(
         exported
         for exported in exports
         if isinstance(
-            exported.interface, (OaMixedSignalIpInterface, OaNativeIpInterface)
-        )
+            exported.interface, (MixedSignalIpInterface, CircuitIpInterface)
+        ) and exported.interface.authoring is not None
     ]
     if oa_exports:
         oa_assembly_path = find_oa_assembly(repository, contract_path)
@@ -690,7 +667,7 @@ def resolve_ip_contract(
             require_config_header(
                 document,
                 interface_path,
-                contract_kind="ip-interface",
+                contract_kind=("ip-interface", "circuit-interface"),
                 path_scope="owner",
                 owner=snapshot.owner,
             )

@@ -206,7 +206,7 @@ def _locked_native_release(
     oa = exported.get("oa")
     if (
         not isinstance(exported_interface, Mapping)
-        or exported_interface.get("kind") != "oa-native"
+        or exported_interface.get("kind") != "circuit"
         or not isinstance(oa, Mapping)
         or any(
             not isinstance(oa.get(field), str) or not oa.get(field)

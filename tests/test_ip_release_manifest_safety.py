@@ -23,7 +23,7 @@ ports = [{ name = "a", direction = "input", width = 1 }]
 ''')
     availability = {"simulation": True, "synthesis": False, "physical_implementation": False}
     manifest = {
-        "schema": 4,
+        "schema": 5,
         "contract_kind": "ip-release-manifest",
         "release_kind": "source-package",
         "ip_name": "fixture",

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -70,7 +72,7 @@ def test_calibre_environment_uses_the_resource_snapshot(tmp_path: Path) -> None:
     assert environment["CALIBRE_HOME"] == str(executable.parent.parent)
 
 
-@pytest.mark.parametrize("fault", [None, "mapping", "during-export"])
+@pytest.mark.parametrize("fault", [None, "mapping", "during-export", "native-drift"])
 def test_oa_export_binds_before_lease_and_commits_stream(tmp_path: Path, monkeypatch, fault: str | None) -> None:
     from sigilicon.project import Project
 
@@ -118,13 +120,15 @@ def test_oa_export_binds_before_lease_and_commits_stream(tmp_path: Path, monkeyp
     log = tmp_path / "strmout.log"
     log.write_text("offline export boundary\n")
     def export(*_args, **_kwargs):
+        if fault == "native-drift":
+            (project.workspace_root / "example/TOP/layout/layout.oa").write_bytes(b"unplanned native edit")
         if fault == "during-export":
             (project.workspace_root / "cds.lib").write_text("DEFINE example ./another\n")
         return SimpleNamespace(gds_path=gds, stdout="", stderr="", native_log_path=log, summary_path=log)
 
     monkeypatch.setattr(oa_export, "run_xstream_export", export)
     if fault:
-        with pytest.raises(RuntimeError, match="expected workspace directory|changed"):
+        with pytest.raises((RuntimeError, ValueError), match="expected workspace directory|changed|content drift"):
             project.run(plan)
         return
     result = project.run(plan)
@@ -344,12 +348,14 @@ cell = "TOP"
 role = "design"
 canonical_source = "circuit.scs"
 views = [
-  { name = "layout", kind = "layout", source = "layout.toml", dependencies = [] },
+  { name = "layout", kind = "native_oa", source = "layout.oa.json", dependencies = [] },
   { name = "netlist", kind = "spectre_netlist", source = "circuit.scs", dependencies = [] },
   { name = "schematic", kind = "schematic", source = "design.toml", dependencies = ["TOP/netlist"] },
   { name = "symbol", kind = "symbol", source = "design.toml", dependencies = ["TOP/schematic"] },
 ]
 ''')
+    from sigilicon.domain.oa_snapshot import NativeOaSnapshot
+    (owner / "cells/TOP/layout.oa.json").write_text(json.dumps(NativeOaSnapshot("example", "TOP", "layout", "techLib", {"layout.oa": b"native-test-fixture"}).record))
     (owner / "oa.toml").write_text('''schema = 1
 contract_kind = "oa-assembly"
 path_scope = "owner"
@@ -365,7 +371,7 @@ oa = "ip/example/oa.toml"
 cell = "ip/example/cells/TOP/cell.toml"
 design = "ip/example/cells/TOP/design.toml"
 netlist = "ip/example/cells/TOP/circuit.scs"
-layout = "ip/example/cells/TOP/layout.toml"''').replace("[filesets]", '[filesets]\noa_source = ["oa"]'))
+layout = "ip/example/cells/TOP/layout.oa.json"''').replace("[filesets]", '[filesets]\noa_source = ["oa"]'))
     with (owner / "operations.toml").open("a") as stream:
         stream.write('''
 [operations.export]
@@ -377,6 +383,9 @@ config = { owner = "example", cell = "TOP", view = "layout", timeout_seconds = 6
     manifest.write_text(manifest.read_text().replace("[runtime.values]", '[runtime]\ncapabilities = ["license.cadence-oa", "tool.virtuoso-bridge"]\n[runtime.values]').replace("[runtime.tools]", f'[runtime.tools]\n"cadence.xstream" = "{sys.executable}"'))
     (tmp_path / "virtuoso").mkdir()
     (tmp_path / "virtuoso/cds.lib").write_text("DEFINE example ./example\n")
+    native = tmp_path / "virtuoso/example/TOP/layout"
+    native.mkdir(parents=True)
+    (native / "layout.oa").write_bytes(b"native-test-fixture")
     project = Project.open(tmp_path)
     return project
 
@@ -424,3 +433,33 @@ def test_release_evidence_is_extracted_from_an_audited_typed_verifier_result(tmp
     receipt["proof"]["result"]["status"] = "failed"
     with pytest.raises(ValueError, match="identity"):
         validate_execution(receipt)
+
+
+def test_native_only_oa_owner_plans_rebuild_from_snapshot_and_platform(tmp_path: Path) -> None:
+    from sigilicon.project import Project
+    _manual_oa_project(tmp_path)
+    cell = tmp_path / "ip/example/cells/TOP/cell.toml"
+    cell.write_text('''schema = 1
+contract_kind = "oa-cell"
+path_scope = "cell"
+owner = "example"
+cell = "TOP"
+role = "design"
+canonical_source = "layout.oa.json"
+views = [{name = "layout", kind = "native_oa", source = "layout.oa.json", dependencies = []}]
+''')
+    operations = tmp_path / "ip/example/operations.toml"
+    operations.write_text(operations.read_text() + '''
+[operations.restore]
+uses = "cadence.oa-rebuild"
+filesets = [{component = "example", fileset = "oa_source"}]
+config = {owner = "example", timeout_seconds = 60}
+''')
+    manifest = tmp_path / "sigilicon.toml"
+    manifest.write_text(manifest.read_text().replace('[runtime.tools]', f'[runtime.tools]\n"runtime.python" = "{sys.executable}"'))
+    project = Project.open(tmp_path)
+    plan = project.plan("example:restore")
+    assert project.preflight(plan).ready
+    platform = tmp_path / "configs/platform/testpdk/oa.toml"
+    platform.write_text(platform.read_text().replace('technology_library = "techLib"', 'technology_library = "anotherTech"'))
+    assert not project.preflight(plan).ready

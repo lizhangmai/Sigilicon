@@ -4,6 +4,7 @@ from sigilicon.execution.adapter import Adapter
 
 
 def cadence_adapters() -> tuple[Adapter, ...]:
+    from sigilicon.adapters.cadence.oa_capture import OaCaptureAdapter
     from sigilicon.adapters.cadence.oa_export import OaExportAdapter
     from sigilicon.adapters.cadence.ams_adapter import XceliumAmsAdapter
     from sigilicon.adapters.cadence.layout_adapter import (
@@ -27,6 +28,7 @@ def cadence_adapters() -> tuple[Adapter, ...]:
         OaAttestAdapter(),
         LayoutAdapter(),
         OaExportAdapter(),
+        OaCaptureAdapter(),
     )
 
 

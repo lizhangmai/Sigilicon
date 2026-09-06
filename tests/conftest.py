@@ -125,7 +125,7 @@ def write_component_owner(
         rendered = ", ".join(f'"{source_ids[value]}"' for value in values)
         fileset_lines.append(f"{name} = [{rendered}]")
     component.write_text(
-        f'''schema = 5
+        f'''schema = 6
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "{owner}"

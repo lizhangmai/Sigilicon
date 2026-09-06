@@ -9,6 +9,7 @@ from typing import Any
 
 from sigilicon.execution._workspace import ExecutionWorkspace
 from sigilicon.virtuoso.attestation import attest_native_setup
+from sigilicon.virtuoso.oa_snapshot import import_native_snapshot, attest_native_snapshot
 from sigilicon.virtuoso.discovery import list_cells
 from sigilicon.virtuoso.layout_generation import validate_layout_plan
 from sigilicon.virtuoso.oa import cell_view_exists, delete_cell, delete_cell_view
@@ -214,6 +215,21 @@ def check_oa_parity(
     design_reports: list[dict[str, object]] = []
     layout_reports: list[dict[str, object]] = []
     text_view_reports: list[dict[str, object]] = []
+    for step in plan.views:
+        if step.native_snapshot is None or step.cell not in scoped_cell_set:
+            continue
+        try:
+            if operation is not None:
+                attest_native_snapshot(step.native_snapshot, client, operation)
+            else:
+                with workspace_operation(client, plan.source.workspace_root, "check-native-oa-source", policy=OperationPolicy.READ_ONLY,
+                                         operation_id=operation_id, acquire_flow_lock=acquire_flow_lock) as native_operation, native_operation.view_lease(
+                        plan.library, cells=(step.cell,), views=((step.cell, step.view.name),)):
+                    if callable(bind_operation):
+                        bind_operation(native_operation)
+                    attest_native_snapshot(step.native_snapshot, client, native_operation)
+        except (OSError, RuntimeError, ValueError) as exc:
+            stale_or_modified[f"{step.cell}/{step.view.name}"] = str(exc)
     for step in plan.designs:
         if step.inspection.spec.cell not in scoped_cell_set:
             continue
@@ -546,6 +562,10 @@ def rebuild_oa_library(
                     for row in inventory["cells"]
                 }
     if testbench is None:
+        for step in plan.views:
+            if step.native_snapshot is not None and (target_cell is None or step.cell == target_cell):
+                import_native_snapshot(step.native_snapshot, client, workspace_root=plan.source.workspace_root,
+                                       operation_id=operation_id, bind_operation=bind_operation)
         design_steps = tuple(
             step
             for step in plan.designs

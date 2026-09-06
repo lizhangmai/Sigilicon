@@ -12,7 +12,7 @@ import pytest
 import sigilicon.adapters.release.ip_integration as ip_integration
 from sigilicon.domain.ip_integration import (
     LockedIpRelease,
-    OaNativePhysicalBinding,
+    CircuitPhysicalBinding,
     load_ip_integration_contract,
     resolve_ip_integration_contract,
 )
@@ -92,7 +92,7 @@ endmodule
             view["module"] = module
         views.append(view)
     manifest = {
-        "schema": 4,
+        "schema": 5,
         "contract_kind": "ip-release-manifest",
         "release_kind": "source-package",
         "ip_name": "fixture-ip",
@@ -108,7 +108,7 @@ endmodule
                     "layout_view": "layout",
                 },
                 "interface": {
-                    "kind": "oa-mixed-signal",
+                    "kind": "mixed-signal",
                     "bindings": {role: role for role in ("interface_contract", "oa_port_contract", "circuit_netlist", "physical_blackbox", "integration_adapter", "transaction_model")},
                     "physical": "fixture_macro:oa-1-pin",
                     "logical": "fixture_model:transaction-1-port",
@@ -201,7 +201,7 @@ ports = [{ name = "clk", direction = "input", width = 1 }]
         },
     ]
     manifest = {
-        "schema": 4,
+        "schema": 5,
         "contract_kind": "ip-release-manifest",
         "release_kind": "source-package",
         "ip_name": "fixture-ip",
@@ -329,7 +329,7 @@ views = ["interface_contract", "oa_port_contract", "circuit_netlist"]
         'fixture-ip = ["circuit_netlist"]',
     ).replace(
         '''[physical_binding]
-kind = "oa-mixed-signal"
+kind = "mixed-signal"
 dependency = "fixture-ip"
 transaction_module = "fixture_model"
 physical_shell_module = "fixture_shell"
@@ -339,7 +339,7 @@ status = "blocked"
 blockers = ["implementation_release_missing"]
 ''',
         '''[physical_binding]
-kind = "oa-native"
+kind = "circuit"
 dependency = "fixture-ip"
 transaction_module = "demo_transaction_model"
 adapter_module = "demo_native_oa_adapter"
@@ -390,7 +390,7 @@ domains = []
         "layout_view": "layout",
     }
     exported["interface"] = {
-        "kind": "oa-native",
+        "kind": "circuit", "top": "fixture_macro",
         "bindings": {role: role for role in ("interface_contract", "oa_port_contract", "circuit_netlist")},
         "contract": "ip/fixture/configs/interface.toml",
     }
@@ -454,7 +454,7 @@ def _write_ip_fixture(project_root: Path, release_id: str, manifest: str) -> Pat
     (owner_root / "rtl").mkdir()
     (dependency_root / "configs").mkdir(parents=True)
     (dependency_root / "configs/ip.toml").write_text(
-        '''schema = 5
+        '''schema = 6
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "fixture-ip"
@@ -474,7 +474,7 @@ source = ["manifest"]
         encoding="utf-8",
     )
     (dependency_root / "configs/release.toml").write_text(
-        '''schema = 4
+        '''schema = 5
 contract_kind = "ip-release"
 path_scope = "owner"
 owner = "fixture-ip"
@@ -505,7 +505,7 @@ required_capability = "simulation"
 fixture-ip = ["transaction_model"]
 
 [physical_binding]
-kind = "oa-mixed-signal"
+kind = "mixed-signal"
 dependency = "fixture-ip"
 transaction_module = "fixture_model"
 physical_shell_module = "fixture_shell"
@@ -542,7 +542,7 @@ manifest_sha256 = "{manifest_sha256}"
     )
     contract = owner_root / "configs/ip.toml"
     contract.write_text(
-        """schema = 5
+        """schema = 6
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "demo"
@@ -554,7 +554,6 @@ dependency_lock = "dependency_lock"
 
 [[component]]
 name = "fixture-ip"
-contract = "ip/fixture/configs/ip.toml"
 
 [component.release]
 export = "macro"
@@ -645,7 +644,7 @@ def _write_source_component_fixture(project_root: Path) -> Path:
         "module leaf(input logic clk); endmodule\n", encoding="utf-8"
     )
     (dependency / "configs/ip.toml").write_text(
-        '''schema = 5
+        '''schema = 6
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "leaf"
@@ -699,7 +698,7 @@ owner = "composite"
     )
     contract = owner / "configs/ip.toml"
     contract.write_text(
-        '''schema = 5
+        '''schema = 6
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "composite"
@@ -872,7 +871,7 @@ def test_source_level_child_ip_is_selected_by_fileset_without_a_release_lock(
     assert plan["dependencies"] == [
         {
             "name": "leaf",
-            "component": "ip/leaf/configs/ip.toml",
+            "source": {"contract": "ip/leaf/configs/ip.toml"},
         }
     ]
     assert result["dependency_lock"] is None
@@ -904,39 +903,11 @@ def test_rtl_release_dependency_is_consumed_without_physical_identity(
     assert release is not None
     assert release.export == "rtl"
 
-    producer_path = project_root / "ip/fixture/configs/release.toml"
-    producer = SimpleNamespace(
-        name="fixture-ip",
-        path=producer_path,
-        project=project,
-    )
-    monkeypatch.setattr(
-        ip_integration,
-        "plan_ip_release_contract",
-        lambda *_args, **_kwargs: SimpleNamespace(record={
-            "contract": "ip/fixture/configs/release.toml",
-            "release_id": release_id,
-            "exports": [
-                {
-                    "name": "rtl",
-                    "interface": {"kind": "rtl", "module": "fixture_rtl"},
-                }
-            ],
-            "collateral": [
-                {
-                    "export": "rtl",
-                    "name": "rtl_source", "role": "rtl_source",
-                    "module": "fixture_rtl",
-                }
-            ],
-        }),
-    )
     plan = plan_ip_integration(
         contract_path,
         project=project,
-        release_inventory={"fixture-ip": producer},
     )
-    assert "interface" not in plan["dependencies"][0]["release"]
+    assert "interface" not in plan["dependencies"][0]["package"]
 
     result = check_ip_integration(
         contract_path,
@@ -974,56 +945,21 @@ def test_native_oa_release_dependency_is_typed_planned_and_consumed(
     assert release is not None
     assert release.export == "macro"
     binding = contract.get_variant("default").physical_binding
-    assert isinstance(binding, OaNativePhysicalBinding)
+    assert isinstance(binding, CircuitPhysicalBinding)
     assert binding.transaction_module == "demo_transaction_model"
-
-    producer_path = project_root / "ip/fixture/configs/release.toml"
-    producer = SimpleNamespace(
-        name="fixture-ip",
-        path=producer_path,
-        project=project,
-    )
-    monkeypatch.setattr(
-        ip_integration,
-        "plan_ip_release_contract",
-        lambda *_args, **_kwargs: SimpleNamespace(record={
-            "contract": "ip/fixture/configs/release.toml",
-            "release_id": release_id,
-            "exports": [
-                {
-                    "name": "macro",
-                    "oa": {
-                        "library": "fixture",
-                        "cell": "fixture_macro",
-                        "schematic_view": "schematic",
-                        "layout_view": "layout",
-                    },
-                    "interface": {
-                        "kind": "oa-native",
-                        "contract": "ip/fixture/configs/interface.toml",
-                    },
-                }
-            ],
-            "collateral": [
-                {"export": "macro", "role": role}
-                for role in release.views
-            ],
-        }),
-    )
 
     plan = plan_ip_integration(
         contract_path,
         project=project,
-        release_inventory={"fixture-ip": producer},
     )
-    assert "interface" not in plan["dependencies"][0]["release"]
-    assert plan["dependencies"][0]["release"]["views"] == [
+    assert "interface" not in plan["dependencies"][0]["package"]
+    assert plan["dependencies"][0]["package"]["views"] == [
         "interface_contract",
         "oa_port_contract",
         "circuit_netlist",
     ]
     assert plan["variants"][0]["physical_binding"] == {
-        "kind": "oa-native",
+        "kind": "circuit",
         "dependency": "fixture-ip",
         "transaction_module": "demo_transaction_model",
         "adapter_module": "demo_native_oa_adapter",
@@ -1042,70 +978,19 @@ def test_native_oa_release_dependency_is_typed_planned_and_consumed(
     assert circuit.endswith("/circuit/fixture_macro.scs")
 
 
-def test_native_oa_planner_takes_interface_identity_from_provider_export(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_package_consumer_needs_no_producer_checkout(tmp_path: Path) -> None:
+    import shutil
     project_root = tmp_path / "project"
     artifact_root = tmp_path / "artifacts"
     release_id, manifest = _write_release_fixture(artifact_root)
-    contract_path = _write_ip_fixture(project_root, release_id, manifest)
-    _select_native_oa_dependency(
-        contract_path,
-        artifact_root=artifact_root,
-        manifest=manifest,
-    )
-    project = Project.open(project_root).with_artifact_root(
-        artifact_root
-    )
-    producer_path = project_root / "ip/fixture/configs/release.toml"
-    producer = SimpleNamespace(
-        name="fixture-ip",
-        path=producer_path,
-        project=project,
-    )
-    oa = {
-        "library": "fixture",
-        "cell": "fixture_macro",
-        "schematic_view": "schematic",
-        "layout_view": "layout",
-    }
-    interface = {
-        "kind": "oa-native",
-        "bindings": {role: role for role in ("interface_contract", "oa_port_contract", "circuit_netlist")},
-        "contract": "ip/fixture/configs/interface.toml",
-    }
-    oa["cell"] = "drifted"
-    monkeypatch.setattr(
-        ip_integration,
-        "plan_ip_release_contract",
-        lambda *_args, **_kwargs: SimpleNamespace(record={
-            "contract": "ip/fixture/configs/release.toml",
-            "release_id": release_id,
-            "exports": [
-                {
-                    "name": "macro",
-                    "oa": oa,
-                    "interface": interface,
-                }
-            ],
-            "collateral": [
-                {"export": "macro", "role": role}
-                for role in (
-                    "interface_contract",
-                    "oa_port_contract",
-                    "circuit_netlist",
-                )
-            ],
-        }),
-    )
-
-    plan = plan_ip_integration(
-        contract_path,
-        project=project,
-        release_inventory={"fixture-ip": producer},
-    )
-    assert "interface" not in plan["dependencies"][0]["release"]
+    contract = _write_ip_fixture(project_root, release_id, manifest)
+    catalog = project_root / "ip/catalog.toml"
+    catalog.write_text(catalog.read_text().replace('[components.fixture-ip]\ncontract = "ip/fixture/configs/ip.toml"\n', ""))
+    shutil.rmtree(project_root / "ip/fixture")
+    project = Project.open(project_root).with_artifact_root(artifact_root)
+    plan = plan_ip_integration(contract, project=project)
+    assert plan["dependencies"][0]["package"]["export"] == "macro"
+    assert check_ip_integration(contract, project=project, variant_name="default")["passed"]
 
 
 def test_ip_catalog_rejects_release_registries(

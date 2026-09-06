@@ -19,8 +19,8 @@ import sigilicon.adapters.release.ip_release_planning as ip_release_planning
 from sigilicon.adapters.release import source_control
 from sigilicon.artifacts import SafeTree
 from sigilicon.domain.ip_release import (
-    OaMixedSignalIpInterface,
-    OaNativeIpInterface,
+    MixedSignalIpInterface,
+    CircuitIpInterface,
     RtlIpInterface,
     load_ip_contract,
     resolve_ip_contract,
@@ -158,7 +158,7 @@ def _contract_fixture(root: Path) -> Path:
             f"name = '{name}'\n", encoding="utf-8"
         )
     (configs / "ip.toml").write_text(
-        """schema = 5
+        """schema = 6
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "fixture-ip"
@@ -184,7 +184,7 @@ release = ["release"]
     )
     contract = configs / "release.toml"
     contract.write_text(
-        """schema = 4
+        """schema = 5
 contract_kind = "ip-release"
 path_scope = "owner"
 owner = "fixture-ip"
@@ -200,7 +200,7 @@ cell = "LEFT"
 schematic_view = "schematic"
 layout_view = "layout"
 [exports.interface]
-kind = "oa-mixed-signal"
+kind = "mixed-signal"
 bindings = { interface_contract = "interface_contract" }
 contract = "configs/left_interface.toml"
 physical = "LEFT:physical"
@@ -220,7 +220,7 @@ cell = "RIGHT"
 schematic_view = "schematic"
 layout_view = "layout"
 [exports.interface]
-kind = "oa-mixed-signal"
+kind = "mixed-signal"
 bindings = { interface_contract = "interface_contract" }
 contract = "configs/right_interface.toml"
 physical = "RIGHT:physical"
@@ -297,7 +297,7 @@ ports = [
         encoding="utf-8",
     )
     (configs / "ip.toml").write_text(
-        '''schema = 5
+        '''schema = 6
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "rtl-fixture"
@@ -322,7 +322,7 @@ release = ["release"]
     )
     contract = configs / "release.toml"
     contract.write_text(
-        '''schema = 4
+        '''schema = 5
 contract_kind = "ip-release"
 path_scope = "owner"
 owner = "rtl-fixture"
@@ -529,7 +529,7 @@ views = [
             encoding="utf-8",
         )
     (configs / "ip.toml").write_text(
-        '''schema = 5
+        '''schema = 6
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "native-fixture"
@@ -557,7 +557,7 @@ release = ["release"]
     )
     contract = configs / "release.toml"
     contract.write_text(
-        '''schema = 4
+        '''schema = 5
 contract_kind = "ip-release"
 path_scope = "owner"
 owner = "native-fixture"
@@ -573,7 +573,7 @@ cell = "NATIVE_TOP"
 schematic_view = "schematic"
 layout_view = "layout"
 [exports.interface]
-kind = "oa-native"
+kind = "circuit"
 bindings = { interface_contract = "interface_contract", oa_port_contract = "oa_port_contract", circuit_netlist = "circuit_netlist" }
 contract = "configs/interface.toml"
 [exports.maturity.development]
@@ -635,10 +635,10 @@ def test_one_ip_contract_exposes_multiple_scoped_circuits(tmp_path: Path) -> Non
     assert [item.name for item in contract.exports] == ["left", "right"]
     left = contract.get_export("left").interface
     right = contract.get_export("right").interface
-    assert isinstance(left, OaMixedSignalIpInterface)
-    assert isinstance(right, OaMixedSignalIpInterface)
-    assert left.cell == "LEFT"
-    assert right.cell == "RIGHT"
+    assert isinstance(left, MixedSignalIpInterface)
+    assert isinstance(right, MixedSignalIpInterface)
+    assert left.authoring.cell == "LEFT"
+    assert right.authoring.cell == "RIGHT"
     assert [item.role for item in contract.collateral] == [
         "interface_contract",
         "interface_contract",
@@ -734,7 +734,7 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
     contract_path = _native_oa_contract_fixture(tmp_path)
     contract = load_ip_contract(contract_path, project=Project.open(tmp_path))
     exported = contract.get_export("native-top")
-    assert isinstance(exported.interface, OaNativeIpInterface)
+    assert isinstance(exported.interface, CircuitIpInterface)
 
     _patch_checkout(
         monkeypatch,
@@ -754,7 +754,7 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
     assert plan.record["missing_items"] == []
     release_export = plan.payload.exports[0]
     assert release_export.name == "native-top"
-    assert release_export.interface.kind == "oa-native"
+    assert release_export.interface.kind == "circuit"
     assert (release_export.oa.library, release_export.oa.cell) == ("native_lib", "NATIVE_TOP")
     assert release_export.availability.simulation
     assert not release_export.availability.physical_implementation
@@ -762,7 +762,7 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
         "name": "development_interface_consistency:native-top",
         "export": "native-top",
         "passed": True,
-        "interface_kind": "oa-native",
+        "interface_kind": "circuit",
         "oa_library": "native_lib",
         "oa_cell": "NATIVE_TOP",
         "physical_port_count": 2,
@@ -1341,7 +1341,7 @@ capabilities = {json.dumps(capabilities)}
     for role, (inputs, outputs) in bindings.items():
         receipt = {
             "schema": 4, "contract_kind": "release-receipt", "name": role, "status": "passed",
-            "source_identity": policy.source_identity, "subject": {"kind": "oa-native", **oa},
+            "source_identity": policy.source_identity, "subject": {"kind": "circuit", **oa},
             "variant": None, "condition": {"corner": "tt"}, "coverage": [],
             "execution": {"kind": "external", "authority": "offline-fixture", "reference": "fixture-evidence-1"},
             "tool": {"name": "fixture", "version": "1"},
@@ -1497,7 +1497,7 @@ def test_native_signoff_preserves_shared_and_partially_qualified_views(tmp_path:
     assert audited["availability"]["physical_implementation"] is True
 
 
-@pytest.mark.parametrize("rtl", [False, True], ids=["oa-native", "rtl"])
+@pytest.mark.parametrize("rtl", [False, True], ids=["circuit", "rtl"])
 def test_package_audit_rejects_conflicting_receipt_applicability(tmp_path: Path, rtl: bool) -> None:
     input_name = "rtl_source" if rtl else "raw_macro_gds_or_oasis"
     receipt_name = "synthesis_receipt" if rtl else "drc_receipt"
@@ -1522,7 +1522,7 @@ def test_package_audit_rejects_conflicting_receipt_applicability(tmp_path: Path,
         ip_packaging.audit_ip_release_manifest(manifest_path)
 
 
-@pytest.mark.parametrize("rtl", [False, True], ids=["oa-native", "rtl"])
+@pytest.mark.parametrize("rtl", [False, True], ids=["circuit", "rtl"])
 @pytest.mark.parametrize("receipt_fault", [None, "source-identity", "receipt-roles", "tool-version", "digest", "size", "direction", "duplicate", "status", "subject", "execution", "condition", "variant", "coverage"])
 def test_signoff_receipt_policy_round_trip(tmp_path: Path, receipt_fault: str | None, rtl: bool) -> None:
     contract_path, design_commit = (_rtl_signoff_fixture if rtl else _signoff_contract_fixture)(tmp_path)
@@ -1548,7 +1548,7 @@ def test_signoff_receipt_policy_round_trip(tmp_path: Path, receipt_fault: str | 
         assert audited["source_commit"] == release_commit
 
 
-@pytest.mark.parametrize("rtl", [False, True], ids=["oa-native", "rtl"])
+@pytest.mark.parametrize("rtl", [False, True], ids=["circuit", "rtl"])
 @pytest.mark.parametrize("fault", ["digest", "source-identity", "direction", "status", "subject", "execution", "condition", "variant", "coverage"])
 def test_package_audit_validates_receipt_content_bindings(tmp_path: Path, fault: str, rtl: bool) -> None:
     contract_path, _ = (_rtl_signoff_fixture if rtl else _signoff_contract_fixture)(tmp_path)
@@ -1797,3 +1797,97 @@ views = [{{export = "rtl-top", name = "diagnostic", role = "diagnostic", format 
     assert package.view("rtl-top", "diagnostic").path.read_text() == "generated diagnostic\n"
     assert package.manifest["source_commit"] == base["source_commit"]
     assert package.manifest["provenance"]["build"]["execution"]["result"]["run_id"] == run.run_id
+
+
+def test_netlist_only_circuit_publishes_without_oa_or_a_pdk(tmp_path: Path) -> None:
+    contract = _rtl_contract_fixture(tmp_path)
+    owner = contract.parent.parent
+    (owner / "circuit.scs").write_text("subckt AMP IN OUT VSS\nR0 (IN OUT) resistor r=1k\nends AMP\n")
+    (contract.parent / "interface.toml").write_text('''schema = 1
+contract_kind = "circuit-interface"
+path_scope = "owner"
+owner = "rtl-fixture"
+[circuit]
+top = "AMP"
+ports = ["IN", "OUT", "VSS"]
+primitive_masters = ["resistor"]
+''')
+    component = contract.parent / "ip.toml"
+    component.write_text(component.read_text().replace('[sources]', '[sources]\ncircuit = "ip/rtl_fixture/circuit.scs"'))
+    contract.write_text('''schema = 5
+contract_kind = "ip-release"
+path_scope = "owner"
+owner = "rtl-fixture"
+name = "rtl-fixture"
+default_maturity = "development"
+[[exports]]
+name = "amplifier"
+[exports.interface]
+kind = "circuit"
+top = "AMP"
+contract = "configs/interface.toml"
+bindings = {interface_contract = "pins", circuit_netlist = "spectre"}
+[exports.maturity.development]
+required_views = ["pins", "spectre"]
+[exports.maturity.implementation]
+required_views = ["pins", "spectre", "abstract"]
+[exports.maturity.signoff]
+required_views = ["pins", "spectre", "abstract"]
+[[collateral]]
+export = "amplifier"
+name = "pins"
+role = "interface_contract"
+component = "rtl-fixture"
+source = "interface"
+package_path = "exports/amplifier/interface.toml"
+format = "toml"
+[[collateral]]
+export = "amplifier"
+name = "spectre"
+role = "circuit_netlist"
+component = "rtl-fixture"
+source = "circuit"
+package_path = "exports/amplifier/amp.scs"
+format = "spectre-source"
+capabilities = ["circuit_simulation"]
+''')
+    _commit_release_source(tmp_path, "netlist only circuit")
+    project = Project.open(tmp_path)
+    parsed = load_ip_contract(contract, project=project).get_export("amplifier").interface
+    assert isinstance(parsed, CircuitIpInterface)
+    assert parsed.top == "AMP" and parsed.authoring is None
+    built = _publish_release(contract, project=project)
+    manifest = _built_manifest(project, built)
+    audited = ip_packaging.audit_ip_release_manifest(manifest)
+    assert audited["exports"][0]["interface"]["top"] == "AMP"
+    payload = json.loads(manifest.read_text())
+    assert payload["exports"][0]["availability"]["simulation"]
+    (owner / "circuit.scs").write_text("subckt AMP OUT IN VSS\nends AMP\n")
+    with pytest.raises(ValueError, match="pin order"):
+        Project.open(tmp_path).plan("rtl-fixture:release")
+
+
+def test_native_authored_circuit_release_accepts_ports_without_a_design_generator(tmp_path: Path) -> None:
+    from sigilicon.domain.oa_snapshot import NativeOaSnapshot
+    from sigilicon.domain.platform import load_platform
+    from sigilicon.adapters.cadence.oa_library import plan_oa_library_rebuild
+
+    contract_path = _native_oa_contract_fixture(tmp_path)
+    project = Project.open(tmp_path)
+    technology = load_platform(project, "testpdk", resources=project.resources()).oa.technology_library
+    for cell_path in (tmp_path / "ip/native_fixture/sources").glob("*/cell.toml"):
+        text = cell_path.read_text()
+        for view in ("schematic", "symbol"):
+            snapshot = NativeOaSnapshot("native_lib", cell_path.parent.name, view, technology,
+                                        {f"{view}.oa": b"offline native OA boundary fixture"})
+            (cell_path.parent / f"{view}.json").write_text(json.dumps(snapshot.record))
+            text = text.replace(f'kind = "{view}", source = "design.toml"', f'kind = "native_oa", source = "{view}.json"')
+        cell_path.write_text(text)
+    _commit_release_source(tmp_path, "native authoring source")
+    project = Project.open(tmp_path)
+    oa_manifest = contract_path.parent / "oa.toml"
+    oa_plan = plan_oa_library_rebuild(oa_manifest, project=project)
+    contract = load_ip_contract(contract_path, project=project)
+    release = ip_release_planning.plan_ip_release_contract(contract, project=project, oa_source_inventory={oa_manifest: oa_plan.source}, oa_plan_inventory={oa_manifest: oa_plan})
+    assert release.record["missing_items"] == []
+    assert release.payload.exports[0].availability.simulation

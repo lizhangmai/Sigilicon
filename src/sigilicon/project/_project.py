@@ -25,6 +25,7 @@ from sigilicon.contracts import (
     thaw_toml_document,
 )
 from sigilicon.domain.component import (
+    SourceDependency,
     ComponentContract,
     _parse_component_contract,
     load_component_graph,
@@ -380,7 +381,7 @@ class Project:
                     raise ContractError(f"ambiguous component source declaration: {path}")
                 inventory[path] = reference
             for dependency in component.components:
-                if dependency.release is None:
+                if isinstance(dependency, SourceDependency):
                     visit(graph[dependency.name])
 
         visit(graph[selected.component.name])
@@ -668,7 +669,7 @@ class Project:
                 if current.name in selected:
                     continue
                 selected[current.name] = current
-                pending.extend(inventory[child.name] for child in current.components)
+                pending.extend(inventory[child.name] for child in current.components if isinstance(child, SourceDependency))
             return MappingProxyType(selected)
         graphs = {name: closure(component) for name, component in owner_components.items()}
         object.__setattr__(result, "_composition_documents", None)

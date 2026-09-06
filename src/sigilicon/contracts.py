@@ -15,7 +15,7 @@ from sigilicon.artifacts import read_nofollow_text
 CONFIG_SCHEMA = 1
 _CONFIG_SCHEMAS = {
     **dict.fromkeys((
-        "cell-design", "cell-layout", "ip-interface", "oa-cell",
+        "cell-design", "cell-layout", "ip-interface", "circuit-interface", "oa-cell",
         "oa-assembly", "oa-source-root", "platform-catalog", "platform-definition",
         "platform-simulation", "platform-oa", "platform-stream",
         "physical-verification-policy", "layout-technology",
@@ -23,9 +23,9 @@ _CONFIG_SCHEMAS = {
     "platform-layout": 2,
     "platform-verification": 2,
     "ip-dependency-lock": 3,
-    "ip-component": 5,
+    "ip-component": 6,
     "ip-catalog": 2,
-    "ip-release": 4,
+    "ip-release": 5,
     "ip-operating-variant": 2,
     "verification-cell": 2,
     "owner-operations": 5,

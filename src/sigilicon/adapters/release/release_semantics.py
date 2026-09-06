@@ -185,16 +185,18 @@ class ExportSemantics:
     def from_source(cls, exported: IpExport, level: str, collateral: tuple[ReleaseCollateralRecord, ...]) -> ExportSemantics:
         interface = exported.interface
         rtl = isinstance(interface, RtlIpInterface)
+        authoring = None if rtl else interface.authoring
+        oa = None if authoring is None else tuple(getattr(authoring, key) for key in ("library", "cell", "schematic_view", "layout_view"))
+        if rtl:
+            subject = {"kind": interface.kind, "module": interface.module, **({"variant": interface.variant} if interface.variant else {})}
+        elif authoring:
+            subject = {"kind": interface.kind, **{key: getattr(authoring, key) for key in ("library", "cell", "schematic_view", "layout_view")}}
+        else:
+            subject = {"kind": interface.kind, "cell": interface.top if interface.kind == "circuit" else interface.physical.split(":")[0]}
         return cls(
             exported.name, interface.kind, exported.required_views[level],
             tuple(ReleaseView.from_source(item) for item in collateral if item.export == exported.name),
-            interface.source_view if rtl else None,
-            None if rtl else (interface.library, interface.cell, interface.schematic_view, interface.layout_view),
-            ({"kind": interface.kind, "module": interface.module,
-              **({"variant": interface.variant} if interface.variant else {})} if rtl else
-             {"kind": interface.kind, **{key: getattr(interface, key)
-              for key in ("library", "cell", "schematic_view", "layout_view")}}),
-            exported.receipts,
+            interface.source_view if rtl else None, oa, subject, exported.receipts,
         )
 
     @classmethod
@@ -208,10 +210,10 @@ class ExportSemantics:
         if not isinstance(required, list) or any(not isinstance(role, str) or not role for role in required):
             raise ValueError("release required_views must be strings")
         kind = interface.get("kind")
-        if kind not in {"rtl", "oa-native", "oa-mixed-signal"}:
+        if kind not in {"rtl", "circuit", "mixed-signal"}:
             raise ValueError("release interface kind is invalid")
         oa = None
-        if kind != "rtl":
+        if kind != "rtl" and "oa" in exported:
             raw = exported.get("oa")
             if not isinstance(raw, Mapping):
                 raise ValueError("release OA identity is required")
@@ -224,7 +226,8 @@ class ExportSemantics:
                          if isinstance(row, Mapping) and row.get("export") == name)
         subject = ({"kind": kind, "module": interface.get("module"),
                     **({"variant": interface["variant"]} if "variant" in interface else {})}
-                   if kind == "rtl" else {"kind": kind, **dict(exported["oa"])})
+                   if kind == "rtl" else ({"kind": kind, **dict(exported["oa"])} if oa else
+                         {"kind": kind, "cell": interface.get("top") if kind == "circuit" else str(interface.get("physical", "")).split(":")[0]}))
         return cls(name, kind, tuple(required), selected, interface.get("source_view"), oa,
                    subject, receipt_policies(exported.get("receipts", {})))
 
@@ -286,7 +289,7 @@ class ExportSemantics:
             physical = implementation and all(
                 physical_views[role] and all(view.supports("physical_implementation") for view in physical_views[role])
                 for role in IMPLEMENTATION_FORMATS)
-            if self.kind == "oa-native":
+            if self.kind == "circuit":
                 simulation = supports("circuit_netlist", "simulation")
                 synthesis = linkable
             else:
@@ -325,9 +328,8 @@ class ExportSemantics:
         return problems
 
     def _physical_view(self, view: ReleaseView) -> bool:
-        return (self.oa_identity is not None
-                and (view.library, view.cell) == self.oa_identity[:2]
-                and bool(view.view)
+        return (((view.library, view.cell) == self.oa_identity[:2] and bool(view.view)
+                 if self.oa_identity is not None else view.cell == self.subject.get("cell"))
                 and view.format in ROLE_FORMATS[view.role]
                 and (view.role not in {"raw_macro_liberty_or_db", "pex_netlist"} or bool(view.condition)))
 

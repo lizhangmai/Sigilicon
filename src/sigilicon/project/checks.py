@@ -245,14 +245,7 @@ def inspect_repository_designs(
                     architecture_source_documents,
                 ),
             )
-            integration = plan_ip_integration_contract(
-                integration_contract,
-                project=context,
-                platform_inventory=platform_inventory,
-                release_inventory=release_inventory,
-                oa_source_inventory=oa_source_inventory,
-                oa_plan_inventory=oa_plan_inventory,
-            )
+            integration = plan_ip_integration_contract(integration_contract, project=context)
             if integration.get("ip") != name:
                 raise ValueError(f"IP integration catalog identity mismatch: {name}")
             component_result["integration"] = integration

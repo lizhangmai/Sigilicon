@@ -112,7 +112,7 @@ def _patch_native_resolution(
 def _configure_locked_native_release(root: Path, circuit: Path) -> Path:
     _write(
         root / "ip/native-provider/configs/release.toml",
-        '''schema = 4
+        '''schema = 5
 contract_kind = "ip-release"
 path_scope = "owner"
 owner = "native-provider"
@@ -138,7 +138,6 @@ owner = "native-provider"
         + '''
 [[component]]
 name = "native-provider"
-contract = "ip/native-provider/component.toml"
 
 [component.release]
 export = "native-top"
@@ -207,7 +206,7 @@ VSS = "inout"
     )
     manifest = release_root / "manifest.json"
     payload = {
-        "schema": 4,
+        "schema": 5,
         "contract_kind": "ip-release-manifest",
         "release_kind": "source-package",
         "ip_name": "native-provider",
@@ -224,7 +223,7 @@ VSS = "inout"
                     "layout_view": "layout",
                 },
                 "interface": {
-                    "kind": "oa-native",
+                    "kind": "circuit",
                     "contract": "ip/native-provider/configs/interface.toml",
                 },
                 "maturity": {

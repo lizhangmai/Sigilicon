@@ -186,8 +186,8 @@ class MixedSignalReleaseInterface:
     physical: str
     logical: str
     interfaces_are_distinct: bool
-    kind: Literal["oa-mixed-signal"] = field(
-        default="oa-mixed-signal",
+    kind: Literal["mixed-signal"] = field(
+        default="mixed-signal",
         init=False,
     )
 
@@ -204,20 +204,21 @@ class MixedSignalReleaseInterface:
 
 
 @dataclass(frozen=True)
-class NativeOaReleaseInterface:
+class CircuitReleaseInterface:
+    top: str
     contract: str
     bindings: Mapping[str, str]
-    kind: Literal["oa-native"] = field(default="oa-native", init=False)
+    kind: Literal["circuit"] = field(default="circuit", init=False)
 
     @property
     def record(self) -> dict[str, object]:
-        return {"kind": self.kind, "contract": self.contract, "bindings": dict(self.bindings)}
+        return {"kind": self.kind, "contract": self.contract, "bindings": dict(self.bindings), "top": self.top}
 
 
 ReleaseInterface: TypeAlias = (
     RtlReleaseInterface
     | MixedSignalReleaseInterface
-    | NativeOaReleaseInterface
+    | CircuitReleaseInterface
 )
 
 

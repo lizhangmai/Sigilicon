@@ -8,8 +8,8 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, Mapping
 
 from sigilicon.domain.component import (
+    ComponentDependency, PackageDependency,
     ComponentContract,
-    ComponentRelease,
     load_component_contract,
     load_component_graph,
     resolve_component_contract,
@@ -64,11 +64,6 @@ def _hex_digest(
     return digest
 
 
-@dataclass(frozen=True)
-class IpIntegrationDependency:
-    name: str
-    component_contract: PurePosixPath
-    release: ComponentRelease | None
 
 
 @dataclass(frozen=True)
@@ -81,8 +76,8 @@ class IpIntegrationFileset:
 
 
 @dataclass(frozen=True)
-class OaMixedSignalPhysicalBinding:
-    """Consumer transaction shell bound to a mixed-signal OA release."""
+class MixedSignalPhysicalBinding:
+    """Consumer transaction shell bound to a mixed-signal release."""
 
     dependency: str
     transaction_module: str
@@ -91,17 +86,17 @@ class OaMixedSignalPhysicalBinding:
     raw_macro_module: str
     status: str
     blockers: tuple[str, ...]
-    kind: Literal["oa-mixed-signal"] = field(
-        default="oa-mixed-signal",
+    kind: Literal["mixed-signal"] = field(
+        default="mixed-signal",
         init=False,
     )
 
 
 @dataclass(frozen=True)
-class OaNativePhysicalBinding:
-    """Consumer-owned transaction adapter bound to a native OA dependency."""
+class CircuitPhysicalBinding:
+    """Consumer-owned transaction adapter bound to an electrical circuit dependency."""
 
-    kind: Literal["oa-native"]
+    kind: Literal["circuit"]
     dependency: str
     transaction_module: str
     adapter_module: str
@@ -109,7 +104,7 @@ class OaNativePhysicalBinding:
     blockers: tuple[str, ...]
 
 
-PhysicalBinding = OaMixedSignalPhysicalBinding | OaNativePhysicalBinding
+PhysicalBinding = MixedSignalPhysicalBinding | CircuitPhysicalBinding
 
 
 @dataclass(frozen=True)
@@ -140,7 +135,7 @@ class IpIntegrationContract:
     component: ComponentContract
     component_graph: Mapping[str, ComponentContract]
     dependency_lock: PurePosixPath | None
-    dependencies: tuple[IpIntegrationDependency, ...]
+    dependencies: tuple[ComponentDependency, ...]
     implementation_profiles: Mapping[str, PurePosixPath]
     variants: tuple[IpOperatingVariant, ...]
     source_documents: Mapping[Path, Mapping[str, Any]] = field(
@@ -169,8 +164,8 @@ class IpIntegrationContract:
         return self.component.name
 
     @property
-    def release_dependencies(self) -> tuple[IpIntegrationDependency, ...]:
-        return tuple(item for item in self.dependencies if item.release is not None)
+    def release_dependencies(self) -> tuple[PackageDependency, ...]:
+        return tuple(item for item in self.dependencies if isinstance(item, PackageDependency))
 
     def get_variant(self, name: str) -> IpOperatingVariant:
         matches = [variant for variant in self.variants if variant.name == name]
@@ -279,7 +274,7 @@ def _operating_variant(
     *,
     contract: ComponentContract,
     graph: Mapping[str, ComponentContract],
-    dependencies: Mapping[str, IpIntegrationDependency],
+    dependencies: Mapping[str, ComponentDependency],
     source_document: Mapping[str, Any] | None = None,
 ) -> IpOperatingVariant:
     if source_document is None:
@@ -321,12 +316,13 @@ def _operating_variant(
                 raise ValueError(
                     f"variant {name} names undeclared dependency {dependency_name}"
                 )
-            release = dependencies[dependency_name].release
-            if release is None:
+            selected_dependency = dependencies[dependency_name]
+            if not isinstance(selected_dependency, PackageDependency):
                 raise ValueError(
                     f"variant {name} requests release views from source-only "
                     f"dependency {dependency_name}"
                 )
+            release = selected_dependency.release
             if (
                 not isinstance(views_value, (list, tuple))
                 or not views_value
@@ -402,7 +398,7 @@ def _operating_variant(
             f"variant {name}.physical_binding.dependency",
         )
         dependency = dependencies.get(dependency_name)
-        if dependency is None or dependency.release is None:
+        if not isinstance(dependency, PackageDependency):
             raise ValueError(
                 f"variant {name} physical binding names no released dependency"
             )
@@ -421,7 +417,6 @@ def _operating_variant(
                 f"variant {name} blocked physical binding must have blockers and "
                 "ready binding must not"
             )
-        assert dependency.release is not None
         binding_kind = binding.get("kind")
         common_fields = {
             "dependency",
@@ -430,13 +425,13 @@ def _operating_variant(
             "status",
             "blockers",
         }
-        if binding_kind == "oa-native":
+        if binding_kind == "circuit":
             if set(binding) != common_fields | {"kind"}:
                 raise ValueError(
                     f"variant {name} native OA physical binding fields are invalid"
                 )
-            physical_binding = OaNativePhysicalBinding(
-                kind="oa-native",
+            physical_binding = CircuitPhysicalBinding(
+                kind="circuit",
                 dependency=dependency_name,
                 transaction_module=_string(
                     binding.get("transaction_module"),
@@ -449,7 +444,7 @@ def _operating_variant(
                 status=status,
                 blockers=tuple(blockers_raw),
             )
-        elif binding_kind == "oa-mixed-signal":
+        elif binding_kind == "mixed-signal":
             mixed_signal_fields = common_fields | {
                 "physical_shell_module",
                 "raw_macro_module",
@@ -459,7 +454,7 @@ def _operating_variant(
                 raise ValueError(
                     f"variant {name} mixed-signal physical binding fields are invalid"
                 )
-            physical_binding = OaMixedSignalPhysicalBinding(
+            physical_binding = MixedSignalPhysicalBinding(
                 dependency=dependency_name,
                 transaction_module=_string(
                     binding.get("transaction_module"),
@@ -496,29 +491,6 @@ def _operating_variant(
     )
 
 
-def _integration_dependencies(
-    component: ComponentContract,
-) -> tuple[IpIntegrationDependency, ...]:
-    dependencies: list[IpIntegrationDependency] = []
-    for index, base in enumerate(component.components):
-        if (
-            base.release is not None
-            and base.release.required_maturity not in RELEASE_MATURITY_LEVELS
-        ):
-            raise ValueError(
-                f"component[{index}].release.required_maturity is unsupported: "
-                f"{base.release.required_maturity}"
-            )
-        dependencies.append(
-            IpIntegrationDependency(
-                name=base.name,
-                component_contract=base.contract,
-                release=base.release,
-            )
-        )
-    return tuple(dependencies)
-
-
 def load_ip_integration_contract(
     path: Path,
     *,
@@ -547,7 +519,7 @@ def load_ip_integration_contract(
         contract_inventory=repository.component_inventory,
     )
 
-    dependencies = _integration_dependencies(component)
+    dependencies = component.components
     by_name = {item.name: item for item in dependencies}
 
     dependency_lock = component.dependency_lock
@@ -667,7 +639,7 @@ def resolve_ip_integration_contract(
         "IP integration snapshot"
     )
 
-    dependencies = _integration_dependencies(component)
+    dependencies = component.components
     by_name = {item.name: item for item in dependencies}
     dependency_lock = component.dependency_lock
     variants: list[IpOperatingVariant] = []

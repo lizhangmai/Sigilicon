@@ -119,7 +119,7 @@ def _audit_release_package(
         sha256=manifest_sha256,
     )
     if (
-        manifest.get("schema") != 4
+        manifest.get("schema") != 5
         or manifest.get("contract_kind") != "ip-release-manifest"
         or manifest.get("release_kind") not in {"source-package", "build-artifact-package"}
     ):

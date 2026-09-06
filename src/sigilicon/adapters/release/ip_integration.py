@@ -2,29 +2,26 @@
 
 from __future__ import annotations
 
+from sigilicon.domain.component import SourceDependency, PackageDependency
+
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import Any, Mapping
 
 from sigilicon.artifacts import _inspect_nofollow_file, read_nofollow_text
 from sigilicon.domain.ip_integration import (
     IpIntegrationContract,
-    IpIntegrationDependency,
     IpOperatingVariant,
     LockedIpRelease,
-    OaMixedSignalPhysicalBinding,
-    OaNativePhysicalBinding,
+    MixedSignalPhysicalBinding,
+    CircuitPhysicalBinding,
     load_ip_dependency_lock,
     load_ip_integration_contract,
     resolve_ip_integration_contract,
 )
 from sigilicon.domain.ip_release import (
     RELEASE_MATURITY_LEVELS,
-    IpContract,
-    load_ip_contract,
 )
 from sigilicon.contracts import require_relative_path
-from sigilicon.domain.oa_library import OALibrarySource
-from sigilicon.domain.platform import PlatformSet
 from sigilicon.project import Project
 from sigilicon.release_store import (
     ReleasePackage,
@@ -35,47 +32,6 @@ from sigilicon.release_store import (
 from sigilicon.adapters.release.release_semantics import ReleaseView
 from sigilicon.adapters.release.ip_packaging import release_view
 from sigilicon.adapters.release.ip_packaging import validate_ip_release_package
-from sigilicon.adapters.release.ip_release_planning import plan_ip_release_contract
-
-if TYPE_CHECKING:
-    from sigilicon.adapters.cadence.oa_library import OALibraryRebuildPlan
-
-
-def _producer_contract(
-    contract: IpIntegrationContract,
-    dependency_name: str,
-    *,
-    project: Project,
-    release_inventory: Mapping[str, IpContract] | None = None,
-) -> IpContract:
-    try:
-        component = contract.component_graph[dependency_name]
-    except KeyError as exc:
-        raise ValueError(f"unknown IP dependency: {dependency_name}") from exc
-    owner = project.require_owner(component.path)
-    if (
-        owner.component.path != component.path
-        or owner.component.name != dependency_name
-    ):
-        raise ValueError(f"IP component identity mismatch: {dependency_name}")
-    path = owner.release_contract
-    if path is None:
-        raise ValueError(f"IP dependency has no release contract: {dependency_name}")
-    if release_inventory is None:
-        producer = load_ip_contract(path, project=project)
-    else:
-        try:
-            producer = release_inventory[dependency_name]
-        except KeyError as exc:
-            raise ValueError(
-                f"release inventory has no {dependency_name!r} entry"
-            ) from exc
-    if (
-        producer.name != dependency_name
-        or producer.path != path
-    ):
-        raise ValueError(f"IP catalog identity mismatch: {dependency_name}")
-    return producer
 
 
 def _release_export(
@@ -198,7 +154,7 @@ def _binding_plan(variant: IpOperatingVariant) -> dict[str, Any] | None:
         "status": binding.status,
         "blockers": list(binding.blockers),
     }
-    if isinstance(binding, OaMixedSignalPhysicalBinding):
+    if isinstance(binding, MixedSignalPhysicalBinding):
         row.update(
             {
                 "physical_shell_module": binding.physical_shell_module,
@@ -206,7 +162,7 @@ def _binding_plan(variant: IpOperatingVariant) -> dict[str, Any] | None:
             }
         )
     else:
-        assert isinstance(binding, OaNativePhysicalBinding)
+        assert isinstance(binding, CircuitPhysicalBinding)
     return row
 
 
@@ -232,10 +188,6 @@ def plan_ip_integration(
     contract_path: Path,
     *,
     project: Project,
-    platform_inventory: PlatformSet | None = None,
-    release_inventory: Mapping[str, IpContract] | None = None,
-    oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
-    oa_plan_inventory: Mapping[Path, OALibraryRebuildPlan] | None = None,
 ) -> dict[str, Any]:
     """Validate source intent without resolving or consuming a dependency lock."""
 
@@ -243,10 +195,6 @@ def plan_ip_integration(
     return plan_ip_integration_contract(
         contract,
         project=project,
-        platform_inventory=platform_inventory,
-        release_inventory=release_inventory,
-        oa_source_inventory=oa_source_inventory,
-        oa_plan_inventory=oa_plan_inventory,
     )
 
 
@@ -254,10 +202,6 @@ def plan_ip_integration_contract(
     contract: IpIntegrationContract,
     *,
     project: Project,
-    platform_inventory: PlatformSet | None = None,
-    release_inventory: Mapping[str, IpContract] | None = None,
-    oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
-    oa_plan_inventory: Mapping[Path, OALibraryRebuildPlan] | None = None,
 ) -> dict[str, Any]:
     """Plan one already validated composite-IP integration contract."""
 
@@ -266,37 +210,15 @@ def plan_ip_integration_contract(
         project=project,
         snapshot=contract,
     )
-    dependencies: list[dict[str, Any]] = []
+    dependencies = []
     for dependency in contract.dependencies:
-        row: dict[str, Any] = {
-            "name": dependency.name,
-            "component": dependency.component_contract.as_posix(),
-        }
-        release = dependency.release
-        if release is not None:
-            producer = _producer_contract(
-                contract,
-                dependency.name,
-                project=project,
-                release_inventory=release_inventory,
-            )
-            expected = plan_ip_release_contract(
-                producer,
-                project=project,
-                maturity=release.required_maturity,
-                platform_inventory=platform_inventory,
-                oa_source_inventory=oa_source_inventory,
-                oa_plan_inventory=oa_plan_inventory,
-            )
-            release_record = expected.record
-            exported = _release_export(release_record, release.export)
-            row["release"] = {
-                "export": release.export,
-                "provider": release_record["contract"],
-                "required_maturity": release.required_maturity,
-                "views": list(release.views),
-                "expected_release_id": release_record["release_id"],
-            }
+        row = {"name": dependency.name}
+        if isinstance(dependency, SourceDependency):
+            row["source"] = {"contract": dependency.contract.as_posix()}
+        else:
+            release = dependency.release
+            row["package"] = {"export": release.export, "required_maturity": release.required_maturity,
+                              "views": list(release.views)}
         dependencies.append(row)
     return {
         "schema": 2,
@@ -376,15 +298,11 @@ def resolve_locked_ip_release(
 
 def _locked_release_manifest(
     *,
-    contract: IpIntegrationContract,
-    project: Project,
     release_store_root: Path,
-    dependency: IpIntegrationDependency,
+    dependency: PackageDependency,
     pinned: LockedIpRelease,
 ) -> ReleasePackage:
     release = dependency.release
-    if release is None:
-        raise RuntimeError(f"IP dependency {dependency.name} has no release contract")
     audited = resolve_locked_ip_release(
         release_store_root=release_store_root,
         pinned=pinned,
@@ -392,18 +310,6 @@ def _locked_release_manifest(
     manifest = audited.manifest
     if manifest.get("ip_name") != dependency.name:
         raise RuntimeError("IP dependency lock identity does not match its dependency")
-    component_path = (
-        contract.project_root / Path(dependency.component_contract)
-    ).resolve()
-    expected_owner = project.require_owner(component_path)
-    provenance = manifest.get("provenance")
-    expected_producer = expected_owner.root.relative_to(
-        contract.project_root
-    ).as_posix()
-    if not isinstance(provenance, Mapping) or (
-        provenance.get("producer") != expected_producer
-    ):
-        raise RuntimeError("IP dependency release does not match its provider owner")
     _release_export(manifest, release.export)
     return audited
 
@@ -460,8 +366,6 @@ def check_ip_integration(
             runtime.require_destination(release_store_resource(pinned.store))
         )
         audited = _locked_release_manifest(
-            contract=contract,
-            project=project,
             release_store_root=store_root,
             dependency=dependency,
             pinned=pinned,

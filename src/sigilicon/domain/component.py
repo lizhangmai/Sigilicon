@@ -67,10 +67,18 @@ class ComponentRelease:
 
 
 @dataclass(frozen=True)
-class ComponentDependency:
+class SourceDependency:
     name: str
     contract: PurePosixPath
-    release: ComponentRelease | None
+
+
+@dataclass(frozen=True)
+class PackageDependency:
+    name: str
+    release: ComponentRelease
+
+
+ComponentDependency = SourceDependency | PackageDependency
 
 
 @dataclass(frozen=True)
@@ -260,18 +268,16 @@ def _parse_component_contract(
         if name in names:
             raise ValueError(f"duplicate component dependency: {name}")
         names.add(name)
-        dependencies.append(
-            ComponentDependency(
-                name=name,
-                contract=require_relative_path(
-                    value.get("contract"), f"component[{index}].contract"
-                ),
-                release=_component_release(
-                    value.get("release"),
-                    f"component[{index}].release",
-                ),
-            )
-        )
+        if "release" in value:
+            if "contract" in value:
+                raise ValueError("package dependencies cannot require a producer source contract")
+            release = _component_release(value["release"], f"component[{index}].release")
+            if release is None or release.required_maturity not in {"development", "implementation", "signoff"}:
+                raise ValueError("package dependency maturity is unsupported")
+            dependencies.append(PackageDependency(name, release))
+        else:
+            dependencies.append(SourceDependency(name, require_relative_path(value.get("contract"), f"component[{index}].contract")))
+
 
     result = ComponentContract(
         path=contract_path,
@@ -296,7 +302,7 @@ def _parse_component_contract(
     for relative in referenced:
         if not (root / relative).resolve().is_relative_to(owner_root):
             raise ValueError(f"component source escapes its declared owner root: {relative}")
-    referenced.extend(item.contract for item in result.components)
+    referenced.extend(item.contract for item in result.components if isinstance(item, SourceDependency))
     for relative in referenced:
         resolved = (root / Path(relative)).resolve()
         if not resolved.is_relative_to(root) or not resolved.is_file():
@@ -434,6 +440,8 @@ def load_component_graph(
             owners[contract.name] = contract.path
             contracts[contract.name] = contract
             for dependency in contract.components:
+                if isinstance(dependency, PackageDependency):
+                    continue
                 child = visit(root / Path(dependency.contract))
                 if child.name != dependency.name:
                     raise ValueError(
@@ -494,6 +502,8 @@ def resolve_component_graph(
         visiting.add(contract.path)
         try:
             for dependency in contract.components:
+                if isinstance(dependency, PackageDependency):
+                    continue
                 child_path = (root / Path(dependency.contract)).resolve()
                 child = by_path.get(child_path)
                 if child is None or child.name != dependency.name:
@@ -549,7 +559,7 @@ def resolve_component_fileset(
         pending.extend(
             dependency.name
             for dependency in component.components
-            if dependency.release is None
+            if isinstance(dependency, SourceDependency)
         )
     if reference.component not in reachable:
         raise ValueError(

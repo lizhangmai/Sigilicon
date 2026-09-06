@@ -243,7 +243,7 @@ owner = "test"
         encoding="utf-8",
     )
     (owner / "component.toml").write_text(
-        """schema = 5
+        """schema = 6
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "example"
@@ -494,7 +494,7 @@ def test_plan_identity_excludes_unselected_owner_changes(tmp_path: Path) -> None
     foreign = tmp_path / "ip/foreign"
     (foreign / "configs").mkdir(parents=True)
     (foreign / "component.toml").write_text(
-        '''schema = 5
+        '''schema = 6
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "foreign"
@@ -946,7 +946,7 @@ contract = "ip/foreign/component.toml"
     foreign = tmp_path / "ip/foreign"
     foreign.mkdir()
     (foreign / "component.toml").write_text(
-        """schema = 5
+        """schema = 6
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "foreign"
@@ -968,7 +968,6 @@ source = ["value"]
         with (tmp_path / "ip/example/component.toml").open("a") as stream:
             stream.write('''\n[[component]]
 name = "foreign"
-contract = "ip/foreign/component.toml"
 release = { export = "foreign", required_maturity = "development", views = ["source"] }
 ''')
 

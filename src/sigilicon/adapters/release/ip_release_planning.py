@@ -11,9 +11,10 @@ from sigilicon.artifacts import _inspect_nofollow_file
 from sigilicon.contracts import read_toml
 from sigilicon.domain.ip_release import (
     IpContract,
+    RtlIpInterface,
     IpExport,
-    OaMixedSignalIpInterface,
-    OaNativeIpInterface,
+    MixedSignalIpInterface,
+    CircuitIpInterface,
     load_ip_contract,
     resolve_ip_contract,
 )
@@ -39,7 +40,7 @@ from sigilicon.adapters.release.release_plan_record import (
     IpReleaseRecord,
     MixedSignalReleaseInterface,
     NativeBundleMetadata,
-    NativeOaReleaseInterface,
+    CircuitReleaseInterface,
     ReleaseAvailability,
     ReleaseCheck,
     ReleaseCollateralRecord,
@@ -198,8 +199,8 @@ def _source_inputs(
         exported
         for exported in contract.exports
         if isinstance(
-            exported.interface, (OaMixedSignalIpInterface, OaNativeIpInterface)
-        )
+            exported.interface, (MixedSignalIpInterface, CircuitIpInterface)
+        ) and exported.interface.authoring is not None
     ]
     if not oa_exports:
         _python_import_closure(root, paths)
@@ -261,18 +262,18 @@ def _source_inputs(
         load_netlist_snapshot(cell.canonical_source) for cell in netlist_cells
     ]
     definitions = parse_subcircuit_definitions(snapshots)
-    top_cells = {exported.interface.cell for exported in oa_exports}
+    top_cells = {exported.interface.authoring.cell for exported in oa_exports}
     for exported in oa_exports:
         interface = exported.interface
-        if interface.library != library.name:
+        if interface.authoring.library != library.name:
             raise ValueError(
                 f"release export {exported.name} names OA library "
-                f"{interface.library}, expected {library.name}"
+                f"{interface.authoring.library}, expected {library.name}"
             )
-        if interface.cell not in cell_by_name or interface.cell not in definitions:
+        if interface.authoring.cell not in cell_by_name or interface.authoring.cell not in definitions:
             raise ValueError(
                 "release OA top is absent from the canonical library: "
-                f"{exported.name}/{interface.cell}"
+                f"{exported.name}/{interface.authoring.cell}"
             )
     reachable = set(top_cells)
     pending = list(top_cells)
@@ -505,43 +506,23 @@ def _export_interface_manifest(
     contract: IpContract, exported: IpExport
 ) -> tuple[ReleaseOaIdentity | None, ReleaseInterface]:
     interface = exported.interface
-    if isinstance(interface, OaMixedSignalIpInterface):
-        return (
-            ReleaseOaIdentity(
-                interface.library,
-                interface.cell,
-                interface.schematic_view,
-                interface.layout_view,
-            ),
-            MixedSignalReleaseInterface(
-                contract=interface.contract.as_posix(),
-                physical=interface.physical,
-                logical=interface.logical,
-                interfaces_are_distinct=interface.physical != interface.logical,
-            ),
+    if isinstance(interface, RtlIpInterface):
+        return None, RtlReleaseInterface(
+            contract=(contract.producer / interface.contract).as_posix(), bindings=interface.bindings,
+            module=interface.module, source_view=interface.source_view, variant=interface.variant,
         )
-    if isinstance(interface, OaNativeIpInterface):
-        return (
-            ReleaseOaIdentity(
-                interface.library,
-                interface.cell,
-                interface.schematic_view,
-                interface.layout_view,
-            ),
-            NativeOaReleaseInterface(
-                contract=(contract.producer / interface.contract).as_posix(),
-                bindings=interface.bindings,
-            ),
+    authoring = interface.authoring
+    oa = None if authoring is None else ReleaseOaIdentity(
+        authoring.library, authoring.cell, authoring.schematic_view, authoring.layout_view,
+    )
+    if isinstance(interface, CircuitIpInterface):
+        return oa, CircuitReleaseInterface(
+            contract=(contract.producer / interface.contract).as_posix(), bindings=interface.bindings, top=interface.top,
         )
-    return (
-        None,
-        RtlReleaseInterface(
-            contract=(contract.producer / interface.contract).as_posix(),
-                bindings=interface.bindings,
-            module=interface.module,
-            source_view=interface.source_view,
-            variant=interface.variant,
-        ),
+    return oa, MixedSignalReleaseInterface(
+        contract=interface.contract.as_posix(), bindings=interface.bindings,
+        physical=interface.physical, logical=interface.logical,
+        interfaces_are_distinct=interface.physical != interface.logical,
     )
 
 
@@ -554,13 +535,13 @@ def _native_oa_spectre_bundle(
     """Close one native OA circuit role over its reachable Spectre hierarchy."""
 
     interface = exported.interface
-    if not isinstance(interface, OaNativeIpInterface):
+    if not isinstance(interface, CircuitIpInterface):
         raise TypeError("native OA Spectre bundling requires a native OA export")
     circuit = next(item for item in exported.collateral
                    if item.name == interface.bindings["circuit_netlist"])
     if circuit.format != "spectre-source":
         raise ValueError(f"native OA export {exported.name} canonical circuit must use spectre-source format")
-    if library.name != interface.library:
+    if library.name != interface.authoring.library:
         raise ValueError(
             f"native OA export {exported.name} library identity drifted"
         )
@@ -571,7 +552,7 @@ def _native_oa_spectre_bundle(
     )
     hierarchy = resolve_netlist_hierarchy(
         snapshots,
-        top=interface.cell,
+        top=interface.authoring.cell,
         primitive_masters=library.primitive_masters,
     )
     expected_source = _project_path(
@@ -579,7 +560,7 @@ def _native_oa_spectre_bundle(
         Path(circuit.source),
         "native OA circuit source",
     )
-    if hierarchy.definitions[interface.cell].source_path != expected_source:
+    if hierarchy.definitions[interface.authoring.cell].source_path != expected_source:
         raise ValueError(
             f"native OA export {exported.name} circuit source disagrees with its "
             "OA assembly"
@@ -612,8 +593,8 @@ def _plan_loaded_ip_release(
         exported
         for exported in contract.exports
         if isinstance(
-            exported.interface, (OaMixedSignalIpInterface, OaNativeIpInterface)
-        )
+            exported.interface, (MixedSignalIpInterface, CircuitIpInterface)
+        ) and exported.interface.authoring is not None
     ]
     oa_library = None
     if oa_exports:
@@ -668,7 +649,7 @@ def _plan_loaded_ip_release(
     native_bundles: dict[tuple[str, str], str] = {}
     if oa_library is not None:
         for exported in contract.exports:
-            if not isinstance(exported.interface, OaNativeIpInterface):
+            if not isinstance(exported.interface, CircuitIpInterface) or exported.interface.authoring is None:
                 continue
             text, metadata = _native_oa_spectre_bundle(
                 contract,

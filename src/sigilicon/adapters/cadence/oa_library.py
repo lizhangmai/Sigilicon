@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from sigilicon.domain.oa_snapshot import NativeOaSnapshot
+
 from collections import deque
 from collections.abc import Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -87,6 +89,7 @@ class ViewRebuildStep:
     owner: str
     view: OACellViewSource
     source_snapshot: TextSourceSnapshot | None = None
+    native_snapshot: NativeOaSnapshot | None = None
 
 
 @dataclass(frozen=True)
@@ -111,6 +114,7 @@ class OALibraryRebuildPlan:
     testbenches: tuple[TestbenchRebuildStep, ...]
     views: tuple[ViewRebuildStep, ...]
     expected_views: Mapping[str, tuple[str, ...]]
+    platform_documents: Mapping[Path, Mapping[str, Any]] = field(default_factory=lambda: MappingProxyType({}), repr=False, compare=False)
     selected_testbench: str | None = None
     netlist_snapshots: Mapping[Path, NetlistSnapshot] = field(
         default_factory=lambda: MappingProxyType({}),
@@ -250,7 +254,7 @@ class OALibraryRebuildPlan:
 def oa_plan_source_paths(plan: OALibraryRebuildPlan) -> frozenset[Path]:
     """Return the complete source closure consumed by one resolved OA plan."""
 
-    paths = set(plan.source.source_documents)
+    paths = set(plan.source.source_documents) | set(plan.platform_documents)
     paths.update(plan.netlist_snapshots)
     for cell in plan.source.cells:
         paths.add(cell.canonical_source)
@@ -297,6 +301,7 @@ def _oa_plan_source_expectations(
         path.resolve(): document
         for path, document in plan.source.source_documents.items()
     }
+    documents.update(plan.platform_documents)
     for source_root in plan.source.source_roots:
         documents.update(
             {
@@ -457,7 +462,7 @@ def _load_definitions(
             cell.canonical_source for cell in netlist_cells
         )
     }
-    definitions = parse_subcircuit_definitions(tuple(snapshots.values()))
+    definitions = parse_subcircuit_definitions(tuple(snapshots.values())) if snapshots else MappingProxyType({})
     declared = {cell.cell for cell in netlist_cells}
     discovered = set(definitions)
     if declared != discovered:
@@ -505,8 +510,6 @@ def _plan_designs(
         if inspection.spec.pdk.key != source.pdk:
             raise ValueError(f"design spec uses the wrong PDK: {cell.design_spec}")
         inspections.append(_override_inspection_library(inspection, library))
-    if not inspections:
-        raise ValueError("OA library has no rebuild design entry points")
 
     owner: dict[str, str] = {}
     imports_by_top: dict[str, tuple[str, ...]] = {}
@@ -799,17 +802,25 @@ def _plan_views(
     for cell in source.cells:
         for view in cell.views:
             source_snapshot = None
-            if view.kind in text_kinds:
+            native_snapshot = NativeOaSnapshot.load(view.source) if view.kind == "native_oa" else None
+            if native_snapshot is not None and (native_snapshot.library, native_snapshot.cell, native_snapshot.view) != (source.name, cell.cell, view.name):
+                raise ValueError("native OA snapshot identity disagrees with its owner view")
+            if view.kind in text_kinds or native_snapshot is not None:
                 source_snapshot = text_snapshots.get(view.source)
                 if source_snapshot is None:
                     source_snapshot = load_text_source_snapshot(view.source)
                     text_snapshots[view.source] = source_snapshot
+                if native_snapshot is not None:
+                    import json
+                    if json.loads(source_snapshot.text) != native_snapshot.record:
+                        raise ValueError("native OA snapshot changed during planning")
             steps.append(
                 ViewRebuildStep(
                     cell=cell.cell,
                     owner=cell.owner,
                     view=view,
                     source_snapshot=source_snapshot,
+                    native_snapshot=native_snapshot,
                 )
             )
     planned_steps = tuple(steps)
@@ -978,6 +989,10 @@ def plan_oa_library_rebuild(
         architecture_source_documents,
     )
     views = _plan_views(source, testbenches)
+    selected_platform = resolve_platform_snapshot(project, source.pdk, snapshot=platform_snapshot)
+    for step in views:
+        if step.native_snapshot is not None and (selected_platform.oa is None or step.native_snapshot.technology_library != selected_platform.oa.technology_library):
+            raise ValueError("native OA snapshot technology disagrees with its platform")
     expected_views = MappingProxyType(
         {
             cell.cell: tuple(view.name for view in cell.views)
@@ -993,6 +1008,7 @@ def plan_oa_library_rebuild(
         testbenches=testbenches,
         views=views,
         expected_views=expected_views,
+        platform_documents=MappingProxyType({**selected_platform.source_documents, selected_platform.source_paths[0]: selected_platform.catalog_document}),
         selected_testbench=testbench,
         netlist_snapshots=MappingProxyType(dict(netlist_snapshots)),
     )
