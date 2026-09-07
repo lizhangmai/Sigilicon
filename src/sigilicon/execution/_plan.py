@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from sigilicon.execution.software import SoftwareIdentity
+    from sigilicon.execution.resume import ResumeInput
 
 def _capture_software():
     from sigilicon.execution.software import SoftwareIdentity
@@ -267,6 +268,7 @@ class ExecutionPlan:
     sources: tuple[Source, ...]
     resources: tuple[ResourceBinding, ...] = field(repr=False)
     software: SoftwareIdentity = field(default_factory=_capture_software)
+    resume: ResumeInput | None = field(default=None, repr=False)
     _composition_sources: tuple[Source, ...] = field(
         default=(),
         init=False,
@@ -344,6 +346,7 @@ class ExecutionPlan:
             "sources": [source.record for source in self.sources],
             "resources": [resource.record for resource in self.resources],
             "steps": [step.record for step in self.steps],
+            **({"resume": self.resume.record} if self.resume is not None else {}),
         }
 
     @property

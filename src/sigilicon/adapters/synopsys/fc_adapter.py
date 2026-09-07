@@ -1,208 +1,196 @@
-"""Fusion Compiler physical-implementation adapter."""
-
+"""Managed FC-RM execution: one kernel step, one process, typed artifacts."""
 from __future__ import annotations
 
-from sigilicon.execution.artifact_reference import ArtifactReference
+import io
+import hashlib
+import gzip
+import json
+from pathlib import Path
+import re
+import shutil
+import tarfile
 
+from sigilicon.adapters.synopsys._common import _archive_directory, _logs, _run_script, _runtime_environment
+from sigilicon.adapters.synopsys.planning import Invocation
+from sigilicon.adapters.synopsys.fc_flow import FcAction, LABELS, METHOD, compile_steps
+from sigilicon.adapters.synopsys.fc_rm import materialize
+from sigilicon.adapters.synopsys.fc_reports import observations
+from sigilicon.execution.adapter import AdapterPreparation
+from sigilicon.execution.artifact_reference import ArtifactReference
+from sigilicon.execution._plan import PreflightCheck
 from sigilicon.execution._result import Artifact, StepResult
 from sigilicon.execution._values import ExecutionError
-from sigilicon.execution._io import ExecutionIO
-from pathlib import Path
+from sigilicon.execution.runtime import preflight_environment
 from sigilicon.external_tools import owned_scratch_directory, process_group_cleanup_uncertainty
-from sigilicon.adapters.synopsys._common import (
-    _ToolVerdict,
-    _archive_directory,
-    _logs,
-    _run_script,
-    _runtime_environment,
-    _safe_relative,
-)
 
-from sigilicon.adapters.synopsys.planning import FcAction, RunnerAdapter, require_action
 
-class FcAdapter(RunnerAdapter):
+def restore_checkpoint(payload: bytes, destination: Path) -> None:
+    """Reject links, traversal and unrelated roots before extracting any data."""
+    with tarfile.open(fileobj=io.BytesIO(payload)) as archive:
+        members = archive.getmembers()
+        if not members:
+            raise ExecutionError("empty FC checkpoint")
+        for member in members:
+            path = Path(member.name)
+            if (path.is_absolute() or ".." in path.parts or not path.parts
+                or path.parts[0] != "design.dlib"
+                or not (member.isfile() or member.isdir())):
+                raise ExecutionError("unsafe FC checkpoint archive member")
+        archive.extractall(destination, members=members, filter="data")
+    if not (destination / "design.dlib/lib.ndm").is_file():
+        raise ExecutionError("FC checkpoint is missing its design library index")
+
+
+class FcAdapter:
     name = "synopsys.fc"
-    action_type = FcAction
 
-    def run(self, context: ExecutionIO) -> StepResult:
-        step = context.step
-        action = require_action(step, FcAction)
-        target = action.target
+    def compile_steps(self, project, step):
+        return compile_steps(step)
+
+    def contract(self, project, step):
+        return FcAction.compile(step).contract
+
+    def prepare(self, project, step, resources):
+        return AdapterPreparation(action=FcAction.compile(step))
+
+    def preflight(self, step, resources):
+        return (PreflightCheck("fc-methodology", METHOD, "ready",
+                "local RM; flat RTL-to-GDS; no DFT or signoff"),
+                *preflight_environment(step.runtime, resources))
+
+    def run(self, context):
+        action = context.step.action
+        if not isinstance(action, FcAction):
+            raise ExecutionError("FC requires a compiled methodology action")
+        context.step.validate_action()
         runtime = _runtime_environment(context.runtime, context.step)
-        environment = runtime.values
-        environment.update(
-            {
-                "SIGILICON_DESIGN_VARIANT": action.invocation.variant,
-                "SIGILICON_DESIGN_CORNER": action.corner,
-                "SIGILICON_DESIGN_TOP": action.top,
+        with owned_scratch_directory(prefix=f"sigilicon-fc-{context.run_id}-",
+                retain_on_error=lambda exc: process_group_cleanup_uncertainty(exc) is not None) as scratch:
+            root = scratch.path
+            reference_identity = []
+            if action.stage != "reference-library":
+                reference = ArtifactReference("reference-library", "reference-library", "library.synopsys-ndm", "many")
+                source = context.artifact_directory(reference, "references")
+                shutil.copytree(source, root / "references")
+                reference_identity = sorted(
+                    ({"path": item.path.relative_to(source).as_posix(), "sha256": item.sha256}
+                     for item in context.artifacts(reference)),
+                    key=lambda item: item["path"])
+            if action.previous not in (None, "reference-library"):
+                checkpoint = context.artifacts(ArtifactReference(action.previous, "checkpoint", "checkpoint.synopsys-dlib-tar"))[0]
+                metadata = json.loads(context.artifacts(ArtifactReference(
+                    action.previous, "checkpoint-metadata", "evidence.fc-checkpoint"))[0].read_bytes())
+                if (metadata.get("methodology") != METHOD
+                    or metadata.get("block") != action.hdl.top + "/" + LABELS[action.previous]
+                    or metadata.get("references") != reference_identity
+                    or metadata.get("checkpoint_sha256") != checkpoint.sha256):
+                    raise ExecutionError("FC checkpoint metadata/dependency identity mismatch")
+                restore_checkpoint(checkpoint.read_bytes(), root)
+            runner = materialize(root, action, context)
+            managed_runner = context.workspace("synopsys", {}, tool_work_root=context.work_directory).write_text(
+                "work", ("fc-run.sh",), runner.read_text())
+            environment = dict(runtime.values)
+            environment.update({
+                "SIGILICON_FC_LAUNCH": str(root / "generated/launch.tcl"),
+                "SIGILICON_FC_LOG": str(root / "logs_fc" / (LABELS[action.stage] + ".log")),
+            })
+            completed = _run_script(context, environment, argument="",
+                invocation=Invocation("", "", action.timeout_seconds),
+                held_executables=runtime.tools, held_files=runtime.files,
+                held_directories=runtime.directories, generated_runner=managed_runner)
+            published = list(_logs(context, completed.stdout, completed.stderr or ""))
+            def collect(directory, role, kind, prefix=""):
+                if not directory.is_dir():
+                    return []
+                result = []
+                for path in sorted(directory.rglob("*")):
+                    if role == "reference-library" and any(
+                            part.startswith("@@") for part in path.relative_to(directory).parts):
+                        continue  # LC backup libraries are not active dependencies.
+                    if path.is_file() and not path.is_symlink():
+                        result.append(context.copy_output(role=role, kind=kind, source=path,
+                            filename=prefix + path.relative_to(directory).as_posix()))
+                published.extend(result)
+                return result
+            collect(root / "logs_fc", "log", "log.synopsys", "fc/")
+            collect(root / "reports", "report", "report.synopsys")
+            collect(root / "reports_fc", "report", "report.synopsys")
+            log = completed.stdout + "\n" + (completed.stderr or "")
+            log_file = root / "logs_fc" / (LABELS[action.stage] + ".log")
+            if log_file.is_file():
+                log += "\n" + log_file.read_text(errors="replace")
+            errors = sorted(set(re.findall(r"^(?:Error:|RM-error[^\n]*:)[^\n]*", log, re.M)))
+            marker = root / "stage_complete.rpt"
+            expected = f"stage={action.stage}\nblock={action.hdl.top}/{LABELS[action.stage]}\n"
+            checks = {
+                "process_exit": completed.returncode == 0,
+                "tool_errors": not errors,
+                "completed_block": marker.is_file() and marker.read_text() == expected,
+                "rm_completion": (root / LABELS[action.stage]).is_file(),
             }
-        )
-        held_files = list(runtime.files)
-        held_directories = list(runtime.directories)
-        reference_name: str | None = None
-        output_names: dict[str, str] = {}
-        required: frozenset[str] = frozenset()
-        if target == "library":
-            reference_name = _safe_relative(
-                action.reference_library,
-                "reference library output",
-            )
-        else:
-            synthesis = action.synthesis_step
-            reference = action.reference_step
-            mapped_netlist = context.artifacts(ArtifactReference(synthesis, "mapped-netlist", "netlist.verilog"))[0]
-            mapped_constraints = context.artifacts(ArtifactReference(synthesis, "mapped-constraints", "constraints.sdc"))[0]
-            reference_root = context.artifact_directory(
-                ArtifactReference(reference, "reference-library", "library.synopsys-ndm", "many"),
-                action.reference_library,
-            )
-            output_names = {output.role: output.path for output in action.outputs}
-            required = frozenset(output_names)
-            role_environment = {output.role: output.environment for output in action.outputs}
-            output_kinds = {output.role: output.kind for output in action.outputs}
-            environment.update(
-                {
-                    "SIGILICON_FC_MAPPED_NETLIST": str(mapped_netlist.path),
-                    "SIGILICON_FC_MAPPED_SDC": str(mapped_constraints.path),
-                    "SIGILICON_FC_REFERENCE_NDM": str(reference_root),
-                    "SIGILICON_IMPLEMENTATION_EVALUATOR": str(
-                        context.source_path(action.evaluator)
-                    ),
-                }
-            )
-            held_files.extend(
-                ("SIGILICON_FC_MAPPED_NETLIST", "SIGILICON_FC_MAPPED_SDC")
-            )
-            held_directories.append("SIGILICON_FC_REFERENCE_NDM")
-        with owned_scratch_directory(
-            prefix=f"sigilicon-fc-{context.run_id}-",
-            retain_on_error=lambda exc: process_group_cleanup_uncertainty(exc)
-            is not None,
-        ) as scratch:
-            environment["SIGILICON_FC_WORK_ROOT"] = scratch.child_path
-            if target == "library":
-                assert reference_name is not None
-                environment.update(
-                    {
-                        "SIGILICON_FC_REFERENCE_NDM": (
-                            f"{scratch.child_path}/reference-library/"
-                            f"{reference_name}"
-                        ),
-                        "SIGILICON_FC_LIBRARY_CHECK_REPORT": (
-                            f"{scratch.child_path}/library-check-report/"
-                            "check_workspace.rpt"
-                        ),
-                    }
-                )
-            else:
-                for role in output_names:
-                    environment_name = role_environment[role]
-                    environment[environment_name] = (
-                        f"{scratch.child_path}/{role}/{output_names[role]}"
-                    )
-            completed = _run_script(
-                context,
-                environment,
-                invocation=action.invocation,
-                argument=target,
-                held_executables=runtime.tools,
-                held_files=tuple(held_files),
-                held_directories=tuple(held_directories),
-            )
-            logs = _logs(context, completed.stdout, completed.stderr or "")
-            # Preserve generated evidence even when the runner or evaluator failed.
-            if target == "library":
-                assert reference_name is not None
-                reference_root = (
-                    scratch.path / "reference-library" / reference_name
-                )
-                reference_artifacts = tuple(
-                    context.copy_output(
-                        role="reference-library",
-                        kind="library.synopsys-ndm",
-                        source=path,
-                        filename=(
-                            Path(reference_name) / path.relative_to(reference_root)
-                        ).as_posix(),
-                    )
-                    for path in sorted(reference_root.rglob("*"))
-                    if path.is_file() and not path.is_symlink()
-                )
-                report = scratch.path / "library-check-report" / "check_workspace.rpt"
-                artifacts = reference_artifacts
-                if report.is_file() and not report.is_symlink():
-                    artifacts += (context.copy_output(
-                        role="library-check-report",
-                        kind="report.synopsys",
-                        source=report,
-                        filename="check_workspace.rpt",
-                    ),)
-                required = frozenset({"reference-library", "library-check-report"})
-            else:
-                copied: list[Artifact] = []
-                for role in sorted(required, key=lambda role: (role == "checkpoint", role)):
-                    role_root = scratch.path / role
-                    if role == "checkpoint":
-                        checkpoint = role_root / output_names[role]
-                        if not checkpoint.is_dir() or checkpoint.is_symlink():
-                            continue
-                        archive = scratch.path / (Path(output_names[role]).name + ".tar")
-                        _archive_directory(
-                            checkpoint,
-                            archive,
-                            output_names[role],
-                        )
-                        copied.append(
-                            context.copy_output(
-                                role=role,
-                                kind="checkpoint.synopsys-dlib-tar",
-                                source=archive,
-                                filename=archive.name,
-                            )
-                        )
+            if action.stage == "reference-library":
+                outputs = []
+                for library in sorted((root / "references").glob("*")):
+                    if (library.name.startswith("@@") or library.is_symlink()
+                            or not (library / "registry.dat").is_file()):
                         continue
-                    paths = (
-                        role_root / output_names[role],
-                    )
-                    copied.extend(
-                        context.copy_output(
-                            role=role,
-                            kind=output_kinds[role],
-                            source=path,
-                            filename=path.relative_to(role_root).as_posix(),
-                        )
-                        for path in paths
-                        if path.is_file() and not path.is_symlink()
-                    )
-                artifacts = tuple(copied)
-            published = (*logs, *artifacts)
-            if completed.returncode:
-                return StepResult(
-                    "failed", published, message=f"FC runner exited {completed.returncode}"
-                )
-            if {artifact.role for artifact in artifacts} != required:
-                return StepResult("failed", published, message="FC omitted one or more result roles")
-            if target == "pnr":
-                verdict_path = (
-                    scratch.path
-                    / "execution-verdict"
-                    / output_names["execution-verdict"]
-                )
-                try:
-                    verdict = _ToolVerdict.load(
-                        verdict_path,
-                        context=context,
-                        stage="physical-implementation",
-                        variant=action.invocation.variant,
-                        corner=action.corner,
-                    )
-                except ExecutionError as exc:
-                    return StepResult("failed", published, message=str(exc))
-                if not verdict.passed:
-                    return StepResult(
-                        "failed",
-                        published,
-                        message="FC execution completed but owner evidence failed",
-                    )
-                return StepResult.succeeded(artifacts=published)
-            return StepResult.succeeded(artifacts=(*logs, *artifacts))
+                    outputs.extend(collect(library, "reference-library", "library.synopsys-ndm",
+                                           "references/" + library.name + "/"))
+                checks["reference_library"] = bool(outputs)
+            else:
+                library = root / "design.dlib"
+                checks["checkpoint"] = (library / "lib.ndm").is_file()
+                if checks["checkpoint"]:
+                    archive = root / "design.dlib.tar"
+                    _archive_directory(library, archive, "design.dlib")
+                    artifact = context.copy_output(role="checkpoint", kind="checkpoint.synopsys-dlib-tar",
+                        source=archive, filename=archive.name)
+                    published.append(artifact)
+                    metadata = {"schema": 1, "methodology": METHOD,
+                        "block": action.hdl.top + "/" + LABELS[action.stage],
+                        "references": reference_identity,
+                        "checkpoint_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+                        "run_id": context.run_id, "step_id": context.step.id,
+                        "plan_identity": context.plan_identity}
+                    path = context.write_text("checkpoint-metadata", "checkpoint.json", json.dumps(metadata) + "\n")
+                    published.append(Artifact("checkpoint-metadata", "evidence.fc-checkpoint", path))
+                if action.stage == "export":
+                    exports = collect(root / "outputs_fc", "implementation", "implementation.fc-export")
+                    export_root = root / "exports"
+                    export_root.mkdir()
+                    def export_file(basename, role, kind, name):
+                        source = root / "outputs_fc" / basename
+                        compressed = source.with_name(source.name + ".gz")
+                        try:
+                            data = gzip.decompress(compressed.read_bytes()) if compressed.is_file() else source.read_bytes()
+                            if not data:
+                                return False
+                        except (OSError, EOFError):
+                            return False
+                        output = export_root / name
+                        output.write_bytes(data)
+                        published.append(context.copy_output(role=role, kind=kind, source=output, filename=name))
+                        return True
+                    for suffix, role, kind in (
+                        ("v", "routed-netlist", "netlist.verilog"),
+                        ("pt.v", "timing-netlist", "netlist.verilog"),
+                        ("lvs.v", "lvs-netlist", "netlist.verilog"),
+                        ("gds", "layout-stream", "layout.gds"),
+                        ("def", "routed-def", "layout.def"),
+                    ):
+                        checks["export_" + role] = export_file(
+                            "write_data." + suffix, role, kind, "design." + suffix)
+                    spefs = sorted({p.path.name.removesuffix(".gz") for p in exports
+                        if p.path.name.endswith((".spef", ".spef.gz"))})
+                    checks["export_parasitics"] = bool(spefs) and all(
+                        export_file(name, "parasitics", "parasitics.spef", name) for name in spefs)
+            verdict = {"schema": 1, "methodology": METHOD, "owner": context.owner,
+                "stage": action.stage, "run_id": context.run_id,
+                "plan_identity": context.plan_identity, "passed": all(checks.values()),
+                "checks": checks, "errors": errors,
+                "product_qualification_conclusion": False, "signoff": "not_requested",
+                "observations": observations(root / "reports_fc" / LABELS[action.stage])}
+            path = context.write_text("execution-verdict", "verdict.json", json.dumps(verdict, indent=2) + "\n")
+            published.append(Artifact("execution-verdict", "evidence.tool-verdict", path))
+            return StepResult("succeeded" if all(checks.values()) else "failed", tuple(published),
+                message="" if all(checks.values()) else "FC stage did not satisfy its execution contract")

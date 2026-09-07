@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
+from sigilicon.canonical import canonical_json
 from sigilicon.paths import discover_project_contract
 from sigilicon.project import Project
 
 
 def emit_json(value: Any) -> None:
-    print(json.dumps(value, indent=2, ensure_ascii=False, default=str))
+    print(canonical_json(value), end="")
 
 
 def open_cli_project(root: Path | None) -> Project:

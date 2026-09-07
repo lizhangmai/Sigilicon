@@ -436,7 +436,22 @@ def _run(
                 for name, result in dependencies.items()
                 if result.status != "succeeded"
             )
-            if failed_dependencies:
+            reused = next((o for o in plan.resume.outcomes if o.step == step.id), None) if plan.resume else None
+            if reused is not None:
+                record.directory("work", step.id)
+                output_root = record.directory("outputs", step.id)
+                record.add_file("outputs", output_root)
+                copied = []
+                for artifact in reused.result.artifacts:
+                    relative = artifact.path.relative_to(plan.resume.run.run_root / "outputs" / step.id)
+                    target = record.copy_file(
+                        "outputs", (step.id, *relative.parts), artifact.path,
+                        expected_size=artifact.size, expected_sha256=artifact.sha256)
+                    copied.append(Artifact(artifact.role, artifact.kind, target,
+                                           artifact.size, artifact.sha256))
+                result = StepResult("succeeded", tuple(copied),
+                                    message=f"reused verified step from {plan.resume.run.run_id}")
+            elif failed_dependencies:
                 result = StepResult(
                     "blocked",
                     message=(

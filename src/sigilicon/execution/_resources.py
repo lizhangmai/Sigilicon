@@ -28,6 +28,30 @@ if TYPE_CHECKING:
     from sigilicon.external_tools import OwnedExecutable
 
 
+def _require_nofollow_path(
+    value: str | None,
+    identity: str,
+    kind: str,
+) -> Path:
+    """Resolve one configured file or directory without following symlinks."""
+
+    if value is None:
+        raise ContractError(f"required runtime {kind} is missing: {identity}")
+    path = Path(value).absolute()
+    try:
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ContractError(
+            f"required runtime {kind} is missing or unsafe: {identity}"
+        ) from exc
+    valid = resolved.is_file() if kind == "file" else resolved.is_dir()
+    if path != resolved or not valid:
+        raise ContractError(
+            f"required runtime {kind} is missing or unsafe: {identity}"
+        )
+    return path
+
+
 @dataclass(frozen=True)
 class ResourceFile:
     """One content-addressed file inside a runtime resource."""
@@ -757,31 +781,15 @@ class Resources:
         """Return one required project-configured regular file."""
 
         identity = resource_identity(name)
-        value = self.files.get(identity)
-        path = None if value is None else Path(value)
-        if path is None or not path.is_file():
-            raise ContractError(f"required runtime file is missing: {identity}")
-        return path
+        return _require_nofollow_path(self.files.get(identity), identity, "file")
 
     def require_directory(self, name: str) -> Path:
         """Return one required project-configured directory."""
 
         identity = resource_identity(name)
-        value = self.directories.get(identity)
-        path = None if value is None else Path(value)
-        if path is None:
-            raise ContractError(f"required runtime directory is missing: {identity}")
-        try:
-            resolved = path.resolve(strict=True)
-        except (OSError, RuntimeError) as exc:
-            raise ContractError(
-                f"required runtime directory is missing: {identity}"
-            ) from exc
-        if not resolved.is_dir():
-            raise ContractError(
-                f"required runtime directory is missing: {identity}"
-            )
-        return resolved
+        return _require_nofollow_path(
+            self.directories.get(identity), identity, "directory"
+        )
 
     def require_value(self, name: str) -> str:
         """Return one required non-path runtime value."""

@@ -395,6 +395,17 @@ def _compile_operation(
             for index, value in enumerate(steps_raw)
         )
 
+    if uses is not None:
+        from sigilicon.execution.adapter import OperationAdapter
+        adapter = project._adapters().get(uses)
+        if isinstance(adapter, OperationAdapter):
+            expanded = adapter.compile_steps(project, compiled[0][0])
+            if not isinstance(expanded, tuple) or not expanded or any(
+                not isinstance(item, Step) for item in expanded
+            ):
+                raise ContractError("operation adapter must return non-empty typed steps")
+            compiled = [(item, item.source_closure) for item in expanded]
+
     catalog_source = Source.capture(path, root=root, scope="owner")
     if catalog_source.read_text() != record_text:
         raise ContractError("operation catalog changed while it was being parsed")

@@ -66,6 +66,17 @@ class AdapterPreparation:
             )
 
 
+@runtime_checkable
+class OperationAdapter(Protocol):
+    """Compile one direct owner operation into kernel-visible tool steps.
+
+    This is a planning-only extension, not a nested executor. Expansion runs
+    once, before target selection and ordinary artifact-contract validation.
+    """
+
+    def compile_steps(self, project: Project, step: Step) -> tuple[Step, ...]: ...
+
+
 def _prepare_step(step: Step, preparation: AdapterPreparation) -> Step:
     """Apply adapter discoveries while keeping Step construction in the kernel."""
 

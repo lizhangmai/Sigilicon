@@ -24,6 +24,8 @@ def _parser() -> argparse.ArgumentParser:
         command = commands.add_parser(name)
         command.add_argument("selector", help="owner:operation[@variant]")
         command.add_argument("--project-root", type=Path)
+        command.add_argument("--to", dest="to_step", help="execute the target step and its dependencies")
+        command.add_argument("--resume", help="reuse verified successful steps from a closed run")
         if name == "run":
             command.add_argument("--run-id")
     for name in ("status", "audit", "clean"):
@@ -94,7 +96,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
             )
             return 0
-        plan = project.plan(args.selector)
+        plan = project.plan(args.selector, to_step=args.to_step, resume=args.resume)
         if args.command == "plan":
             emit_json(plan.record)
             return 0

@@ -242,7 +242,8 @@ class Project:
             raise ValueError("sigilicon.toml declares a different project root")
         return project
 
-    def plan(self, selector: str) -> ExecutionPlan:
+    def plan(self, selector: str, *, to_step: str | None = None,
+             resume: str | None = None) -> ExecutionPlan:
         """Compile a selector to its complete source and runtime closure."""
 
         from sigilicon.execution.adapter import plan_execution
@@ -258,11 +259,23 @@ class Project:
             operation=operation,
             variant=variant,
         )
+        if to_step is not None:
+            by_id = {step.id: step for step in draft.steps}
+            if to_step not in by_id:
+                raise ContractError(f"unknown target step: {to_step}")
+            selected: set[str] = set()
+            pending = [to_step]
+            while pending:
+                name = pending.pop()
+                if name not in selected:
+                    selected.add(name)
+                    pending.extend(by_id[name].needs)
+            draft = replace(draft, steps=tuple(s for s in draft.steps if s.id in selected))
         composition_sources = tuple(
             Source.capture(path, root=self.project_root, scope="project")
             for path in (*self._operation_composition_paths(owner), self.catalog("ip"))
         )
-        return plan_execution(
+        plan = plan_execution(
             draft,
             project=self,
             adapters=self._adapters(),
@@ -270,6 +283,10 @@ class Project:
             authority=self._plan_authority,
             composition_sources=composition_sources,
         )
+        if resume is not None:
+            from sigilicon.execution.resume import bind_resume
+            plan = bind_resume(plan, self.artifact_root, resume)
+        return plan
 
     def preflight(
         self,

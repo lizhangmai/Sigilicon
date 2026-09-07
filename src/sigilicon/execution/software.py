@@ -29,7 +29,7 @@ class SoftwareIdentity:
         root = Path(__file__).resolve().parents[1]
         sources = []
         for path in sorted(root.rglob("*")):
-            if path.suffix not in {".py", ".il"}:
+            if path.suffix not in {".py", ".il", ".tcl", ".pl", ".floorplanning", ".default"}:
                 continue
             payload = read_nofollow_bytes(path)
             sources.append({"path": path.relative_to(root).as_posix(), "size": len(payload),

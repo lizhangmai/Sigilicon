@@ -2124,3 +2124,34 @@ def test_closed_run_materialization_verifies_content_and_rejects_fake_signoff(tm
     artifact.path.write_text("mutated")
     with pytest.raises((RuntimeError, ContractError), match="changed|digest|size|identity|content"):
         materialization.materialize(selection, tmp_path / "export/tampered.txt")
+
+
+def test_stage_selection_and_verified_resume(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    project = _project(tmp_path, CopyAdapter(), UpperAdapter())
+    prefix = project.plan("example:all", to_step="source")
+    assert [step.id for step in prefix.steps] == ["source"]
+    first = project.run(prefix)
+    assert first.status == "succeeded"
+    plan = project.plan("example:all", resume=first.run_id)
+    second = project.run(plan)
+    assert second.status == "succeeded"
+    assert second.run_id != first.run_id
+    assert "reused verified step" in second.outcomes[0].result.message
+    assert second.outcomes[1].result.artifacts[0].read_text() == "HELLO"
+    audited = RunStore(project.artifact_root).audit(
+        owner="example", operation="all", run_id=second.run_id)
+    assert audited.status == "succeeded"
+    assert first.outcomes[0].result.artifacts[0].read_text() == "hello"
+    with pytest.raises(ContractError, match="unknown target step"):
+        project.plan("example:all", to_step="missing")
+
+
+def test_resume_rejects_changed_successful_inputs(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    project = _project(tmp_path, CopyAdapter(), UpperAdapter())
+    first = project.run(project.plan("example:all", to_step="source"))
+    (tmp_path / "ip/example/configs/value.txt").write_text("changed")
+    project = _project(tmp_path, CopyAdapter(), UpperAdapter())
+    with pytest.raises(ContractError, match="resume inputs changed"):
+        project.plan("example:all", resume=first.run_id)

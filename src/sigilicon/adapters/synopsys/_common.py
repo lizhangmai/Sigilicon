@@ -303,6 +303,7 @@ def _run_script(
     held_executables: tuple[str, ...],
     held_files: tuple[str, ...],
     held_directories: tuple[str, ...] = (),
+    generated_runner: Path | None = None,
 ) -> ProcessResult:
     """Run one source-pinned script while holding every external input path."""
 
@@ -440,7 +441,16 @@ def _run_script(
             else:
                 owned = stack.enter_context(owned_directory(Path(value)))
                 environment[name] = owned.child_path
-        command = [shell_path, f"{source_root.child_path}/{runner}"]
+        if generated_runner is None:
+            runner_path = f"{source_root.child_path}/{runner}"
+        else:
+            if not generated_runner.is_relative_to(context.work_directory):
+                raise ExecutionError("generated runner must be in managed tool work")
+            generated = stack.enter_context(owned_input_file(
+                generated_runner, require_single_link=True))
+            launchers.append(generated)
+            runner_path = generated.child_named_path
+        command = [shell_path, runner_path]
         if argument:
             command.append(argument)
 

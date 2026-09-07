@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 from sigilicon.execution._plan import PreflightCheck, RuntimeEnvironment
+from sigilicon.execution._values import ContractError
 from sigilicon.execution._resources import Resources
 
 
@@ -32,20 +32,20 @@ def preflight_environment(
         "directories": "directory",
         "values": "value",
     }
+    require = {
+        "tools": resources.require_tool,
+        "files": resources.require_file,
+        "directories": resources.require_directory,
+        "values": resources.require_value,
+    }
     for kind in ("tools", "files", "directories", "values"):
-        configured = getattr(resources, kind)
         for identity in getattr(runtime, kind).values():
-            value = configured.get(identity)
-            path = None if value is None or kind == "values" else Path(value)
-            ready = (
-                value is not None
-                if kind == "values"
-                else resources.configured_tool(identity) is not None
-                if kind == "tools"
-                else bool(path is not None and path.is_file())
-                if kind == "files"
-                else bool(path is not None and path.is_dir())
-            )
+            try:
+                require[kind](identity)
+            except ContractError:
+                ready = False
+            else:
+                ready = True
             checks.append(
                 PreflightCheck(
                     "runtime-resource",

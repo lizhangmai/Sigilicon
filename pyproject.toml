@@ -12,12 +12,12 @@ dependencies = []
 [project.optional-dependencies]
 layout = ["laygo2==0.6.9"]
 virtuoso = [
-  "virtuoso-bridge @ git+https://github.com/Arcadia-1/virtuoso-bridge-lite.git@main",
+  "virtuoso-bridge @ git+https://github.com/Arcadia-1/virtuoso-bridge-lite.git@3fbe6865a10ab4a1d4f530967930143409981555",
 ]
 test = [
   "pytest>=8",
   "laygo2==0.6.9",
-  "virtuoso-bridge @ git+https://github.com/Arcadia-1/virtuoso-bridge-lite.git@main",
+  "virtuoso-bridge @ git+https://github.com/Arcadia-1/virtuoso-bridge-lite.git@3fbe6865a10ab4a1d4f530967930143409981555",
 ]
 
 [project.scripts]
@@ -25,3 +25,6 @@ sigilicon = "sigilicon.cli.main:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.setuptools.package-data]
+sigilicon = ["**/*.il", "adapters/synopsys/fc_rm/v2023_12/**/*"]
