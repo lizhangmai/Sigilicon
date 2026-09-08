@@ -882,7 +882,7 @@ def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
     }
     if set(value) != required:
         raise ArtifactManifestError("run manifest fields are invalid")
-    if value.get("schema") != 3 or value.get("contract_kind") != "run-manifest":
+    if value.get("schema") != 4 or value.get("contract_kind") != "run-manifest":
         raise ArtifactManifestError("run manifest header is invalid")
     status = value.get("status")
     if status not in ARTIFACT_STATUSES:
@@ -934,9 +934,12 @@ def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
                 raise ArtifactManifestError("manifest file reference must be an object")
             relative = reference.get("path")
             path = _safe_manifest_relative(relative, "file reference")
-            if path.parts[0] != role:
+            root_result = role == "outputs" and relative == "result.json"
+            if path.parts[0] != role and not root_result:
                 raise ArtifactManifestError(f"unsafe manifest file reference: {relative!r}")
             kind = reference.get("kind")
+            if root_result and kind != "file":
+                raise ArtifactManifestError("run result must be a regular file")
             if kind not in {"file", "directory"}:
                 raise ArtifactManifestError("manifest file reference has invalid kind")
             size = reference.get("size")
@@ -986,7 +989,7 @@ def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         raise ArtifactManifestError(
             "manifest completion_evidence must reference regular files"
         )
-    if any(Path(path).parts[0] != "outputs" for path in completion_evidence):
+    if any(path != "result.json" and Path(path).parts[0] != "outputs" for path in completion_evidence):
         raise ArtifactManifestError(
             "manifest completion_evidence for this artifact must use outputs/"
         )
@@ -1147,7 +1150,7 @@ class RunRecord:
     ) -> "RunRecord":
         files = {role: [] for role in paths.roles}
         manifest = {
-            "schema": 3,
+            "schema": 4,
             "contract_kind": "run-manifest",
             "owner": paths.owner,
             "operation": paths.operation,
@@ -1211,7 +1214,11 @@ class RunRecord:
     def add_file(self, role: str, path: Path, *, label: str | None = None) -> dict[str, Any]:
         with self._lock:
             self._require_running("register a file")
-            role_root = self.paths.role(role)
+            role_root = (
+                self.paths.root
+                if role == "outputs" and Path(path) == self.paths.result
+                else self.paths.role(role)
+            )
             candidate = _resolved_artifact_member(
                 role_root, Path(path), f"{role} file reference"
             )
@@ -1364,6 +1371,17 @@ class RunRecord:
         atomic_write_json(self.paths.manifest, validated)
         self.manifest = validated
 
+    def write_result(self, value: Mapping[str, Any]) -> Path:
+        """Publish the immutable run-level result as registered output evidence."""
+
+        with self._lock:
+            self._require_running("write the run result")
+            path = self.paths.result
+            payload = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+            _write_exclusive_bytes(path, payload)
+            self.add_file("outputs", path)
+            return path
+
     def _transition(
         self,
         status: str,
@@ -1394,7 +1412,7 @@ class RunRecord:
                     self.paths.root, Path(path), "completion evidence"
                 )
                 relative = candidate.relative_to(self.paths.root).as_posix()
-                role = Path(relative).parts[0]
+                role = "outputs" if relative == "result.json" else Path(relative).parts[0]
                 index = self._file_indexes[role].get(relative)
                 if index is None:
                     raise RuntimeError(

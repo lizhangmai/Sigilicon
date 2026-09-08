@@ -251,6 +251,6 @@ class OaExportAdapter:
                 output = context.copy_output("layout-stream", "layout.gds", stream, "layout.gds")
         except Exception:
             if uncertainty:
-                return StepResult("uncertain", context.output_artifacts("export", "evidence.oa-export"), message=" | ".join(uncertainty))
+                return StepResult("uncertain", context.output_artifacts("export", "evidence.oa-export", directory="export"), message=" | ".join(uncertainty))
             raise
-        return StepResult.succeeded(artifacts=(output, *context.output_artifacts("export", "evidence.oa-export")))
+        return StepResult.succeeded(artifacts=(output, *context.output_artifacts("export", "evidence.oa-export", directory="export")))

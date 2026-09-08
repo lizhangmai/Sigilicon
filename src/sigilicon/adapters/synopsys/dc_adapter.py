@@ -68,7 +68,7 @@ class DcAction:
             ArtifactProduct("mapped-netlist", "netlist.verilog", path="mapped.v"),
             ArtifactProduct("mapped-constraints", "constraints.sdc", path="mapped.sdc"),
             ArtifactProduct("checkpoint", "checkpoint.synopsys-ddc", path="mapped.ddc"),
-            *(ArtifactProduct("report", "report.synopsys", path=name) for name in self.reports),
+            *(ArtifactProduct("report", "report.synopsys", path=f"reports/{name}") for name in self.reports),
             ArtifactProduct("measurements", "evidence.synthesis", path="measurements.json"),
             ArtifactProduct("execution-verdict", "evidence.tool-verdict", path="verdict.json")))
 
@@ -185,7 +185,8 @@ class DcAdapter:
                 if not path.is_file() or path.is_symlink() or path.stat().st_size == 0:
                     missing.append(name)
                     continue
-                artifact = context.copy_output(role=role, kind=kind, source=path, filename=name)
+                artifact = context.copy_output(role=role, kind=kind, source=path,
+                                               filename=f"reports/{name}" if role == "report" else name)
                 artifacts.append(artifact)
                 if role == "report":
                     reports[name] = artifact.read_text()

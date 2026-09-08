@@ -336,7 +336,7 @@ class ExecutionPlan:
     @property
     def record(self) -> dict[str, Any]:
         return {
-            "schema": 17,
+            "schema": 18,
             "contract_kind": "execution-plan",
             "project_identity": self.project_identity,
             "software": self.software.record,

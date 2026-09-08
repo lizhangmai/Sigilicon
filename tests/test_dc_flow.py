@@ -200,6 +200,12 @@ def test_dc_consumes_compiled_library_and_publishes_checked_observations(dc_proj
     result, artifacts = run(dc_project)
     assert result.status == "succeeded"
     assert native_outputs["calls"] == ["library", "synthesis"]
+    root = result.run_root
+    assert root == dc_project.artifact_root / "synth/map" / result.run_id
+    assert (root / "outputs/library/library.db").read_text() == "compiled mem DB\n"
+    assert json.loads((root / "result.json").read_text())["status"] == "succeeded"
+    assert json.loads((root / "outputs/synthesis/measurements.json").read_text())["run_id"] == result.run_id
+    assert (root / "outputs/synthesis/reports/qor.rpt").read_text() == QOR
     verdict = artifacts["synthesis"]["execution-verdict"]
     assert verdict["passed"] is True
     assert verdict["product_qualification_conclusion"] is False

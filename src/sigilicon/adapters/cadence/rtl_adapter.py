@@ -99,7 +99,7 @@ class SpectreAdapter:
                 ArtifactProduct("measurement", "table.measurement", path="waveforms.csv"),
                 ArtifactProduct("spectre", "raw.cadence-spectre", "many")))
         _, outputs, _ = self._configuration(step)
-        return StepContract(produces=(*(ArtifactProduct("spectre", "raw.cadence-spectre", path=name) for name in outputs),
+        return StepContract(produces=(*(ArtifactProduct("spectre", "raw.cadence-spectre", path=f"spectre/{name}") for name in outputs),
                                       ArtifactProduct("spectre", "evidence.cadence-spectre", path="flow-evidence.json")))
 
     def prepare(
@@ -258,7 +258,7 @@ class XceliumAdapter:
         _text(config, "success_marker")
         _positive_integer(config, "timeout_seconds")
         return StepContract(produces=(ArtifactProduct("xcelium", "log.cadence-xcelium", "many"),
-                                      ArtifactProduct("xcelium", "summary.cadence-xcelium", path="summary.json")))
+                                      ArtifactProduct("xcelium", "summary.cadence-xcelium", path="xcelium/summary.json")))
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         return (_executable_check(resources, _XRUN),)
@@ -335,17 +335,17 @@ class XceliumAdapter:
             Artifact(
                 "xcelium",
                 "log.cadence-xcelium",
-                context.write_text("xcelium", "stdout.log", completed.stdout),
+                context.write_text("xcelium", "xcelium/stdout.log", completed.stdout),
             ),
             Artifact(
                 "xcelium",
                 "log.cadence-xcelium",
-                context.write_text("xcelium", "stderr.log", completed.stderr or ""),
+                context.write_text("xcelium", "xcelium/stderr.log", completed.stderr or ""),
             ),
             Artifact(
                 "xcelium",
                 "log.cadence-xcelium",
-                context.write_text("xcelium", "xrun.log", completed.native_log),
+                context.write_text("xcelium", "xcelium/xrun.log", completed.native_log),
             ),
             Artifact(
                 "xcelium",

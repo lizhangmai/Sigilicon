@@ -349,7 +349,7 @@ class StructuralLinkAdapter:
             raise ExecutionError("structural-link lost its evidence envelope")
         context.write_text(
             "structural-link",
-            "flow-evidence.json",
+            "structural-link/flow-evidence.json",
             json.dumps(
                 {
                     "schema": 1,
@@ -368,9 +368,8 @@ class StructuralLinkAdapter:
             + "\n",
         )
         published = context.output_artifacts(
-            "structural-link",
-            "evidence.structural-link",
-            required=True,
+            "structural-link", "evidence.structural-link",
+            directory="structural-link", required=True,
         )
         return (
             StepResult.succeeded(artifacts=published)

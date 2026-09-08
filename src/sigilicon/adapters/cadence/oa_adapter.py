@@ -20,7 +20,7 @@ from sigilicon.execution._values import ContractError, ExecutionError
 from sigilicon.execution._io import ExecutionIO
 from sigilicon.execution._plan import PreflightCheck, Step
 from sigilicon.execution._resources import Resources
-from sigilicon.execution._result import StepResult
+from sigilicon.execution._result import Artifact, StepResult
 from sigilicon.project import Project
 from sigilicon.canonical import canonical_digest
 from sigilicon.domain.oa_library import find_oa_assembly
@@ -192,7 +192,7 @@ class NativeOaAdapter:
                 )
         except Exception:
             published = context.output_artifacts(
-                "maestro", "evidence.cadence-maestro"
+                "maestro", "evidence.cadence-maestro", directory="maestro",
             )
             if uncertainty:
                 return StepResult(
@@ -202,7 +202,7 @@ class NativeOaAdapter:
                 )
             raise
         published = context.output_artifacts(
-            "maestro", "evidence.cadence-maestro"
+            "maestro", "evidence.cadence-maestro", directory="maestro",
         )
         if not published:
             raise ExecutionError("native Maestro produced no managed evidence")
@@ -384,12 +384,15 @@ def _publish_oa_result(
     passed = payload.get("passed")
     if type(passed) is not bool:
         raise ExecutionError("OA evidence must contain a boolean 'passed' field")
-    context.write_text(
+    path = context.write_text(
         "oa",
         f"{operation}.json",
         json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
     )
-    artifacts = context.output_artifacts("oa", "evidence.cadence-oa", required=True)
+    artifacts = (
+        Artifact("oa", "evidence.cadence-oa", path),
+        *context.output_artifacts("oa", "evidence.cadence-oa", directory="oa"),
+    )
     return (
         StepResult.succeeded(artifacts=artifacts)
         if passed

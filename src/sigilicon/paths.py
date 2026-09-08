@@ -146,6 +146,10 @@ class RunPaths:
         return self.root / "manifest.json"
 
     @property
+    def result(self) -> Path:
+        return self.root / "result.json"
+
+    @property
     def roles(self) -> tuple[str, ...]:
         return tuple(self._roles)
 
@@ -162,7 +166,7 @@ class RunPaths:
         return result
 
     def create(self) -> None:
-        """Exclusively create this identity and all declared role directories."""
+        """Exclusively create this identity; optional run logs are created on use."""
 
         root_descriptor = _create_artifact_identity_directory(
             self.artifact_root,
@@ -170,7 +174,8 @@ class RunPaths:
         )
         try:
             for role in self._roles:
-                os.mkdir(role, dir_fd=root_descriptor)
+                if role != "logs":
+                    os.mkdir(role, dir_fd=root_descriptor)
         finally:
             os.close(root_descriptor)
 
@@ -214,12 +219,9 @@ class ArtifactLayout:
         owner_name = validate_artifact_component(owner, "owner")
         operation_name = validate_artifact_component(operation, "operation")
         identity = validate_artifact_id(run_id, "run id")
-        namespace = self.root / "runs" / owner_name / operation_name
-        if variant is None:
-            namespace /= "base"
-        else:
-            namespace /= "variants"
-            namespace /= validate_artifact_component(variant, "variant")
+        if owner_name in {"exports", "system"}:
+            raise ValueError(f"run owner uses a reserved artifact namespace: {owner_name}")
+        namespace = self.root / owner_name / operation_name
         return RunPaths.build(
             artifact_root=self.root,
             namespace_root=namespace,

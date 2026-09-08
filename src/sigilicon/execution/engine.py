@@ -576,11 +576,7 @@ def _run(
             tuple(outcomes),
             paths.root,
         )
-        result_path = record.write_json(
-            "outputs",
-            ("run-result.json",),
-            result.record,
-        )
+        result_path = record.write_result(result.record)
         terminal_arguments: dict[str, Any] = {}
         if result.status == "partial":
             terminal_arguments["partial_failure"] = {

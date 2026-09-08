@@ -123,7 +123,8 @@ def test_fc_library_result_requires_completion_and_no_tool_errors(fc_project, mo
     assert verdict["product_qualification_conclusion"] is False
     assert verdict["signoff"] == "not_requested"
     assert verdict["passed"] == (failure == "none")
-    registries = list(fc_project.artifact_root.rglob("outputs/reference-library/reference-library/**/registry.dat"))
+    registries = [artifact.path for artifact in result.outcomes[0].result.artifacts
+                  if artifact.role == "reference-library" and artifact.path.name == "registry.dat"]
     assert sorted(p.read_text() for p in registries) == ["active frame\n", "fixture reference\n"]
 
 

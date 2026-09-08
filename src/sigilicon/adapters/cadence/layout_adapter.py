@@ -11,7 +11,7 @@ from sigilicon.execution._values import ContractError, ExecutionError
 from sigilicon.execution._io import ExecutionIO
 from sigilicon.execution._plan import PreflightCheck, Step
 from sigilicon.execution._resources import Resources
-from sigilicon.execution._result import StepResult
+from sigilicon.execution._result import Artifact, StepResult
 from sigilicon.project import Project
 from sigilicon.canonical import canonical_digest
 from sigilicon.external_tools import owned_scratch_directory, process_group_cleanup_uncertainty
@@ -177,7 +177,7 @@ class LayoutAdapter:
                 )
         except Exception:
             published = context.output_artifacts(
-                "layout", "evidence.cadence-layout"
+                "layout", "evidence.cadence-layout", directory="layout",
             )
             if uncertainty:
                 return StepResult(
@@ -187,9 +187,9 @@ class LayoutAdapter:
                 )
             raise
         published = context.output_artifacts(
-            "layout", "evidence.cadence-layout"
+            "layout", "evidence.cadence-layout", directory="layout",
         )
         if not published:
             raise ExecutionError("layout generation produced no managed evidence")
-        context.write_text("lvs-source", "source.cdl", render_canonical_source_cdl(planning.spec))
-        return StepResult.succeeded(artifacts=(*published, *context.output_artifacts("lvs-source", "netlist.cdl")))
+        path = context.write_text("lvs-source", "source.cdl", render_canonical_source_cdl(planning.spec))
+        return StepResult.succeeded(artifacts=(*published, Artifact("lvs-source", "netlist.cdl", path)))

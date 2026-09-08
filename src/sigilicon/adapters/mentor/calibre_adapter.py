@@ -134,10 +134,10 @@ class CalibreAdapter:
         action, _ = self._configuration(project, step)
         consumes = tuple(ArtifactReference(item.step, item.role, item.kinds[0], path=item.path)
                          for item in (action.layout, action.source) if item is not None and item.step is not None)
-        products = (ArtifactProduct("verification", "evidence.physical-verification", path="typed-evidence.json"),
+        products = (ArtifactProduct("verification", "evidence.physical-verification", path="verification/typed-evidence.json"),
                     ArtifactProduct("verification", "report.calibre", "many"))
         if action.check == "lvs":
-            products += (ArtifactProduct("verification", "netlist.cdl", path="extracted.sp"),)
+            products += (ArtifactProduct("verification", "netlist.cdl", path="verification/extracted.sp"),)
         return StepContract(consumes, products)
 
     def prepare(self, project: Project, step: Step, resources: Resources) -> AdapterPreparation:
@@ -186,4 +186,4 @@ class CalibreAdapter:
         return StepResult("succeeded" if evidence.clean else "failed",
                           tuple(replace(item, kind=("evidence.physical-verification" if item.path.name == "typed-evidence.json"
                                                    else "netlist.cdl" if item.path.name == "extracted.sp" else "report.calibre"))
-                                for item in context.output_artifacts("verification", "report.calibre")), message=evidence.message)
+                                for item in context.output_artifacts("verification", "report.calibre", directory="verification")), message=evidence.message)

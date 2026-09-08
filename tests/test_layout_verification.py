@@ -432,7 +432,7 @@ def test_release_evidence_is_extracted_from_an_audited_typed_verifier_result(tmp
         owner=result.owner, operation=result.operation, run_id=result.run_id,
     )
     receipt = execution_from_run(materialization, ArtifactReference(
-        "verify", "verification", "evidence.physical-verification", path="typed-evidence.json",
+        "verify", "verification", "evidence.physical-verification", path="verification/typed-evidence.json",
     ))
     assert validate_execution(receipt)
     receipt["proof"]["result"]["status"] = "failed"
@@ -503,7 +503,7 @@ def test_release_receipt_consumes_only_the_specific_checked_claim(tmp_path: Path
     proof = RunStore(project.artifact_root).materialization_plan(
         owner=result.owner, operation=result.operation, run_id=result.run_id)
     execution = execution_from_run(proof, ArtifactReference(
-        'verify', 'verification', 'evidence.physical-verification', path='typed-evidence.json'))
+        'verify', 'verification', 'evidence.physical-verification', path='verification/typed-evidence.json'))
     data = (owner / ('unused.sv' if fault == 'input' else 'layout.gds')).read_bytes()
     view = ReleaseView('design', 'raw_macro_gds_or_oasis', 'gds', frozenset(),
                        len(data), hashlib.sha256(data).hexdigest())

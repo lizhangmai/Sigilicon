@@ -102,6 +102,10 @@ def test_public_execution_vocabulary_supports_the_complete_lifecycle(
     assert stored.status == result.status
     assert stored.plan_identity == result.plan_identity
     assert stored.outcomes[0].result.artifacts[0].read_text() == "hello"
+    root = tmp_path / "artifacts/example/check" / result.run_id
+    assert result.run_root == root
+    assert json.loads((root / "result.json").read_text())["run_id"] == result.run_id
+    assert stored.outcomes[0].result.artifacts[0].path == root / "outputs/run/value.txt"
     assert isinstance(_run_store_call(project, "example:check")[0], RunStore)
 
 
@@ -348,7 +352,7 @@ class UpperAdapter(FixtureAdapter):
 
     def run(self, context: ExecutionIO) -> StepResult:
         from sigilicon.execution.artifact_reference import ArtifactReference
-        source = context.artifacts(ArtifactReference("source", "source", "text.plain"))[0]
+        source = context.artifacts(ArtifactReference("source", "source", "text.plain", path="value.txt"))[0]
         output = context.write_text(
             "result",
             "value.txt",
@@ -1179,11 +1183,16 @@ def test_variant_is_part_of_plan_run_and_artifact_identity(tmp_path: Path) -> No
     assert plan.steps[0].config == {"text": "profile"}
     assert result.variant == "fast"
     assert _run_root(project, "example:check@fast", result.run_id) == (
-        tmp_path / "artifacts/runs/example/check/variants/fast" / ("1" * 32)
+        tmp_path / "artifacts/example/check" / ("1" * 32)
     )
     assert _read_run(project, "example:check@fast", result.run_id).variant == "fast"
     with pytest.raises(RunStoreError):
         _read_run(project, "example:check", result.run_id)
+    with pytest.raises(RunStoreError):
+        _clean_run(project, "example:check", result.run_id)
+    with pytest.raises(FileExistsError):
+        project.run(project.plan("example:check"), run_id=result.run_id)
+    assert _read_run(project, "example:check@fast", result.run_id).status == "succeeded"
 
 
 def test_unknown_backend_is_rejected_during_planning(tmp_path: Path) -> None:
@@ -1930,7 +1939,7 @@ def test_run_store_is_independent_of_current_operation_source_and_rejects_tamper
     stored = _read_run(project, "example:check", result.run_id)
     assert stored.status == "succeeded"
 
-    result_path = _run_root(project, "example:check", result.run_id) / "outputs/run-result.json"
+    result_path = _run_root(project, "example:check", result.run_id) / "result.json"
     payload = json.loads(result_path.read_text(encoding="utf-8"))
     payload["variant"] = "tampered"
     result_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -2088,6 +2097,69 @@ def test_nested_artifact_names_survive_run_store_roundtrip(tmp_path: Path) -> No
     assert stored.record == result.record
 
 
+def test_roles_select_metadata_without_allowing_filename_overwrite(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+
+    class DistinctRoles(CopyAdapter):
+        def run(self, context: ExecutionIO) -> StepResult:
+            first = context.write_text("source", "value.txt", "first")
+            with pytest.raises(FileExistsError):
+                context.write_text("diagnostic", "value.txt", "overwrite")
+            second = context.write_text("diagnostic", "details.txt", "second")
+            return StepResult.succeeded(artifacts=(
+                Artifact("source", "text.plain", first),
+                Artifact("diagnostic", "text.plain", second),
+            ))
+
+    project = _project(tmp_path, DistinctRoles(), UpperAdapter())
+    result = project.run(project.plan("example:all"))
+    stored = RunStore(project.artifact_root).audit(
+        owner="example", operation="all", run_id=result.run_id,
+    )
+    assert stored.outcomes[-1].result.artifacts[0].read_text() == "FIRST"
+
+
+def test_explicit_bundle_directory_is_independent_of_artifact_role(tmp_path: Path) -> None:
+    from sigilicon.execution.artifact_reference import ArtifactReference
+
+    _write_project(tmp_path)
+
+    class BundleOutput(CopyAdapter):
+        def run(self, context: ExecutionIO) -> StepResult:
+            workspace = context.workspace("reports", {})
+            workspace.write_text("outputs", ("area.txt",), "area")
+            workspace.write_text("outputs", ("timing.txt",), "timing")
+            summary = context.write_text("summary", "summary.txt", "complete")
+            return StepResult.succeeded(artifacts=(
+                Artifact("summary", "text.plain", summary),
+                *context.output_artifacts("diagnostic", "text.plain", directory="reports", required=True),
+            ))
+
+    project = _project(tmp_path, BundleOutput())
+    result = project.run(project.plan("example:check"))
+    materialization = RunStore(project.artifact_root).materialization_plan(
+        owner="example", operation="check", run_id=result.run_id,
+    )
+    reference = ArtifactReference("run", "diagnostic", "text.plain", path="reports/area.txt")
+    assert materialization.materialize(reference, tmp_path / "area.txt").read_text() == "area"
+
+
+def test_run_store_rejects_symlinked_root_result(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    project = _project(tmp_path, CopyAdapter())
+    result = project.run(project.plan("example:check"))
+    path = result.run_root / "result.json"
+    outside = tmp_path / "outside.json"
+    outside.write_bytes(path.read_bytes())
+    path.unlink()
+    path.symlink_to(outside)
+    store = RunStore(project.artifact_root)
+    for operation in (store.read, store.audit, store.clean):
+        with pytest.raises(RunStoreError, match="unsafe|symlink"):
+            operation(owner="example", operation="check", run_id=result.run_id)
+    assert outside.is_file()
+
+
 @pytest.mark.parametrize("fault", ["format", "cardinality"])
 def test_dependency_artifact_contract_rejects_incompatible_producer(tmp_path: Path, fault: str) -> None:
     _write_project(tmp_path)
@@ -2114,7 +2186,7 @@ def test_closed_run_materialization_verifies_content_and_rejects_fake_signoff(tm
     materialization = RunStore(project.artifact_root).materialization_plan(
         owner=result.owner, operation=result.operation, run_id=result.run_id,
     )
-    selection = ArtifactReference("run", "source", "text.plain")
+    selection = ArtifactReference("run", "source", "text.plain", path="value.txt")
     copied = materialization.materialize(selection, tmp_path / "export/value.txt")
     assert copied.read_text() == "hello"
     with pytest.raises((ValueError, json.JSONDecodeError)):

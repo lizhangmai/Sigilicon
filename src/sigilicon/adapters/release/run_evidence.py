@@ -49,7 +49,7 @@ def validate_execution(record: Mapping) -> VerifiedExecution:
     plan, result = proof.get("plan"), proof.get("result")
     if not isinstance(plan, Mapping) or not isinstance(result, Mapping):
         raise ValueError("receipt has no execution plan and result")
-    if (plan.get("schema") != 17 or not isinstance(plan.get("software"), Mapping)
+    if (plan.get("schema") != 18 or not isinstance(plan.get("software"), Mapping)
             or canonical_digest(plan) != result.get("plan_identity") or result.get("status") != "succeeded"
             or any(result.get(key) != plan.get(key) for key in ("owner", "operation", "variant"))):
         raise ValueError("receipt execution plan/result identity drift")
@@ -63,7 +63,7 @@ def validate_execution(record: Mapping) -> VerifiedExecution:
         raise ValueError("receipt producer disagrees with its execution plan")
     if (planned.get("evidence") or {}).get("role") not in {"qualification", "signoff"}:
         raise ValueError("diagnostic or regression execution cannot supply signoff receipts")
-    prefix = f"outputs/{reference.step}/{reference.role}/"
+    prefix = f"outputs/{reference.step}/"
     artifacts = proof.get("artifacts", [])
     selected = [item for item in artifacts if item.get("step") == reference.step
                 and item.get("role") == reference.role and item.get("kind") == reference.kind

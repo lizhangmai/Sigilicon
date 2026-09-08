@@ -24,7 +24,7 @@ def validate_materialization_record(proof: Mapping) -> None:
             raise ValueError("invalid materialization schema")
         validate_artifact_id(proof["manifest_identity"], "run manifest identity")
         plan, result = proof["plan"], proof["result"]
-        if (plan["schema"] != 17 or result["schema"] != 3
+        if (plan["schema"] != 18 or result["schema"] != 3
                 or plan["contract_kind"] != "execution-plan" or result["contract_kind"] != "run-result"
                 or canonical_digest(plan) != result["plan_identity"]
                 or result["status"] != "succeeded"
@@ -75,7 +75,7 @@ class MaterializationPlan:
         outcome = next((item for item in self.result.outcomes if item.step == reference.step), None)
         if outcome is None:
             raise ContractError("artifact producer is absent from the closed run")
-        root = self.result.run_root / "outputs" / reference.step / reference.role
+        root = self.result.run_root / "outputs" / reference.step
         selected = tuple(item for item in outcome.result.artifacts
                          if item.role == reference.role and
                          (reference.path is None or item.path == root / reference.path))

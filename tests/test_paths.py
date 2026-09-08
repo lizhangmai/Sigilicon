@@ -16,6 +16,16 @@ from conftest import write_component_owner
 
 
 RUN = "1" * 32
+
+
+@pytest.mark.parametrize("owner", ("exports", "system"))
+def test_run_owner_cannot_collide_with_shared_artifact_namespaces(tmp_path: Path, owner: str) -> None:
+    with pytest.raises(ValueError, match="reserved artifact namespace"):
+        ArtifactLayout(tmp_path / "artifacts").operation_run(
+            owner=owner, operation="check", variant=None, run_id=RUN,
+        )
+
+
 def test_cli_discovery_uses_the_project_contract_not_pixi_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -94,7 +104,7 @@ def test_execution_creation_rejects_symlinked_structural_components(
     outside = tmp_path / "outside"
     artifacts.mkdir()
     outside.mkdir()
-    (artifacts / "runs").symlink_to(
+    (artifacts / "lib").symlink_to(
         outside,
         target_is_directory=True,
     )

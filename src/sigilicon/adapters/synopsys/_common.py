@@ -215,7 +215,7 @@ def _write_filelist(context: ExecutionIO, name: str, sources: tuple[str, ...]) -
 def _logs(context: ExecutionIO, stdout: str, stderr: str) -> tuple[Artifact, ...]:
     values = (("stdout.log", stdout), ("stderr.log", stderr))
     return tuple(
-        Artifact("log", "log.synopsys", context.write_text("log", name, value))
+        Artifact("log", "log.synopsys", context.write_text("log", f"logs/{name}", value))
         for name, value in values
     )
 

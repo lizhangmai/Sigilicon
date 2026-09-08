@@ -11,6 +11,8 @@ from sigilicon.execution._values import ContractError, _identifier, adapter_iden
 
 @dataclass(frozen=True)
 class ArtifactReference:
+    """Select typed outputs; an optional path is relative to the producer step."""
+
     step: str
     role: str
     kind: str

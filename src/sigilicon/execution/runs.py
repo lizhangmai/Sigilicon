@@ -9,7 +9,7 @@ from pathlib import PurePosixPath
 import re
 from typing import Any, Mapping
 
-from sigilicon.artifacts import SafeTree, load_manifest, read_json_object, read_nofollow_text
+from sigilicon.artifacts import SafeTree, load_manifest, read_json_object, read_nofollow_bytes, read_nofollow_text
 from sigilicon.canonical import canonical_digest
 from sigilicon.execution._result import (Artifact, RunFailure, RunFailureProvenance, RunResult, StepOutcome, StepResult)
 from sigilicon.execution._values import (ContractError, adapter_identity, resource_identity, resource_materialization_key)
@@ -93,17 +93,37 @@ class RunStore:
         references: dict[str, dict[Path, Mapping[str, Any]]] = {
             role: {} for role in paths.roles
         }
+        if (paths.result.exists() or paths.result.is_symlink()) and not any(
+            entry["path"] == "result.json" for entry in manifest["files"]["outputs"]
+        ):
+            raise RunStoreError("run result is not registered in its manifest")
         for entries in manifest["files"].values():
             for entry in entries:
                 value = Path(entry["path"])
+                if value == Path("result.json"):
+                    try:
+                        payload = read_nofollow_bytes(paths.result)
+                    except (OSError, RuntimeError) as exc:
+                        raise RunStoreError(f"run result is missing or unsafe: {exc}") from exc
+                    if len(payload) != entry["size"] or (
+                        verify_content and hashlib.sha256(payload).hexdigest() != entry.get("sha256")
+                    ):
+                        raise RunStoreError("run result metadata disagrees with its manifest")
+                    continue
                 role = value.parts[0]
                 relative = Path(*value.parts[1:])
                 if relative in references[role]:
                     raise RunStoreError("run manifest file inventory is duplicated")
                 references[role][relative] = entry
         for role in paths.roles:
+            role_root = paths.role(role)
+            if (
+                role == "logs" and not references[role]
+                and not role_root.exists() and not role_root.is_symlink()
+            ):
+                continue
             try:
-                inventory = SafeTree(paths.role(role)).inventory(
+                inventory = SafeTree(role_root).inventory(
                     verify_content=verify_content
                 )
             except (OSError, RuntimeError) as exc:
@@ -169,7 +189,7 @@ class RunStore:
             raise RunStoreError(str(exc)) from exc
         source = manifest.get("source")
         if (
-            manifest.get("schema") != 3
+            manifest.get("schema") != 4
             or manifest.get("contract_kind") != "run-manifest"
             or manifest.get("owner") != selected.owner
             or manifest.get("operation") != selected.operation
@@ -204,7 +224,7 @@ class RunStore:
                 "Execution Plan",
             )
             result = read_json_object(
-                selected.paths.role("outputs") / "run-result.json",
+                selected.paths.result,
                 "Run Result",
             )
             runtime_bindings = read_json_object(
@@ -230,7 +250,7 @@ class RunStore:
             "plan_identity": identity,
         }
         if (
-            manifest.get("schema") != 3
+            manifest.get("schema") != 4
             or manifest.get("contract_kind") != "run-manifest"
             or manifest.get("owner") != selected.owner
             or manifest.get("operation") != selected.operation
@@ -240,7 +260,7 @@ class RunStore:
         ):
             raise RunStoreError("execution manifest identity or closure drift")
         if (
-            plan.get("schema") != 17
+            plan.get("schema") != 18
             or plan.get("contract_kind") != "execution-plan"
             or plan.get("owner") != selected.owner
             or plan.get("operation") != selected.operation
@@ -259,7 +279,7 @@ class RunStore:
             raise RunStoreError("persisted run result identity drift")
         details = manifest.get("details")
         result_text = read_nofollow_text(
-            selected.paths.role("outputs") / "run-result.json"
+            selected.paths.result
         )
         if (
             not isinstance(details, Mapping)
@@ -532,7 +552,7 @@ class RunStore:
 
     def _read_selected(self, selected: _SelectedRun) -> RunResult | RunFailure:
         manifest = self._manifest(selected, verify_content=True)
-        if "outputs/run-result.json" in manifest.get("completion_evidence", ()):
+        if "result.json" in manifest.get("completion_evidence", ()):
             manifest, _plan, result = self._records(selected, manifest)
             return self._typed_result(result, selected.paths.root, manifest)
         details = manifest.get("details")
@@ -598,7 +618,7 @@ class RunStore:
         )
         if manifest["status"] != "running":
             self._validate_inventory(selected.paths, manifest)
-        if "outputs/run-result.json" in manifest.get("completion_evidence", ()):
+        if "result.json" in manifest.get("completion_evidence", ()):
             self._records(selected, manifest)
         try:
             tree.remove(expected)

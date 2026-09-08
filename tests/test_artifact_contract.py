@@ -79,7 +79,7 @@ def test_artifact_manifest_records_git_source(
         }
     }
     assert validate_manifest(record.manifest)["source"] == record.manifest["source"]
-    assert record.manifest["schema"] == 3
+    assert record.manifest["schema"] == 4
 
 
 def test_artifact_manifest_requires_source_provenance(tmp_path: Path) -> None:
@@ -146,6 +146,33 @@ def test_completion_evidence_is_reverified_before_success(tmp_path: Path) -> Non
         record.succeed(completion_evidence=(proof,))
     assert record.status == "running"
     assert load_manifest(record.paths.manifest)["status"] == "running"
+
+
+def test_root_result_is_immutable_registered_completion_evidence(tmp_path: Path) -> None:
+    record = _record(tmp_path)
+    result = record.write_result({"status": "succeeded"})
+    assert result == record.paths.root / "result.json"
+    with pytest.raises(FileExistsError):
+        record.write_result({"status": "failed"})
+    record.succeed(completion_evidence=(result,))
+    manifest = load_manifest(record.paths.manifest)
+    assert manifest["completion_evidence"] == ["result.json"]
+    assert manifest["files"]["outputs"][0]["path"] == "result.json"
+
+
+def test_root_result_writer_rejects_symlink_and_rechecks_payload(tmp_path: Path) -> None:
+    record = _record(tmp_path)
+    outside = tmp_path / "outside.json"
+    outside.write_text("keep")
+    record.paths.result.symlink_to(outside)
+    with pytest.raises((OSError, RuntimeError)):
+        record.write_result({"status": "succeeded"})
+    assert outside.read_text() == "keep"
+    record.paths.result.unlink()
+    result = record.write_result({"status": "succeeded"})
+    result.write_text("tampered")
+    with pytest.raises(RuntimeError, match="changed after registration"):
+        record.succeed(completion_evidence=(result,))
 
 
 def test_terminal_artifact_rejects_all_mutation_except_incident_link(

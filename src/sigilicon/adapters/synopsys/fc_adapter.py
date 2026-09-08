@@ -112,9 +112,9 @@ class FcAdapter:
                             filename=prefix + path.relative_to(directory).as_posix()))
                 published.extend(result)
                 return result
-            collect(root / "logs_fc", "log", "log.synopsys", "fc/")
-            collect(root / "reports", "report", "report.synopsys")
-            collect(root / "reports_fc", "report", "report.synopsys")
+            collect(root / "logs_fc", "log", "log.synopsys", "logs/fc/")
+            collect(root / "reports", "report", "report.synopsys", "reports/")
+            collect(root / "reports_fc", "report", "report.synopsys", "reports/")
             log = completed.stdout + "\n" + (completed.stderr or "")
             log_file = root / "logs_fc" / (LABELS[action.stage] + ".log")
             if log_file.is_file():
@@ -155,7 +155,7 @@ class FcAdapter:
                     path = context.write_text("checkpoint-metadata", "checkpoint.json", json.dumps(metadata) + "\n")
                     published.append(Artifact("checkpoint-metadata", "evidence.fc-checkpoint", path))
                 if action.stage == "export":
-                    exports = collect(root / "outputs_fc", "implementation", "implementation.fc-export")
+                    exports = collect(root / "outputs_fc", "implementation", "implementation.fc-export", "implementation/")
                     export_root = root / "exports"
                     export_root.mkdir()
                     def export_file(basename, role, kind, name):

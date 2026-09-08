@@ -11,7 +11,7 @@ from sigilicon.domain.oa_snapshot import NativeOaSnapshot
 from sigilicon.domain.platform import load_platform
 from sigilicon.execution.adapter import AdapterPreparation
 from sigilicon.execution.artifact_reference import ArtifactProduct, StepContract
-from sigilicon.execution._result import StepResult
+from sigilicon.execution._result import Artifact, StepResult
 from sigilicon.execution._source import Source
 from sigilicon.execution._values import ContractError
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
@@ -89,5 +89,5 @@ class OaCaptureAdapter:
                 raise ValueError("native OA capture technology drift")
             snapshot = NativeOaSnapshot.capture(library / action.cell / action.view, library=action.library,
                                                cell=action.cell, view=action.view, technology_library=action.technology_library)
-            context.write_text("native-source", "view.json", json.dumps(snapshot.record, sort_keys=True) + "\n")
-        return StepResult.succeeded(artifacts=context.output_artifacts("native-source", "source.native-oa"))
+            path = context.write_text("native-source", "view.json", json.dumps(snapshot.record, sort_keys=True) + "\n")
+        return StepResult.succeeded(artifacts=(Artifact("native-source", "source.native-oa", path),))

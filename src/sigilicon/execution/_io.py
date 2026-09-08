@@ -8,7 +8,7 @@ import re
 import stat
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
-from sigilicon.artifacts import SafeTree, copy_immutable_file, read_nofollow_bytes, read_nofollow_text
+from sigilicon.artifacts import SafeTree, copy_immutable_file, read_nofollow_bytes, read_nofollow_text, write_immutable_text
 from sigilicon.paths import validate_artifact_component, validate_artifact_id
 from sigilicon.execution._resources import Resources
 from sigilicon.execution._plan import Step
@@ -308,24 +308,28 @@ class ExecutionIO:
         self._register_mutation(operation)
 
     def output_path(self, role: str, filename: str) -> Path:
-        """Return a managed output path through the workflow workspace."""
+        """Resolve a step-relative filename; the logical role adds no directory."""
 
+        validate_artifact_component(role, "output role")
         relative = PurePosixPath(filename)
         if (
-            relative.is_absolute()
+            not relative.parts
+            or relative.is_absolute()
             or "\\" in filename
             or relative.as_posix() != filename
             or any(part in {"", ".", ".."} for part in relative.parts)
         ):
             raise ExecutionError(f"output filename must be canonical and relative: {filename!r}")
-        return self.workspace(role, {}).path("outputs", *relative.parts)
+        for component in relative.parts:
+            validate_artifact_component(component, "output filename component")
+        return self.output_directory.joinpath(*relative.parts)
 
     def write_text(self, role: str, filename: str, value: str) -> Path:
         """Create one immutable text output without following path components."""
 
-        relative = PurePosixPath(filename)
-        self.output_path(role, filename)
-        return self.workspace(role, {}).write_text("outputs", relative.parts, value)
+        path = self.output_path(role, filename)
+        write_immutable_text(path, value)
+        return path
 
     def copy_output(
         self,
@@ -347,13 +351,12 @@ class ExecutionIO:
         role: str,
         kind: str,
         *,
+        directory: str,
         required: bool = False,
     ) -> tuple[Artifact, ...]:
-        """Publish the complete regular-file closure below one output role."""
+        """Publish an explicitly located bundle under one logical artifact role."""
 
-        root = self.output_directory / validate_artifact_component(
-            role, "output role"
-        )
+        root = self.output_path(role, directory)
         if not root.is_dir() or root.is_symlink():
             if required:
                 raise ExecutionError(f"tool omitted required {role!r} directory")
@@ -369,16 +372,16 @@ class ExecutionIO:
 
     def workspace(
         self,
-        output_role: str,
+        directory: str,
         source: Mapping[str, Any],
         *,
         tool_work_root: Path | None = None,
     ) -> "ExecutionWorkspace":
-        """Create the file view owned by this Step."""
+        """Create a tool workspace with an explicit output bundle directory."""
 
         from sigilicon.execution._workspace import ExecutionWorkspace
 
-        role = validate_artifact_component(output_role, "output role")
+        bundle = validate_artifact_component(directory, "output bundle directory")
         return ExecutionWorkspace(
             run_id=self.run_id,
             root=self._run_root,
@@ -388,7 +391,7 @@ class ExecutionIO:
                 if tool_work_root is None
                 else Path(tool_work_root).absolute()
             ),
-            output_root=self.output_directory / role,
+            output_root=self.output_directory / bundle,
             log_root=self.work_directory / "logs",
             source=source,
         )
@@ -401,7 +404,7 @@ class ExecutionIO:
         result = self._dependencies.get(reference.step)
         if result is None or result.status != "succeeded":
             raise ExecutionError(f"dependency {reference.step!r} is missing or unsuccessful")
-        root = self._run_root / "outputs" / reference.step / reference.role
+        root = self._run_root / "outputs" / reference.step
         artifacts = tuple(item for item in result.artifacts if item.role == reference.role
                           and (reference.path is None or item.path == root / reference.path))
         if (not artifacts or (reference.cardinality == "one" and len(artifacts) != 1)
@@ -432,7 +435,7 @@ class ExecutionIO:
         if reference.cardinality != "many":
             raise ExecutionError("artifact directory requires multiple-file cardinality")
         relative = require_relative_path(directory, "artifact bundle directory")
-        root = self._run_root / "outputs" / reference.step / reference.role / relative
+        root = self._run_root / "outputs" / reference.step / relative
         artifacts = self.artifacts(reference)
         expected = {}
         for artifact in artifacts:
