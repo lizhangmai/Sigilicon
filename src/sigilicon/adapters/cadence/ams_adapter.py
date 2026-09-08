@@ -54,7 +54,7 @@ class _XceliumAmsAction:
 
 
 class XceliumAmsAdapter:
-    """Execute one locked-release Verilog-AMS migration cell."""
+    """Execute one sealed-circuit Verilog-AMS verification cell."""
 
     name = "cadence.xcelium-ams"
     _fields = frozenset({"owner", "cell", "timeout_seconds"})
@@ -115,7 +115,7 @@ class XceliumAmsAdapter:
             {
                 *planning.source_records,
                 *planning.sources,
-                planning.circuit_netlist,
+                *planning.circuit_sources,
                 *planning.model_set.paths,
             }
         )
@@ -170,7 +170,7 @@ class XceliumAmsAdapter:
             raise ExecutionError("Xcelium AMS lost its evidence envelope")
         context.write_text(
             "xcelium-ams",
-            "flow-evidence.json",
+            "xcelium-ams/flow-evidence.json",
             json.dumps(
                 {
                     "schema": 1,
@@ -190,7 +190,7 @@ class XceliumAmsAdapter:
             + "\n",
         )
         published = context.output_artifacts(
-            "xcelium-ams", "evidence.xcelium-ams"
+            "xcelium-ams", "evidence.xcelium-ams", directory="xcelium-ams",
         )
         return (
             StepResult.succeeded(artifacts=published)

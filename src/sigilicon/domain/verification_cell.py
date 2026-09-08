@@ -57,7 +57,7 @@ _AMS_FIELDS = frozenset(
 _AMS_RELEASE_CIRCUIT_FIELDS = frozenset(
     {"kind", "contract", "variant", "fileset", "dependency", "view"}
 )
-_AMS_SOURCE_CIRCUIT_FIELDS = frozenset({"kind", "path", "cell"})
+_AMS_SOURCE_CIRCUIT_FIELDS = frozenset({"kind", "sources", "cell"})
 _AMS_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 _SPECTRE_TIME = re.compile(
     r"(?P<value>(?:0|[1-9][0-9]*)(?:\.[0-9]+)?)(?:[fpnum])?\Z"
@@ -220,19 +220,21 @@ class XceliumAmsReleaseCircuit:
 
 @dataclass(frozen=True)
 class XceliumAmsSourceCircuit:
-    """One project-owned standalone Spectre circuit source."""
+    """One project-owned Spectre source closure rooted at ``cell``."""
 
-    path: Path
+    sources: tuple[Path, ...]
     cell: str
 
     @property
     def source_inputs(self) -> tuple[Path, ...]:
-        return (self.path,)
+        return self.sources
 
     def as_dict(self, *, root: Path) -> dict[str, object]:
         return {
             "kind": "source",
-            "path": self.path.relative_to(root).as_posix(),
+            "sources": [
+                path.relative_to(root).as_posix() for path in self.sources
+            ],
             "cell": self.cell,
         }
 
@@ -309,19 +311,26 @@ def _parse_xcelium_ams_circuit(
                 f"{field} fields must be exactly {sorted(expected)}; "
                 f"missing={sorted(missing)}, unknown={sorted(unknown)}"
             )
-        path = _file(
-            value.get("path"),
+        sources = _files(
+            value.get("sources"),
             cell_root=cell_root,
             project_root=project_root,
-            field=f"{field}.path",
+            field=f"{field}.sources",
         )
-        circuit_owner = repository.require_owner(path).name
-        if circuit_owner != owner:
+        if not sources:
+            raise ValueError(f"{field}.sources must contain at least one file")
+        foreign_sources = [
+            path
+            for path in sources
+            if repository.require_owner(path).name != owner
+        ]
+        if foreign_sources:
             raise ValueError(
-                f"{field}.path owner must be {owner!r}, got {circuit_owner!r}"
+                f"{field}.sources must all be owned by {owner!r}; "
+                f"got {foreign_sources[0]}"
             )
         return XceliumAmsSourceCircuit(
-            path=path,
+            sources=sources,
             cell=_token(value.get("cell"), f"{field}.cell"),
         )
     raise ValueError(f"{field}.kind must be 'ip-release' or 'source'")

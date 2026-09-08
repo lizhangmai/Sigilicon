@@ -318,7 +318,7 @@ def test_xcelium_ams_plan_resolves_locked_circuit_and_platform(
     )
 
     assert plan.native_cell == "NATIVE_TOP"
-    assert plan.circuit_netlist == circuit
+    assert plan.circuit_sources == (circuit,)
     assert plan.model_set.name == "nominal"
     assert plan.model_set.file.name == "model.scs"
     assert [path.suffix for path in plan.sources] == [".sv", ".vams"]
@@ -333,13 +333,17 @@ def test_xcelium_ams_plan_resolves_locked_circuit_and_platform(
     assert circuit.read_text(encoding="utf-8") not in serialized
 
 
-def test_xcelium_ams_plan_accepts_a_project_owned_standalone_circuit(
+def test_xcelium_ams_plan_accepts_a_project_owned_circuit_source_closure(
     tmp_path: Path,
 ) -> None:
     contract, _release_circuit = _ams_project(tmp_path)
-    circuit = _write(
-        tmp_path / "ip/demo/design/analog_top.scs",
-        "simulator lang=spectre\nsubckt ANALOG_TOP A VSS\nends ANALOG_TOP\n",
+    top = _write(
+        tmp_path / "ip/demo/design/top/circuit.scs",
+        "simulator lang=spectre\nsubckt ANALOG_TOP A VSS\nX0 A VSS LEAF\nends ANALOG_TOP\n",
+    )
+    leaf = _write(
+        tmp_path / "ip/demo/design/leaf/circuit.scs",
+        "simulator lang=spectre\nsubckt LEAF A VSS\nends LEAF\n",
     )
     contract.write_text(
         contract.read_text(encoding="utf-8").replace(
@@ -350,28 +354,77 @@ fileset = "ams"
 dependency = "native-provider"
 view = "circuit_netlist"''',
             '''kind = "source"
-path = "../../../design/analog_top.scs"
+sources = [
+  "../../../design/top/circuit.scs",
+  "../../../design/leaf/circuit.scs",
+]
 cell = "ANALOG_TOP"''',
         ),
         encoding="utf-8",
     )
 
+    project = Project.open(tmp_path)
     plan = plan_xcelium_ams_cell(
         contract,
-        project=Project.open(tmp_path),
-        resources=Project.open(tmp_path).resources(),
+        project=project,
+        resources=project.resources(),
     )
 
     assert plan.native_cell == "ANALOG_TOP"
-    assert plan.circuit_netlist == circuit.resolve()
+    assert plan.circuit_sources == (top.resolve(), leaf.resolve())
     assert plan.integration_check["contract_kind"] == "source-circuit-selection"
-    assert plan.circuit_sha256 == hashlib.sha256(circuit.read_bytes()).hexdigest()
-    assert circuit not in plan.resource_identities
+    assert plan.circuit_source_sha256 == {
+        top.resolve(): hashlib.sha256(top.read_bytes()).hexdigest(),
+        leaf.resolve(): hashlib.sha256(leaf.read_bytes()).hexdigest(),
+    }
+    control = plan.render_ams_control()
+    assert f'include "{top.resolve()}"' in control
+    assert f'include "{leaf.resolve()}"' in control
+    assert top not in plan.resource_identities
+    assert leaf not in plan.resource_identities
     assert set(plan.resource_identities) == set(plan.model_set.paths)
     assert all(
         identity.startswith("pdk:testpdk:simulation/nominal/")
         for identity in plan.resource_identities.values()
     )
+
+    xrun = _write(
+        tmp_path / "tools/xcelium/tools/bin/xrun",
+        "#!/bin/sh\nexit 99\n",
+    )
+    xrun.chmod(0o755)
+    spectre = _write(
+        tmp_path / "tools/spectre/tools/bin/spectre",
+        "#!/bin/sh\nexit 99\n",
+    )
+    spectre.chmod(0o755)
+
+    def capture(request):
+        request.before_spawn()
+        staged_control = Path(request.argv[-1]).read_text(encoding="utf-8")
+        assert "/inputs/circuit/000-circuit.scs" in staged_control
+        assert "/inputs/circuit/001-circuit.scs" in staged_control
+        assert str(top) not in staged_control
+        assert str(leaf) not in staged_control
+        (request.cwd / "xrun.log").write_text(
+            "TB_DEMO_AMS_SUMMARY failures=0\n",
+            encoding="utf-8",
+        )
+        return ProcessResult(returncode=0, stdout="", stderr="")
+
+    result = execute_xcelium_ams_cell(
+        plan,
+        artifacts=managed_execution_workspace(tmp_path),
+        resources=Resources(
+            tools={
+                "cadence.xrun": str(xrun),
+                "cadence.spectre": str(spectre),
+            }
+        ),
+        process=SimpleNamespace(run=capture),
+    )
+
+    assert result.passed
 
 
 def test_xcelium_ams_rejects_unknown_dependency_lock_fields(
@@ -486,7 +539,7 @@ def test_xcelium_ams_execution_stages_inputs_and_records_regression(
         spectre_index = request.argv.index("-spectre_path") + 1
         assert request.argv[spectre_index] == str(spectre.parent)
         control = Path(request.argv[-1]).read_text(encoding="utf-8")
-        assert "/inputs/release/circuit.scs" in control
+        assert "/inputs/circuit/000-circuit.scs" in control
         assert "/inputs/pdk/model.scs" in control
         assert str(circuit) not in control
         (request.cwd / "xrun.log").write_text(

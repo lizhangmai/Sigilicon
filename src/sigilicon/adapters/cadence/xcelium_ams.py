@@ -1,4 +1,4 @@
-"""Managed Xcelium AMS execution against one locked native-OA release."""
+"""Managed Xcelium AMS execution against one sealed circuit selection."""
 
 from __future__ import annotations
 
@@ -52,10 +52,10 @@ def _spectre_path(path: Path) -> str:
 
 @dataclass(frozen=True)
 class XceliumAmsCellPlan(XceliumCellPlan):
-    """Resolved HDL, release, platform, and native-cell identity for one run."""
+    """Resolved HDL, circuit, platform, and native-cell identity for one run."""
 
-    circuit_netlist: Path
-    circuit_sha256: str
+    circuit_sources: tuple[Path, ...]
+    circuit_source_sha256: Mapping[Path, str]
     native_cell: str
     platform: Platform
     model_set: SimulationModelSet
@@ -68,6 +68,11 @@ class XceliumAmsCellPlan(XceliumCellPlan):
             self,
             "source_records",
             MappingProxyType(dict(self.source_records)),
+        )
+        object.__setattr__(
+            self,
+            "circuit_source_sha256",
+            MappingProxyType(dict(self.circuit_source_sha256)),
         )
         object.__setattr__(
             self,
@@ -88,17 +93,22 @@ class XceliumAmsCellPlan(XceliumCellPlan):
     def render_ams_control(
         self,
         *,
-        circuit_netlist: Path | None = None,
+        circuit_sources: tuple[Path, ...] | None = None,
         model_file: Path | None = None,
     ) -> str:
         ams = self.spec.ams
         assert ams is not None
         section = self.model_set.single_section
-        circuit = self.circuit_netlist if circuit_netlist is None else circuit_netlist
+        circuits = (
+            self.circuit_sources if circuit_sources is None else circuit_sources
+        )
         model = self.model_set.file.require_path() if model_file is None else model_file
+        circuit_includes = "".join(
+            f'include "{_spectre_path(circuit)}"\n' for circuit in circuits
+        )
         return (
             "simulator lang=spectre\n"
-            f'include "{_spectre_path(circuit)}"\n'
+            f"{circuit_includes}"
             f'include "{_spectre_path(model)}" section={section}\n'
             f"tran tran stop={ams.transient_stop}\n\n"
             "amsd {\n"
@@ -130,7 +140,10 @@ class XceliumAmsCellPlan(XceliumCellPlan):
             ],
             "circuit": {
                 "cell": self.native_cell,
-                "circuit_sha256": self.circuit_sha256,
+                "source_sha256": [
+                    self.circuit_source_sha256[path]
+                    for path in self.circuit_sources
+                ],
                 "selection": dict(self.integration_check),
             },
             "platform_model": {
@@ -247,27 +260,35 @@ def _resolve_circuit(
     spec: VerificationCellSpec,
     resources: Resources,
     project: Project,
-) -> tuple[str, Path, Mapping[str, Any], Mapping[Path, str]]:
+) -> tuple[str, tuple[Path, ...], Mapping[str, Any], Mapping[Path, str]]:
     ams = spec.ams
     assert ams is not None
     circuit = ams.circuit
     if isinstance(circuit, XceliumAmsReleaseCircuit):
-        return _locked_native_release(spec, circuit, resources, project)
+        native_cell, source, selection, records = _locked_native_release(
+            spec, circuit, resources, project
+        )
+        return native_cell, (source,), selection, records
     assert isinstance(circuit, XceliumAmsSourceCircuit)
-    digest = _sha256(circuit.path)
+    records = MappingProxyType(
+        {source: _sha256(source) for source in circuit.sources}
+    )
     return (
         circuit.cell,
-        circuit.path,
+        circuit.sources,
         MappingProxyType(
             {
                 "schema": 1,
                 "contract_kind": "source-circuit-selection",
                 "passed": True,
-                "source": circuit.path.relative_to(spec.project_root).as_posix(),
+                "sources": [
+                    source.relative_to(spec.project_root).as_posix()
+                    for source in circuit.sources
+                ],
                 "cell": circuit.cell,
             }
         ),
-        MappingProxyType({circuit.path: digest}),
+        records,
     )
 
 
@@ -275,7 +296,7 @@ def _external_resource_identities(
     spec: VerificationCellSpec,
     platform: Platform,
     model_set: SimulationModelSet,
-    circuit: Path,
+    circuit_sources: tuple[Path, ...],
     selection: Mapping[str, Any],
     circuit_records: Mapping[Path, str],
 ) -> Mapping[Path, str]:
@@ -286,6 +307,9 @@ def _external_resource_identities(
     assert ams is not None
     if isinstance(ams.circuit, XceliumAmsSourceCircuit):
         return MappingProxyType(selected)
+    if len(circuit_sources) != 1:
+        raise ValueError("Xcelium AMS release must resolve to one circuit view")
+    circuit = circuit_sources[0]
     releases = selection.get("dependency_releases")
     if not isinstance(releases, list) or len(releases) != 1:
         raise ValueError("Xcelium AMS release identity is unavailable")
@@ -344,7 +368,7 @@ def plan_xcelium_ams_cell(
             "Xcelium AMS compile inputs must be HDL/Verilog-AMS sources; "
             f"Spectre circuits must come from the AMS circuit selection: {invalid}"
         )
-    native_cell, circuit, integration_check, release_records = (
+    native_cell, circuit_sources, integration_check, release_records = (
         _resolve_circuit(spec, resources, repository)
     )
     platform = load_platform(
@@ -396,8 +420,10 @@ def plan_xcelium_ams_cell(
         contract=contract,
         spec=spec,
         sources=sources,
-        circuit_netlist=circuit,
-        circuit_sha256=release_records[circuit],
+        circuit_sources=circuit_sources,
+        circuit_source_sha256={
+            source: release_records[source] for source in circuit_sources
+        },
         native_cell=native_cell,
         platform=platform,
         model_set=model_set,
@@ -407,7 +433,7 @@ def plan_xcelium_ams_cell(
             spec,
             platform,
             model_set,
-            circuit,
+            circuit_sources,
             integration_check,
             release_records,
         ),
@@ -448,10 +474,13 @@ def execute_xcelium_ams_cell(
         return matches.pop()
 
     def prepare_inputs() -> None:
-        staged["circuit"] = artifacts.copy_file(
-            "inputs",
-            ("release", plan.circuit_netlist.name),
-            selected(plan.circuit_netlist),
+        staged_circuits = tuple(
+            artifacts.copy_file(
+                "inputs",
+                ("circuit", f"{index:03d}-{source.name}"),
+                selected(source),
+            )
+            for index, source in enumerate(plan.circuit_sources)
         )
         for asset, relative in plan.model_set.members:
             destination = ("pdk", *relative.parts)
@@ -462,7 +491,7 @@ def execute_xcelium_ams_cell(
             "inputs",
             ("ams_control.scs",),
             plan.render_ams_control(
-                circuit_netlist=staged["circuit"],
+                circuit_sources=staged_circuits,
                 model_file=staged[f"model:{plan.model_set.file.require_path()}"],
             ),
         )
@@ -518,12 +547,15 @@ def _require_ams_inputs(
         *plan.spec.source_inputs,
         *plan.platform.source_paths,
         *plan.model_set.paths,
-        plan.circuit_netlist,
+        *plan.circuit_sources,
     )
     if any(not selected(path).is_file() for path in required):
         raise FileNotFoundError("Xcelium AMS source input disappeared")
-    if _sha256(selected(plan.circuit_netlist)) != plan.circuit_sha256:
-        raise RuntimeError("Xcelium AMS locked circuit identity drift")
+    if any(
+        _sha256(selected(path)) != digest
+        for path, digest in plan.circuit_source_sha256.items()
+    ):
+        raise RuntimeError("Xcelium AMS circuit source identity drift")
     if any(
         _sha256(selected(path)) != digest
         for path, digest in plan.model_sha256.items()
