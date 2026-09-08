@@ -42,9 +42,9 @@ def _runtime_bindings(
     return tuple(resources.capture(identity) for identity in identities)
 
 
-def _strict_config(step: Step, fields: frozenset[str]) -> Mapping[str, Any]:
+def _strict_config(step: Step, fields: frozenset[str], *, optional: frozenset[str] = frozenset()) -> Mapping[str, Any]:
     config = step.config
-    unknown = set(config) - fields
+    unknown = set(config) - fields - optional
     missing = fields - set(config)
     if unknown or missing:
         raise ContractError(

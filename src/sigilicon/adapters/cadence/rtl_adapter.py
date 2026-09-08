@@ -52,6 +52,8 @@ class _XceliumAction:
     hdl: HdlCompilation
     success_marker: str
     timeout_seconds: int
+    read_access: bool
+    outputs: tuple[str, ...]
 
     @property
     def record(self) -> dict[str, object]:
@@ -254,13 +256,30 @@ class XceliumAdapter:
     name = "cadence.xcelium"
     _fields = frozenset({"hdl", "success_marker", "timeout_seconds"})
 
+    @staticmethod
+    def _observation(config):
+        read_access = config.get("read_access", False)
+        if type(read_access) is not bool:
+            raise ContractError("Xcelium read_access must be a boolean")
+        raw = config.get("outputs", ())
+        if not isinstance(raw, tuple) or any(not isinstance(name, str) for name in raw):
+            raise ContractError("Xcelium outputs must be an array of relative paths")
+        outputs = tuple(_relative(name, "Xcelium output") for name in raw)
+        reserved = {"stdout.log", "stderr.log", "xrun.log", "summary.json"}
+        if len(set(outputs)) != len(outputs) or any(name in reserved for name in outputs):
+            raise ContractError("Xcelium outputs must be unique and cannot replace adapter reports")
+        return read_access, outputs
+
     def contract(self, project: Project, step: Step) -> StepContract:
-        config = _strict_config(step, self._fields)
+        config = _strict_config(step, self._fields, optional=frozenset({"read_access", "outputs"}))
         HdlCompilation.resolve(config.get("hdl"), {item.reference: item.path for item in step.source_closure})
         _text(config, "success_marker")
         _positive_integer(config, "timeout_seconds")
-        return StepContract(produces=(ArtifactProduct("xcelium", "log.cadence-xcelium", "many"),
-                                      ArtifactProduct("xcelium", "summary.cadence-xcelium", path="xcelium/summary.json")))
+        _, outputs = self._observation(config)
+        return StepContract(produces=(*(ArtifactProduct("xcelium", "log.cadence-xcelium", path=f"xcelium/{name}")
+            for name in ("stdout.log", "stderr.log", "xrun.log")),
+            ArtifactProduct("xcelium", "summary.cadence-xcelium", path="xcelium/summary.json"),
+            *(ArtifactProduct("simulation-output", "data.cadence-xcelium", path=f"xcelium/{name}") for name in outputs)))
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         return (_executable_check(resources, _XRUN),)
@@ -272,11 +291,12 @@ class XceliumAdapter:
         resources: Resources,
     ) -> AdapterPreparation:
         del project
-        config = _strict_config(step, self._fields)
+        config = _strict_config(step, self._fields, optional=frozenset({"read_access", "outputs"}))
         action = _XceliumAction(
             HdlCompilation.resolve(step.config.get("hdl"), {item.reference: item.path for item in step.source_closure}),
             _text(config, "success_marker"),
             _positive_integer(config, "timeout_seconds"),
+            *self._observation(config),
         )
         return AdapterPreparation(
             action=action,
@@ -318,6 +338,7 @@ class XceliumAdapter:
                     str(xrun),
                     "-64bit",
                     "-sv",
+                    *(["-access", "+r"] if action.read_access else []),
                     "-timescale",
                     "1ns/1ps",
                     "-xmlibdirname",
@@ -332,6 +353,7 @@ class XceliumAdapter:
                 resources=context.runtime,
                 environment_values=context.runtime.environment,
                 timeout=timeout,
+                output_names=action.outputs,
             )
         artifacts = (
             Artifact(
@@ -355,9 +377,12 @@ class XceliumAdapter:
                 completed.run_summary,
             ),
         )
+        artifacts += tuple(Artifact("simulation-output", "data.cadence-xcelium", path)
+                           for _, path in completed.output_files)
+        outputs_complete = {name for name, _ in completed.output_files} == set(action.outputs)
         return (
             StepResult.succeeded(artifacts=artifacts)
-            if completed.passed
+            if completed.passed and outputs_complete
             else StepResult(
                 "failed",
                 artifacts,

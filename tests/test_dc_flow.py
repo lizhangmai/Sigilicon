@@ -166,9 +166,12 @@ def native_outputs(monkeypatch):
         assert len(libraries) == 1 and Path(libraries[0]).read_text() == "compiled mem DB\n"
         rtl = Path(Path(request.environment["SIGILICON_HDL_FILELIST"]).read_text().strip())
         assert rtl.read_text() == "module design; endmodule\n"
+        input_evidence = ""
+        if "SIGILICON_DC_INPUT_CHECKPOINT" in request.environment:
+            input_evidence = Path(request.environment["SIGILICON_DC_INPUT_CHECKPOINT"]).read_text()
         outputs["calls"].append("synthesis")
         for name, content in {"qor.rpt": outputs["qor"], "accounting.rpt": outputs["accounting"],
-                              "area.rpt": "cell area report\n", "mapped.v": "module design; endmodule\n",
+                              "area.rpt": "cell area report\n" + input_evidence, "mapped.v": "module design; endmodule\n",
                               "mapped.sdc": "create_clock -period 2 clk\n", "mapped.ddc": "mapped checkpoint\n"}.items():
             if name != outputs["missing"]:
                 write_file(root / name, "" if name == outputs["empty"] else content)
@@ -309,5 +312,29 @@ def test_design_source_mutation_is_rejected(dc_project, native_outputs):
 def test_dc_configuration_is_checked_before_execution(dc_project, old, new):
     path = dc_project.project_root / "ip/synth/operations.toml"
     path.write_text(path.read_text().replace(old, new))
+    with pytest.raises(ValueError):
+        Project.open(dc_project.project_root).plan("synth:map")
+
+
+def test_dc_named_input_consumes_a_declared_checkpoint(dc_project, native_outputs):
+    path = dc_project.project_root / "ip/synth/operations.toml"
+    text = path.read_text()
+    replay = text[text.index('[[operations.map.steps]]\nid="synthesis"'):]
+    replay = replay.replace('id="synthesis"', 'id="replay"', 1)
+    replay = replay.replace('needs=["library"]', 'needs=["library","synthesis"]')
+    replay = replay.replace('variant="test"', 'variant="test"\ninputs={CHECKPOINT={step="synthesis",role="checkpoint",kind="checkpoint.synopsys-ddc",path="mapped.ddc"}}')
+    path.write_text(text + replay)
+    result, _ = run(Project.open(dc_project.project_root))
+    assert result.status == "succeeded"
+    assert (result.run_root / "outputs/replay/reports/area.rpt").read_text().endswith("mapped checkpoint\n")
+
+
+@pytest.mark.parametrize("inputs", [
+    '{bad_alias={step="library",role="compiled-library",kind="library.synopsys-db",path="library.db"}}',
+    '{DATA={step="missing",role="checkpoint",kind="checkpoint.synopsys-ddc",path="mapped.ddc"}}',
+])
+def test_dc_named_inputs_validate_identity_before_execution(dc_project, inputs):
+    path = dc_project.project_root / "ip/synth/operations.toml"
+    path.write_text(path.read_text().replace('variant="test"', 'variant="test"\ninputs=' + inputs))
     with pytest.raises(ValueError):
         Project.open(dc_project.project_root).plan("synth:map")

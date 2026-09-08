@@ -88,6 +88,7 @@ class XceliumExecution:
     stdout: str
     stderr: str
     native_log: str
+    output_files: tuple[tuple[str, Path], ...] = ()
 
     @property
     def evidence_output(self) -> str:
@@ -253,6 +254,7 @@ def execute_xcelium_cell(
     before_spawn: Callable[[], None] | None = None,
     environment_values: Mapping[str, str] | None = None,
     timeout: int = 600,
+    output_names: tuple[str, ...] = (),
     process: ProcessPort = managed_process,
 ) -> XceliumExecution:
     """Execute a resolved cell without creating or completing a run record."""
@@ -311,6 +313,7 @@ def execute_xcelium_invocation(
     environment_values: Mapping[str, str] | None = None,
     spectre_required: bool = False,
     timeout: int = 600,
+    output_names: tuple[str, ...] = (),
     process: ProcessPort = managed_process,
 ) -> XceliumExecution:
     """Run one typed Xcelium plan after its caller-specific inputs are prepared."""
@@ -376,6 +379,14 @@ def execute_xcelium_invocation(
             "xrun.log",
             missing_ok=True,
         )
+        output_files = []
+        for name in output_names:
+            payload = owned_work.read_child_bytes(name, missing_ok=True)
+            if payload is not None:
+                relative = Path(name)
+                artifacts.directory("outputs", *relative.parts[:-1])
+                path = artifacts.write_bytes("outputs", relative.parts, payload)
+                output_files.append((name, path))
     stdout_path = artifacts.write_text(
         "logs", ("xrun.stdout.log",), completed.stdout
     )
@@ -434,4 +445,5 @@ def execute_xcelium_invocation(
         stdout=completed.stdout,
         stderr=completed.stderr,
         native_log=native_output,
+        output_files=tuple(output_files),
     )

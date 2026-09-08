@@ -50,6 +50,7 @@ class DcAction:
     hdl: HdlCompilation
     parameters: tuple[tuple[str, int], ...]
     libraries: tuple[ArtifactReference, ...]
+    inputs: tuple[tuple[str, ArtifactReference], ...]
     reports: tuple[str, ...]
     timing: TimingCoverage
     acceptance: tuple[str, ...]
@@ -63,7 +64,7 @@ class DcAction:
 
     @property
     def contract(self):
-        return StepContract(consumes=self.libraries, produces=(
+        return StepContract(consumes=(*self.libraries, *(ref for _, ref in self.inputs)), produces=(
             ArtifactProduct("log", "log.synopsys", "many"),
             ArtifactProduct("mapped-netlist", "netlist.verilog", path="mapped.v"),
             ArtifactProduct("mapped-constraints", "constraints.sdc", path="mapped.sdc"),
@@ -77,7 +78,7 @@ class DcAction:
         config = _strict_config(step, frozenset({
             "script", "variant", "corner", "constraints", "hdl", "reports",
             "design", "design_table", "parameter_bindings", "libraries", "timing",
-            "acceptance_table", "macro_count_field", "success_marker", "timeout_seconds",
+            "acceptance_table", "macro_count_field", "success_marker", "timeout_seconds", "inputs",
         }))
         if TOOL not in step.runtime.tools or TARGET not in step.runtime.files:
             raise ContractError(f"DC runtime must bind tool {TOOL} and file {TARGET}")
@@ -103,6 +104,17 @@ class DcAction:
                 item.step not in step.needs or item.kind != "library.synopsys-db"
                 for item in libraries)):
             raise ContractError("DC libraries require unique DB artifacts from declared dependencies")
+        raw_inputs = config.get("inputs", {})
+        if not isinstance(raw_inputs, Mapping):
+            raise ContractError("DC inputs must map environment suffixes to artifact references")
+        inputs = []
+        for name, raw in raw_inputs.items():
+            if not re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
+                raise ContractError("DC input names must be uppercase environment suffixes")
+            reference = ArtifactReference.from_record(raw)
+            if reference.step not in step.needs:
+                raise ContractError("DC inputs must consume declared dependencies")
+            inputs.append((name, reference))
         reports = tuple(_safe_relative(name, "DC report") for name in _strings(config, "reports"))
         if (len(set(reports)) != len(reports) or not {"qor.rpt", "accounting.rpt"} <= set(reports)
                 or set(reports) & {"mapped.v", "mapped.sdc", "mapped.ddc", "measurements.json", "verdict.json"}):
@@ -131,7 +143,7 @@ class DcAction:
         if type(macros) is not int or macros < 0:
             raise ContractError("DC macro count requires a non-negative integer design field")
         return cls(source(step, "script"), _text(config, "variant"), _text(config, "corner"),
-                   source(step, "constraints"), hdl, tuple(parameters), libraries, reports,
+                   source(step, "constraints"), hdl, tuple(parameters), libraries, tuple(inputs), reports,
                    TimingCoverage(_text(timing, "clock"), 1000.0 / frequency, tuple(groups)),
                    tuple(key for key, enabled in acceptance.items() if enabled), macros,
                    _text(config, "success_marker"), _positive_integer(config, "timeout_seconds"))
@@ -157,15 +169,21 @@ class DcAdapter:
         runtime = _runtime_environment(context.runtime, context.step)
         hdl = _hdl_environment(context, action.hdl)
         libraries = tuple(artifact.path for reference in action.libraries for artifact in context.artifacts(reference))
+        inputs = {}
+        for name, reference in action.inputs:
+            artifacts = context.artifacts(reference)
+            if len(artifacts) != 1:
+                raise ContractError("DC named input must select one artifact")
+            inputs[f"SIGILICON_DC_INPUT_{name}"] = artifacts[0].path
         library_list = context.workspace("synopsys", {}, tool_work_root=context.work_directory).write_text(
             "work", ("libraries.f",), "".join(f"{path}\n" for path in libraries))
         with owned_scratch_directory(prefix=f"sigilicon-dc-{context.run_id}-",
                 retain_on_error=lambda exc: process_group_cleanup_uncertainty(exc) is not None) as scratch:
             completed = run_tcl(context, runtime, tool=TOOL, script=action.script,
                 output_root=scratch.path, timeout_seconds=action.timeout_seconds,
-                inputs=(*libraries, library_list, *(Path(hdl[name]) for name in
+                inputs=(*libraries, *inputs.values(), library_list, *(Path(hdl[name]) for name in
                          ("SIGILICON_HDL_FILELIST", "SIGILICON_HDL_CONTRACT"))),
-                environment={**hdl,
+                environment={**hdl, **{key: str(path) for key, path in inputs.items()},
                     "SIGILICON_DESIGN_VARIANT": action.variant, "SIGILICON_DESIGN_CORNER": action.corner,
                     "SIGILICON_DC_PARAMETERS": ",".join(f"{key}={value}" for key, value in action.parameters),
                     "SIGILICON_DC_EXPECTED_MACROS": str(action.expected_macros),
