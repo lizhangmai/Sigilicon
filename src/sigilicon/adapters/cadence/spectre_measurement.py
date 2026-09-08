@@ -31,6 +31,7 @@ from sigilicon.project import Project
 
 @dataclass(frozen=True)
 class MeasurementAction:
+    owner: str
     top: str
     program: str
     spec: str
@@ -45,7 +46,8 @@ class MeasurementAction:
     @property
     def record(self) -> dict[str, object]:
         return {
-            "kind": "spectre-measurement", "top": self.top, "program": self.program,
+            "kind": "spectre-measurement", "owner": self.owner,
+            "top": self.top, "program": self.program,
             "spec": self.spec, "circuit": self.circuit,
             "inputs": list(self.inputs), "platform": self.platform,
             "parameters": thaw_toml_document(self.parameters),
@@ -56,7 +58,8 @@ class MeasurementAction:
 
 def measurement_configuration(step: Step):
     config = _strict_config(step, frozenset({
-        "program", "spec", "circuit", "inputs", "platform", "model_set", "parameters", "timeout_seconds", "top",
+        "owner", "program", "spec", "circuit", "inputs", "platform",
+        "model_set", "parameters", "timeout_seconds", "top",
     }))
     selected = {}
     for field in ("program", "spec", "circuit"):
@@ -74,6 +77,7 @@ def measurement_configuration(step: Step):
     if not isinstance(parameters, Mapping):
         raise ContractError("measurement parameters must be a table")
     _text(config, "top")
+    _text(config, "owner")
     _text(config, "platform")
     _text(config, "model_set")
     _positive_integer(config, "timeout_seconds")
@@ -82,7 +86,12 @@ def measurement_configuration(step: Step):
 
 def prepare_measurement(project: Project, step: Step, resources: Resources) -> AdapterPreparation:
     config, selected, inputs, parameters = measurement_configuration(step)
-    platform = load_platform(project, _text(config, "platform"), resources=resources)
+    platform = load_platform(
+        project,
+        _text(config, "owner"),
+        _text(config, "platform"),
+        resources=resources,
+    )
     if platform.simulation is None:
         raise ContractError("Spectre measurement requires a simulation platform")
     model_name = _text(config, "model_set")
@@ -94,14 +103,22 @@ def prepare_measurement(project: Project, step: Step, resources: Resources) -> A
     model_inputs = tuple((identities[asset.require_path()], relative.as_posix())
                          for asset, relative in models.members)
     action = MeasurementAction(
-        top=_text(config, "top"), **selected, inputs=inputs, platform=_text(config, "platform"),
+        owner=_text(config, "owner"), top=_text(config, "top"),
+        **selected, inputs=inputs, platform=_text(config, "platform"),
         parameters=freeze_toml_document(parameters), models=model_inputs,
         sections=tuple(models.sections), timeout_seconds=_positive_integer(config, "timeout_seconds"),
     )
     return AdapterPreparation(
         action=action,
-        sources=tuple(Source.capture(path, root=project.project_root, scope="project")
-                      for path in platform.source_documents),
+        sources=tuple(
+            Source.capture_document(
+                path,
+                document=document,
+                root=project.owner(platform.owner).root,
+                scope="owner",
+            )
+            for path, document in platform.source_documents.items()
+        ),
         resources=(
             resources.capture("cadence.spectre"), resources.capture("runtime.python"),
             *(ResourceBinding.capture(path, identity=identities[path]) for path in models.paths),

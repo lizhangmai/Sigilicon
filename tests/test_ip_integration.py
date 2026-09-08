@@ -454,7 +454,7 @@ def _write_ip_fixture(project_root: Path, release_id: str, manifest: str) -> Pat
     (owner_root / "rtl").mkdir()
     (dependency_root / "configs").mkdir(parents=True)
     (dependency_root / "configs/ip.toml").write_text(
-        '''schema = 6
+        '''schema = 7
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "fixture-ip"
@@ -542,7 +542,7 @@ manifest_sha256 = "{manifest_sha256}"
     )
     contract = owner_root / "configs/ip.toml"
     contract.write_text(
-        """schema = 6
+        """schema = 7
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "demo"
@@ -574,17 +574,6 @@ rtl = ["top", "simulation_filelist", "default_variant"]
 """,
         encoding="utf-8",
     )
-    (project_root / "configs/platform").mkdir(parents=True)
-    (project_root / "configs/platform/catalog.toml").write_text(
-        '''schema = 1
-contract_kind = "platform-catalog"
-path_scope = "repository"
-owner = "repository"
-
-[platforms]
-''',
-        encoding="utf-8",
-    )
     (project_root / "ip/catalog.toml").write_text(
         '''schema = 2
 contract_kind = "ip-catalog"
@@ -610,7 +599,6 @@ owner = "repository"
 
 [catalogs]
 ip = "ip/catalog.toml"
-platform = "configs/platform/catalog.toml"
 
 [paths]
 project_root = "."
@@ -644,7 +632,7 @@ def _write_source_component_fixture(project_root: Path) -> Path:
         "module leaf(input logic clk); endmodule\n", encoding="utf-8"
     )
     (dependency / "configs/ip.toml").write_text(
-        '''schema = 6
+        '''schema = 7
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "leaf"
@@ -698,7 +686,7 @@ owner = "composite"
     )
     contract = owner / "configs/ip.toml"
     contract.write_text(
-        '''schema = 6
+        '''schema = 7
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "composite"

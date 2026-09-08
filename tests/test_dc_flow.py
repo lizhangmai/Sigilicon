@@ -46,7 +46,7 @@ no_hold_violations=true
     write_file(owner / "synthesis.tcl", "# design owns the complete synthesis recipe\n")
     write_file(owner / "library.tcl", "# design owns Liberty preparation\n")
     write_file(owner / "macro.lib", "library (mem) { cell (MEM) {} }\n")
-    write_file(owner / "component.toml", '''schema=6
+    write_file(owner / "component.toml", '''schema=7
 contract_kind="ip-component"
 path_scope="owner"
 owner="synth"

@@ -40,7 +40,7 @@ owner = "fixture"
 [operations.measure]
 uses = "cadence.spectre"
 filesets = [{{ component = "fixture", fileset = "measurement" }}]
-config = {{ top = "fixture", program = "measure.py", spec = "spec.toml", circuit = "circuit.scs", inputs = {json.dumps(inputs)}, platform = "testpdk", model_set = "nominal", parameters = {{ mode = "{mode}" }}, timeout_seconds = 10 }}
+config = {{ owner = "fixture", top = "fixture", program = "measure.py", spec = "spec.toml", circuit = "circuit.scs", inputs = {json.dumps(inputs)}, platform = "testpdk", model_set = "nominal", parameters = {{ mode = "{mode}" }}, timeout_seconds = 10 }}
 evidence = {{ role = "regression", level = "l1", scope = "fixture" }}
 ''')
     component = write_component_owner(tmp_path, "fixture", filesets={
@@ -89,7 +89,7 @@ def test_measurement_preserves_raw_outputs_before_owner_evaluation(tmp_path: Pat
 
 def test_measurement_preserves_nested_model_includes_and_duplicate_basenames(tmp_path: Path, monkeypatch) -> None:
     _measurement_project(tmp_path, 'pass')
-    platform = tmp_path / 'configs/platform/testpdk'
+    platform = tmp_path / 'ip/fixture/configs/platform/testpdk'
     for directory in ('nmos', 'pmos'):
         write_file(platform / directory / 'device.scs', f'// {directory} model\n')
     (platform / 'model.scs').write_text('include "nmos/device.scs"\ninclude "pmos/device.scs"\n')

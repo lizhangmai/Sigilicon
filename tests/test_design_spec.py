@@ -137,5 +137,5 @@ def test_design_inspection_reports_the_model_path(project_factory) -> None:
     inspection = inspect_design(path, project=Project.open(root))
 
     assert inspection.as_dict()["pdk"]["model_file"] == str(
-        root / "configs/platform/testpdk/model.scs"
+        root / "ip/example/configs/platform/testpdk/model.scs"
     )

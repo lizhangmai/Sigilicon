@@ -159,7 +159,7 @@ def _contract_fixture(root: Path) -> Path:
             f"name = '{name}'\n", encoding="utf-8"
         )
     (configs / "ip.toml").write_text(
-        """schema = 6
+        """schema = 7
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "fixture-ip"
@@ -298,7 +298,7 @@ ports = [
         encoding="utf-8",
     )
     (configs / "ip.toml").write_text(
-        '''schema = 6
+        '''schema = 7
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "rtl-fixture"
@@ -446,7 +446,11 @@ def _native_oa_contract_fixture(root: Path) -> Path:
     configs.mkdir(parents=True)
     sources.mkdir()
     (root / "virtuoso").mkdir()
-    write_test_platform(root)
+    write_test_platform(
+        root,
+        owner="native-fixture",
+        owner_directory="native_fixture",
+    )
     (configs / "oa.toml").write_text(
         "schema = 1\n"
         'contract_kind = "oa-assembly"\n'
@@ -530,7 +534,7 @@ views = [
             encoding="utf-8",
         )
     (configs / "ip.toml").write_text(
-        '''schema = 6
+        '''schema = 7
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "native-fixture"
@@ -540,8 +544,10 @@ name = "native-fixture"
 kind = "hard-macro"
 release_contract = "release"
 operation_catalog = "operations"
+platform_catalog = "platform_catalog"
 
 [sources]
+platform_catalog = "ip/native_fixture/configs/platform/catalog.toml"
 oa = "ip/native_fixture/configs/oa.toml"
 release = "ip/native_fixture/configs/release.toml"
 operations = "ip/native_fixture/configs/operations.toml"
@@ -1871,7 +1877,9 @@ def test_native_authored_circuit_release_accepts_ports_without_a_design_generato
 
     contract_path = _native_oa_contract_fixture(tmp_path)
     project = Project.open(tmp_path)
-    technology = load_platform(project, "testpdk", resources=project.resources()).oa.technology_library
+    technology = load_platform(
+        project, "native-fixture", "testpdk", resources=project.resources()
+    ).oa.technology_library
     for cell_path in (tmp_path / "ip/native_fixture/sources").glob("*/cell.toml"):
         text = cell_path.read_text()
         for view in ("schematic", "symbol"):

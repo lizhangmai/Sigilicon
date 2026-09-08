@@ -85,20 +85,37 @@ def inspect_project_configuration_sources(
     project_contract = context.manifest_path
     repository_owner = context.manifest_owner
     operation_catalog_paths = set(selected_catalogs.values())
+    platform_catalogs = {
+        owner.name: context.project_root.joinpath(
+            *owner.component.platform_catalog.parts
+        ).resolve()
+        for owner in context.owners
+        if owner.component.platform_catalog is not None
+    }
+    platform_catalog_paths = set(platform_catalogs.values())
     exact_paths = {
         project_contract,
         *(path for _, path in context.catalog_paths),
         *operation_catalog_paths,
+        *platform_catalog_paths,
     }
-    repository_owner_roots = {owner.root for owner in context.owners}
     scan_roots = set(context.configuration_roots)
 
-    resolved_owner_roots = {
-        owner.root: owner.name for owner in context.owners
-    }
-    platform_catalog_path = context.find_catalog("platform")
-    if platform_catalog_path is not None:
+    resolved_owner_roots = {owner.root: owner.name for owner in context.owners}
+    platform_roots: dict[Path, str] = {}
+    for owner_name, platform_catalog_path in platform_catalogs.items():
+        owner = context.owner(owner_name)
+        if not platform_catalog_path.is_relative_to(owner.root):
+            raise ValueError("platform catalog must stay inside its owner root")
         platform_catalog_document = sources.resolve(platform_catalog_path)
+        _require_config_header(
+            platform_catalog_document,
+            platform_catalog_path,
+            contract_kind="platform-catalog",
+            path_scope="owner",
+            owner=owner_name,
+            schema=_contract_schema("platform-catalog"),
+        )
         platforms = platform_catalog_document.get("platforms")
         if not isinstance(platforms, Mapping):
             raise ValueError("platform catalog platforms must be a table")
@@ -118,17 +135,21 @@ def inspect_project_configuration_sources(
                     f"platforms.{key} must be a canonical relative path"
                 )
             manifest = platform_catalog_path.parent.joinpath(*relative.parts).resolve()
-            if not manifest.is_relative_to(root):
+            if not manifest.is_relative_to(owner.root):
                 raise ValueError(f"platforms.{key} manifest is missing or unsafe")
             document = sources.resolve(manifest)
-            owner = _text(document.get("owner"), f"{manifest}: owner")
-            platform_owner_root = manifest.parent
-            previous = resolved_owner_roots.get(platform_owner_root)
-            if previous is not None and previous != owner:
+            manifest_owner = _text(document.get("owner"), f"{manifest}: owner")
+            if manifest_owner != owner_name:
                 raise ValueError(
-                    "platform and component catalogs disagree on an owner root"
+                    f"{manifest}: platform owner must be {owner_name!r}"
                 )
-            resolved_owner_roots[platform_owner_root] = owner
+            platform_owner_root = manifest.parent
+            previous = platform_roots.get(platform_owner_root)
+            if previous is not None and previous != owner_name:
+                raise ValueError(
+                    "platform catalogs disagree on a platform root"
+                )
+            platform_roots[platform_owner_root] = owner_name
 
     for path in (*exact_paths, *scan_roots, *resolved_owner_roots):
         resolved = path.resolve()
@@ -146,10 +167,10 @@ def inspect_project_configuration_sources(
     owners: set[str] = set()
     native_documents = 0
     envelope_fields = frozenset({"contract_kind", "path_scope", "owner"})
-    repository_sources = {project_contract, *(path for _, path in context.catalog_paths)}
-    platform_root = (
-        None if platform_catalog_path is None else platform_catalog_path.parent
-    )
+    repository_sources = {
+        project_contract,
+        *(path for _, path in context.catalog_paths),
+    }
     for path in sorted(documents):
         resolved = path.resolve()
         if not resolved.is_relative_to(root):
@@ -168,6 +189,11 @@ def inspect_project_configuration_sources(
                 f"{resolved}: owner-operations must be selected by a component "
                 "operation_catalog"
             )
+        if kind == "platform-catalog" and resolved not in platform_catalog_paths:
+            raise ValueError(
+                f"{resolved}: platform-catalog must be selected by a component "
+                "platform_catalog"
+            )
         if resolved in repository_sources:
             allowed_scopes: str | tuple[str, ...] = "repository"
             expected_owner = repository_owner
@@ -183,14 +209,22 @@ def inspect_project_configuration_sources(
                 matches,
                 key=lambda item: len(item[0].parts),
             )
-            if owner_root in repository_owner_roots:
-                allowed_scopes = ("owner", "cell", "verification", "variant")
-            elif platform_root is not None and owner_root.is_relative_to(platform_root):
+            allowed_scopes = ("owner", "cell", "verification", "variant")
+            if raw.get("path_scope") == "platform":
+                matches = [
+                    platform_owner
+                    for platform_root, platform_owner in platform_roots.items()
+                    if resolved.is_relative_to(platform_root)
+                ]
+                if not matches or any(
+                    platform_owner != expected_owner
+                    for platform_owner in matches
+                ):
+                    raise ValueError(
+                        f"{resolved}: platform configuration is not selected "
+                        "by its owner platform catalog"
+                    )
                 allowed_scopes = "platform"
-            else:
-                raise ValueError(
-                    f"{owner_root}: configuration owner root has no domain catalog"
-                )
         header = _require_config_header(
             raw,
             resolved,

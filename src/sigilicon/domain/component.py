@@ -47,6 +47,7 @@ _COMPONENT_FIELDS = {
     "lifecycle",
     "public_interface",
     "operation_catalog",
+    "platform_catalog",
     "release_contract",
     "dependency_lock",
     "sources",
@@ -98,6 +99,7 @@ class ComponentContract:
     implementations: Mapping[str, PurePosixPath]
     document: Mapping[str, Any] = field(repr=False, compare=False)
     operation_catalog: PurePosixPath | None = None
+    platform_catalog: PurePosixPath | None = None
     release_contract: PurePosixPath | None = None
     dependency_lock: PurePosixPath | None = None
 
@@ -212,6 +214,11 @@ def _parse_component_contract(
         "operation_catalog",
         sources,
     )
+    platform_catalog = _source_role(
+        document.get("platform_catalog"),
+        "platform_catalog",
+        sources,
+    )
     release_contract = _source_role(
         document.get("release_contract"),
         "release_contract",
@@ -294,6 +301,7 @@ def _parse_component_contract(
         variants=variants,
         implementations=implementations,
         operation_catalog=operation_catalog,
+        platform_catalog=platform_catalog,
         release_contract=release_contract,
         dependency_lock=dependency_lock,
         document=freeze_toml_document(document),
@@ -317,6 +325,17 @@ def _parse_component_contract(
         if not resolved.is_relative_to(root) or not resolved.is_file():
             raise FileNotFoundError(
                 f"component operation catalog is missing: {result.operation_catalog}"
+            )
+    if result.platform_catalog is not None:
+        if result.platform_catalog.suffix != ".toml":
+            raise ValueError("platform_catalog must name a TOML file")
+        platform_catalog = root.joinpath(*result.platform_catalog.parts)
+        resolved = platform_catalog.resolve()
+        if platform_catalog != resolved:
+            raise ValueError("platform_catalog must not be a symlink")
+        if not resolved.is_relative_to(owner_root) or not resolved.is_file():
+            raise FileNotFoundError(
+                f"component platform catalog is missing: {result.platform_catalog}"
             )
     if result.release_contract is not None:
         release = root / result.release_contract

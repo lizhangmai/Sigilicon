@@ -142,11 +142,11 @@ def test_oa_export_binds_before_lease_and_commits_stream(tmp_path: Path, monkeyp
 def _verification_project(root: Path, *, origin: str, check: str = "drc") -> Path:
     from conftest import write_component_owner, write_test_layout_platform
 
-    write_test_layout_platform(root)
-    platform = root / "configs/platform/testpdk/platform.toml"
+    write_test_layout_platform(root, owner="example")
+    platform = root / "ip/example/configs/platform/testpdk/platform.toml"
     platform.write_text(platform.read_text().split("[contracts]")[0] + '[contracts]\nverification = "verification.toml"\n')
     owner = root / "ip/example"
-    owner.mkdir(parents=True)
+    owner.mkdir(parents=True, exist_ok=True)
     (owner / "layout.gds").write_bytes(b"source-stream")
     (owner / "source.cdl").write_text(".SUBCKT TOP a\n.ENDS TOP\n")
     (owner / "policy.toml").write_text('schema = 1\ncontract_kind = "physical-verification-policy"\npath_scope = "owner"\nowner = "example"\n[drc]\n')
@@ -245,7 +245,9 @@ def test_verifier_rejects_changed_foundry_template(tmp_path: Path, monkeypatch) 
     from sigilicon.project import Project
 
     _verification_project(tmp_path, origin="source")
-    (tmp_path / "configs/platform/testpdk/drc.deck").write_text("another foundry revision\n")
+    (tmp_path / "ip/example/configs/platform/testpdk/drc.deck").write_text(
+        "another foundry revision\n"
+    )
     monkeypatch.setattr(physical_verification.managed_process, "run", lambda request: pytest.fail("changed deck must fail before launch"))
     project = Project.open(tmp_path)
     with pytest.raises(ValueError, match="foundry deck identity changed"):
@@ -253,9 +255,9 @@ def test_verifier_rejects_changed_foundry_template(tmp_path: Path, monkeypatch) 
 
 
 @pytest.mark.parametrize("operation,relative,before,after", [
-    ("export", "configs/platform/testpdk/layout.toml", "", "\nxstream_flatten_pcells = false\n"),
+    ("export", "ip/example/configs/platform/testpdk/layout.toml", "", "\nxstream_flatten_pcells = false\n"),
     ("export", "ip/example/cells/TOP/cell.toml", 'role = "design"', 'role = "changed"'),
-    ("verify", "configs/platform/testpdk/verification.toml", 'replacement = "fixture ', 'replacement = "CHANGED '),
+    ("verify", "ip/example/configs/platform/testpdk/verification.toml", 'replacement = "fixture ', 'replacement = "CHANGED '),
 ])
 def test_planning_rejects_document_changes_between_parse_and_capture(
     tmp_path: Path, monkeypatch, operation: str, relative: str, before: str, after: str,
@@ -337,7 +339,7 @@ def _manual_oa_project(tmp_path: Path):
     from sigilicon.project import Project
 
     _verification_project(tmp_path, origin="source")
-    platform = tmp_path / "configs/platform/testpdk/platform.toml"
+    platform = tmp_path / "ip/example/configs/platform/testpdk/platform.toml"
     platform.write_text(platform.read_text() + 'oa = "oa.toml"\nlayout = "layout.toml"\n')
     owner = tmp_path / "ip/example"
     cell = owner / "cells/TOP"
@@ -465,7 +467,7 @@ config = {owner = "example", timeout_seconds = 60}
     project = Project.open(tmp_path)
     plan = project.plan("example:restore")
     assert project.preflight(plan).ready
-    platform = tmp_path / "configs/platform/testpdk/oa.toml"
+    platform = tmp_path / "ip/example/configs/platform/testpdk/oa.toml"
     platform.write_text(platform.read_text().replace('technology_library = "techLib"', 'technology_library = "anotherTech"'))
     assert not project.preflight(plan).ready
 

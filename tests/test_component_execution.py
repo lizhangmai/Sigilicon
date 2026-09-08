@@ -17,7 +17,7 @@ def _composite(root: Path, *, edge: str = "source") -> tuple[Project, Path]:
         directory.mkdir(parents=True, exist_ok=True)
         relative = directory.relative_to(root).as_posix()
         (directory / "top.sv").write_text(f"module {name}; endmodule\n")
-        (directory / "component.toml").write_text(f'''schema = 6
+        (directory / "component.toml").write_text(f'''schema = 7
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "{name}"
@@ -144,7 +144,7 @@ def test_nested_components_keep_source_identity_separate_from_owner(tmp_path: Pa
         directory = owner_root / name
         directory.mkdir()
         (directory / 'rtl.sv').write_text(f'module {name}; endmodule\n')
-        (directory / 'component.toml').write_text(f'''schema = 6
+        (directory / 'component.toml').write_text(f'''schema = 7
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "{owner}"

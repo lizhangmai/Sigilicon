@@ -11,13 +11,15 @@ from sigilicon.virtuoso.models import OaModelInputs
 
 def model_inputs(tmp_path):
     write_test_platform(tmp_path)
-    platform = tmp_path / "configs/platform/testpdk"
+    platform = tmp_path / "ip/fixture/configs/platform/testpdk"
     contract = platform / "simulation.toml"
     contract.write_text(contract.read_text() + 'support_files = ["devices/core.scs"]\n')
     (platform / "model.scs").write_text('include "devices/core.scs"\n')
     (platform / "devices").mkdir()
     (platform / "devices/core.scs").write_text("// planned device model\n")
-    models = load_platform(Project.open(tmp_path), "testpdk").simulation.default
+    models = load_platform(
+        Project.open(tmp_path), "fixture", "testpdk"
+    ).simulation.default
     run = tmp_path / "artifacts/run"
     run.mkdir(parents=True)
     sealed = {}
@@ -57,7 +59,9 @@ def test_oa_models_reject_stale_or_modified_inputs(tmp_path, fault):
         support.write_text("// another device model\n")
     elif fault == "symlink":
         support.unlink()
-        support.symlink_to(tmp_path / "configs/platform/testpdk/devices/core.scs")
+        support.symlink_to(
+            tmp_path / "ip/fixture/configs/platform/testpdk/devices/core.scs"
+        )
     else:
         model = tmp_path / "deleted/run/model.scs"
     with pytest.raises((OSError, RuntimeError, ValueError)):
@@ -81,7 +85,7 @@ def test_oa_models_reject_same_name_from_another_planned_revision(tmp_path):
     library = tmp_path / "virtuoso/lib"
     library.mkdir(parents=True)
     old_model = old.install(library)
-    platform = load_platform(Project.open(tmp_path), "testpdk")
+    platform = load_platform(Project.open(tmp_path), "fixture", "testpdk")
     sealed = {}
     for index, source in enumerate(platform.simulation.default.paths):
         path = run / f"revised-{index}"

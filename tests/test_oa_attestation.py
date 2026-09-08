@@ -156,7 +156,9 @@ def test_attestation_diagnostics_identify_the_changed_result_contract_field() ->
 
 def test_attestation_marks_failed_hdb_cleanup_uncertain(tmp_path, workspace_factory):
     write_test_platform(tmp_path)
-    models = load_platform(Project.open(tmp_path), "testpdk").simulation.default
+    models = load_platform(
+        Project.open(tmp_path), "fixture", "testpdk"
+    ).simulation.default
     inputs = OaModelInputs.capture(models, {path: path for path in models.paths})
     client = SimpleNamespace(execute_skill=lambda *_args, **_kwargs: SimpleNamespace(
         output="", errors=["HDB preflight close uncertain; preserved exact scope handle"]

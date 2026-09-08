@@ -309,7 +309,11 @@ def _oa_resource_identities(
     pdk = getattr(getattr(planning, "source", None), "pdk", None)
     if not isinstance(pdk, str) or not pdk:
         raise ContractError("OA plan external resources have no platform identity")
-    platform = load_platform(project, pdk, resources=resources)
+    owner = getattr(getattr(planning, "source", None), "repository", None)
+    owner = getattr(owner, "owner", None)
+    if not isinstance(owner, str) or not owner:
+        raise ContractError("OA plan external resources have no owner identity")
+    platform = load_platform(project, owner, pdk, resources=resources)
     selected = dict(platform_resource_identities(platform))
     asset_root = platform.asset_root
     if asset_root is not None:
@@ -321,7 +325,8 @@ def _oa_resource_identities(
             basename = re.sub(r"[^A-Za-z0-9._-]", "-", path.name)
             identity_hash = hashlib.sha256(relative.encode("utf-8")).hexdigest()
             selected[path] = (
-                f"pdk:{platform.key}:asset/{identity_hash[:20]}-{basename}"
+                f"pdk:{platform.owner}:{platform.key}:asset/"
+                f"{identity_hash[:20]}-{basename}"
             )
     for source in paths:
         path = Path(source).absolute()

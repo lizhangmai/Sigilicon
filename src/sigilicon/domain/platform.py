@@ -268,16 +268,23 @@ def platform_resource_identities(platform: Platform) -> Mapping[Path, str]:
             for index, asset in enumerate(model_set.files):
                 path = asset.require_path()
                 selected[path.absolute()] = (
-                    f"pdk:{platform.key}:simulation/{name}/{index}-{path.name}"
+                    f"pdk:{platform.owner}:{platform.key}:simulation/"
+                    f"{name}/{index}-{path.name}"
                 )
     if platform.layout is not None and platform.layout.layermap is not None:
-        selected[platform.layout.layermap.require_path()] = f"pdk:{platform.key}:layout/layermap"
+        selected[platform.layout.layermap.require_path()] = (
+            f"pdk:{platform.owner}:{platform.key}:layout/layermap"
+        )
     if platform.verification is not None:
         for name, deck in platform.verification.checks.items():
-            selected[deck.asset.require_path()] = f"pdk:{platform.key}:verification/{name}"
+            selected[deck.asset.require_path()] = (
+                f"pdk:{platform.owner}:{platform.key}:verification/{name}"
+            )
         asset = platform.verification.qrc_tech_file
         if asset is not None:
-            selected[asset.require_path()] = f"pdk:{platform.key}:verification/qrc"
+            selected[asset.require_path()] = (
+                f"pdk:{platform.owner}:{platform.key}:verification/qrc"
+            )
     return MappingProxyType(selected)
 
 
@@ -291,7 +298,7 @@ def model_resource_identities(
     for index, asset in enumerate(model_set.files):
         path = asset.require_path()
         selected[path.absolute()] = (
-            f"pdk:{platform.key}:simulation/"
+            f"pdk:{platform.owner}:{platform.key}:simulation/"
             f"{model_set.name}/{index}-{path.name}"
         )
     return MappingProxyType(selected)
@@ -303,6 +310,7 @@ class PlatformCatalogSnapshot:
 
     path: Path
     project_root: Path
+    owner_root: Path
     owner: str
     manifests: Mapping[str, Path]
     document: Mapping[str, Any]
@@ -334,7 +342,8 @@ class PlatformSet(Mapping[str, Platform]):
             raise ValueError("platform set must be built by its loader")
         if (
             catalog.project_root != project.project_root
-            or catalog.path != project.catalog("platform")
+            or catalog.owner_root != project.owner(catalog.owner).root
+            or catalog.path != project.platform_catalog(catalog.owner)
         ):
             raise ValueError("platform set catalog identity drift")
         _validate_immutable_platform_catalog(catalog)
@@ -357,7 +366,7 @@ class PlatformSet(Mapping[str, Platform]):
         object.__setattr__(
             self,
             "_repository",
-            RepositoryIdentity.for_repository(project),
+            RepositoryIdentity.for_owner(project, catalog.owner),
         )
         object.__setattr__(self, "_catalog", catalog)
         object.__setattr__(self, "_platforms", MappingProxyType(selected))
@@ -386,12 +395,14 @@ class PlatformSet(Mapping[str, Platform]):
     def __len__(self) -> int:
         return len(self.platforms)
 
-    def resolve(self, context: Project, key: str) -> Platform:
+    def resolve(self, context: Project, owner: str, key: str) -> Platform:
         context.manifest_source_document()
         self.repository.validate(context)
         if (
-            self.catalog.project_root != context.project_root
-            or self.catalog.path != context.catalog("platform")
+            self.catalog.owner != owner
+            or self.catalog.project_root != context.project_root
+            or self.catalog.owner_root != context.owner(owner).root
+            or self.catalog.path != context.platform_catalog(owner)
         ):
             raise ValueError("platform set belongs to a different operation")
         try:
@@ -405,8 +416,10 @@ class PlatformSet(Mapping[str, Platform]):
             or platform.source_paths[0] != self.catalog.path
         ):
             raise ValueError("platform set identity drift")
-        resolve_platform_catalog(context, snapshot=self.catalog)
-        return _validate_platform_snapshot(context, key, platform, resources=None)
+        resolve_platform_catalog(context, owner, snapshot=self.catalog)
+        return _validate_platform_snapshot(
+            context, owner, key, platform, resources=None
+        )
 
 
 PlatformSnapshot = Platform | PlatformSet
@@ -455,6 +468,7 @@ def _validate_immutable_platform_snapshot(snapshot: Platform) -> None:
 
 def _validate_platform_snapshot(
     context: Project,
+    owner: str,
     key: str,
     snapshot: Platform,
     *,
@@ -469,6 +483,11 @@ def _validate_platform_snapshot(
         raise ValueError(
             f"platform snapshot {snapshot.key!r} disagrees with requested key {key!r}"
         )
+    if snapshot.owner != owner:
+        raise ValueError(
+            f"platform snapshot owner {snapshot.owner!r} disagrees with "
+            f"requested owner {owner!r}"
+        )
     _validate_immutable_platform_snapshot(snapshot)
     selected_resources = resources
     if (
@@ -481,7 +500,9 @@ def _validate_platform_snapshot(
             snapshot.asset_root,
         )
     try:
-        current = _load_platform(context, key, resources=selected_resources)
+        current = _load_platform(
+            context, owner, key, resources=selected_resources
+        )
     except (OSError, RuntimeError, ValueError) as exc:
         raise ValueError("platform snapshot source identity drift") from exc
     if current != snapshot:
@@ -490,6 +511,7 @@ def _validate_platform_snapshot(
 
 def resolve_platform_snapshot(
     context: Project,
+    owner: str,
     key: str,
     *,
     snapshot: PlatformSnapshot | None = None,
@@ -497,23 +519,28 @@ def resolve_platform_snapshot(
     """Resolve a public snapshot or select an operation-trusted inventory."""
 
     if isinstance(snapshot, PlatformSet):
-        return snapshot.resolve(context, key)
+        return snapshot.resolve(context, owner, key)
     if snapshot is None:
-        return load_platform(context, key)
-    return _validate_platform_snapshot(context, key, snapshot, resources=None)
+        return load_platform(context, owner, key)
+    return _validate_platform_snapshot(
+        context, owner, key, snapshot, resources=None
+    )
 
 
 def resolve_platform_catalog(
     context: Project,
+    owner: str,
     *,
     snapshot: PlatformCatalogSnapshot | None = None,
 ) -> PlatformCatalogSnapshot:
     """Load a platform catalog or validate one operation-owned snapshot."""
 
     if snapshot is None:
-        return load_platform_catalog(context)
+        return load_platform_catalog(context, owner)
     _validate_immutable_platform_catalog(snapshot)
-    current = load_platform_catalog(context)
+    if snapshot.owner != owner:
+        raise ValueError("platform catalog snapshot owner drift")
+    current = load_platform_catalog(context, owner)
     if current != snapshot or current.document != snapshot.document:
         raise ValueError("platform catalog snapshot identity drift")
     return snapshot
@@ -599,25 +626,31 @@ def _platform_asset(
     return PlatformAsset(relative, configured)
 
 
-def _platform_asset_resource(key: str) -> str:
-    """Return the semantic external-directory resource for one platform key."""
+def _platform_asset_resource(owner: str, key: str) -> str:
+    """Return the owner-scoped external-directory resource for one platform."""
 
+    if not isinstance(owner, str) or _PLATFORM_KEY.fullmatch(owner) is None:
+        raise ValueError("platform owner contains unsupported characters")
     if not isinstance(key, str) or _PLATFORM_KEY.fullmatch(key) is None:
         raise ValueError("platform key contains unsupported characters")
-    return f"platform.{key}"
+    return f"platform.{owner}.{key}"
 
 
-def _validate_platform_resource_names(platforms: Mapping[str, Any]) -> None:
+def _validate_platform_resource_names(
+    owner: str,
+    platforms: Mapping[str, Any],
+) -> None:
     """Validate catalog keys used to derive external resource identities."""
 
     for key in platforms:
         if not isinstance(key, str) or _PLATFORM_KEY.fullmatch(key) is None:
             raise ValueError("platform catalog keys contain unsupported characters")
-        _platform_asset_resource(key)
+        _platform_asset_resource(owner, key)
 
 
 def _platform_asset_root(
     manifest: Path,
+    owner: str,
     key: str,
     raw: Mapping[str, Any],
     *,
@@ -629,7 +662,7 @@ def _platform_asset_root(
     if scope == "project":
         return manifest.parent, None
 
-    root_resource = _platform_asset_resource(key)
+    root_resource = _platform_asset_resource(owner, key)
     if resources is None:
         # Snapshot validation must remain independent of ambient environment.
         # The caller supplies the already sealed root through the snapshot.
@@ -865,19 +898,21 @@ def _load_verification(
 
 def _platform_catalog_document(
     context: Project,
+    owner: str,
     document: Mapping[str, Any],
 ) -> tuple[Path, Path, str, Mapping[str, Any]]:
     context.manifest_source_document()
-    root = context.project_root
-    catalog_path = context.catalog("platform")
+    selected = context.owner(owner)
+    root = selected.root
+    catalog_path = context.platform_catalog(selected.name)
     if not catalog_path.is_file() or not catalog_path.is_relative_to(root):
-        raise ValueError("platform catalog must be a project-owned file")
+        raise ValueError("platform catalog must be an owner-owned file")
     header = require_config_header(
         document,
         catalog_path,
         contract_kind="platform-catalog",
-        path_scope="repository",
-        owner=context.manifest_owner,
+        path_scope="owner",
+        owner=selected.name,
     )
     _reject_unknown(
         document,
@@ -890,16 +925,18 @@ def _platform_catalog_document(
 
 def parse_platform_catalog(
     context: Project,
+    owner: str,
     document: Mapping[str, Any],
 ) -> PlatformCatalogSnapshot:
     """Validate an already read canonical platform catalog document."""
 
     root, catalog_path, owner, platforms = _platform_catalog_document(
         context,
+        owner,
         document,
     )
     manifests: dict[str, Path] = {}
-    _validate_platform_resource_names(platforms)
+    _validate_platform_resource_names(owner, platforms)
     for key, value in platforms.items():
         if not isinstance(key, str) or _PLATFORM_KEY.fullmatch(key) is None:
             raise ValueError("platform catalog keys contain unsupported characters")
@@ -911,22 +948,27 @@ def parse_platform_catalog(
         )
     return PlatformCatalogSnapshot(
         path=catalog_path,
-        project_root=root,
+        project_root=context.project_root,
+        owner_root=root,
         owner=owner,
         manifests=MappingProxyType(manifests),
         document=freeze_toml_document(document),
     )
 
 
-def load_platform_catalog(context: Project) -> PlatformCatalogSnapshot:
-    """Read and validate the project's canonical platform catalog once."""
+def load_platform_catalog(
+    context: Project,
+    owner: str,
+) -> PlatformCatalogSnapshot:
+    """Read and validate one owner's canonical platform catalog once."""
 
-    catalog_path = context.catalog("platform")
-    return parse_platform_catalog(context, read_toml(catalog_path))
+    catalog_path = context.platform_catalog(owner)
+    return parse_platform_catalog(context, owner, read_toml(catalog_path))
 
 
 def _load_platform(
     context: Project,
+    owner: str,
     key: str,
     *,
     resources: PlatformResources | None,
@@ -939,12 +981,13 @@ def _load_platform(
     if resources is not None and not isinstance(resources, PlatformResources):
         raise TypeError("platform resources must provide require_directory")
     if catalog is None:
-        catalog_document = read_toml(context.catalog("platform"))
+        catalog_document = read_toml(context.platform_catalog(owner))
         root, catalog_path, _owner, platforms = _platform_catalog_document(
             context,
+            owner,
             catalog_document,
         )
-        _validate_platform_resource_names(platforms)
+        _validate_platform_resource_names(owner, platforms)
         try:
             manifest_value = platforms[key]
         except KeyError as exc:
@@ -956,9 +999,11 @@ def _load_platform(
             root=root,
         )
     else:
-        catalog_snapshot = resolve_platform_catalog(context, snapshot=catalog)
+        catalog_snapshot = resolve_platform_catalog(
+            context, owner, snapshot=catalog
+        )
         catalog_document = catalog_snapshot.document
-        root = catalog_snapshot.project_root
+        root = catalog_snapshot.owner_root
         catalog_path = catalog_snapshot.path
         manifest = catalog_snapshot.manifest(key)
     raw = read_toml(manifest)
@@ -973,10 +1018,11 @@ def _load_platform(
         _HEADER_FIELDS | {"name", "asset_scope", "contracts"},
         "platform definition",
     )
-    if header.owner != key:
-        raise ValueError(f"platform manifest owner must be {key!r}")
+    if header.owner != owner:
+        raise ValueError(f"platform manifest owner must be {owner!r}")
     asset_root, root_resource = _platform_asset_root(
         manifest,
+        owner,
         key,
         raw,
         resources=resources,
@@ -1050,6 +1096,7 @@ def _load_platform(
 
 def load_platform(
     context: Project,
+    owner: str,
     key: str,
     *,
     resources: PlatformResources | None = None,
@@ -1061,6 +1108,7 @@ def load_platform(
         raise TypeError("platform resources must provide require_directory")
     return _load_platform(
         context,
+        owner,
         key,
         resources=resources,
         catalog=catalog,
@@ -1069,6 +1117,7 @@ def load_platform(
 
 def _load_platforms(
     context: Project,
+    owner: str,
     *,
     resources: PlatformResources | None = None,
     catalog: PlatformCatalogSnapshot | None = None,
@@ -1076,15 +1125,16 @@ def _load_platforms(
     """Load every platform, resolving host assets only when resources are supplied."""
 
     selected_catalog = (
-        load_platform_catalog(context)
+        load_platform_catalog(context, owner)
         if catalog is None
-        else resolve_platform_catalog(context, snapshot=catalog)
+        else resolve_platform_catalog(context, owner, snapshot=catalog)
     )
     if resources is not None and not isinstance(resources, PlatformResources):
         raise TypeError("platform resources must provide require_directory")
     platforms = {
         key: load_platform(
             context,
+            owner,
             key,
             resources=resources,
             catalog=selected_catalog,
@@ -1101,10 +1151,13 @@ def _load_platforms(
 
 def load_platforms(
     context: Project,
+    owner: str,
     *,
     resources: PlatformResources | None = None,
     catalog: PlatformCatalogSnapshot | None = None,
 ) -> PlatformSet:
     """Load the catalog, optionally binding external runtime assets."""
 
-    return _load_platforms(context, resources=resources, catalog=catalog)
+    return _load_platforms(
+        context, owner, resources=resources, catalog=catalog
+    )

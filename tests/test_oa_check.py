@@ -152,7 +152,7 @@ VSS = "inputOutput"
         cell_manifest.write_text(cell_manifest.read_text().replace("views = [", 'views = [\n  { name = "layout", kind = "layout", source = "layout.toml" },'))
         layout_sources = ("ip/fixture/cells/MODEL/layout.toml", "ip/fixture/cells/MODEL/layout_generator.py")
     manifest = root / "ip/fixture/configs/oa.toml"
-    manifest.parent.mkdir(parents=True)
+    manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(
         '''schema = 1
 contract_kind = "oa-assembly"

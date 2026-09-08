@@ -122,11 +122,15 @@ class CalibreAdapter:
         if policy_source is None:
             raise ContractError("verification policy owner disagrees with its operation source")
         policy = parse_physical_verification_policy(policy_path, tomllib.loads(policy_source.read_text()), owner=owner)
-        platform = load_platform(project, platform_name, resources=resources)
+        platform = load_platform(
+            project, owner, platform_name, resources=resources
+        )
         if platform.verification is None:
             raise ContractError("Calibre requires a platform verification capability")
         deck = platform.verification.require_check(check)
-        identity = f"pdk:{platform.key}:verification/{check}"
+        identity = (
+            f"pdk:{platform.owner}:{platform.key}:verification/{check}"
+        )
         action = _CalibreAction(owner, cell, check, platform_name, layout, source, policy, deck, identity, timeout)
         return action, platform
 
@@ -149,7 +153,11 @@ class CalibreAdapter:
             results_path="drc-results.db", summary_path="drc-summary.rep")
         return AdapterPreparation(
             action=action,
-            sources=tuple(Source.capture_document(path, document=document, root=project.project_root)
+            sources=tuple(Source.capture_document(
+                              path, document=document,
+                              root=project.owner(platform.owner).root,
+                              scope="owner",
+                          )
                           for path, document in sorted({platform.source_paths[0]: platform.catalog_document,
                                                        **platform.source_documents}.items())),
             resources=(ResourceBinding.capture(deck.asset.require_path(), identity=identity), resources.capture(self.name)),

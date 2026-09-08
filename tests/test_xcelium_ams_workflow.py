@@ -69,7 +69,7 @@ view = "circuit_netlist"
             )
         },
     )
-    write_test_platform(root)
+    write_test_platform(root, owner="demo")
     circuit = _write(
         root / "artifacts/releases/native-provider/circuit.scs",
         "simulator lang=spectre\nsubckt NATIVE_TOP A VSS\nends NATIVE_TOP\n",
@@ -384,7 +384,7 @@ cell = "ANALOG_TOP"''',
     assert leaf not in plan.resource_identities
     assert set(plan.resource_identities) == set(plan.model_set.paths)
     assert all(
-        identity.startswith("pdk:testpdk:simulation/nominal/")
+            identity.startswith("pdk:demo:testpdk:simulation/nominal/")
         for identity in plan.resource_identities.values()
     )
 

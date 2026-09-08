@@ -150,7 +150,9 @@ class OaExportAdapter:
         selected = [item for item in assembly.cells if item.cell == cell]
         if len(selected) != 1 or not any(item.name == view and item.kind in {"layout", "native_oa"} for item in selected[0].views):
             raise ContractError("OA export must select an owned layout view")
-        platform = load_platform(project, assembly.pdk, resources=resources)
+        platform = load_platform(
+            project, owner, assembly.pdk, resources=resources
+        )
         if platform.oa is None or platform.layout is None or platform.layout.layermap is None:
             raise ContractError("OA export requires OA technology and a layout stream map")
         explicit = {}
@@ -188,7 +190,9 @@ class OaExportAdapter:
             pending.extend((item.cell, item.view) for item in declared.dependencies)
         if explicit:
             raise ContractError("OA export snapshots contain unconsumed views")
-        identity = f"pdk:{platform.key}:layout/layermap"
+        identity = (
+            f"pdk:{platform.owner}:{platform.key}:layout/layermap"
+        )
         cds_identity = f"oa:{owner}:cds-lib"
         action = OaExportRequest(owner, assembly.name, cell, view, platform.oa.technology_library,
                                  assembly.workspace_root, identity, cds_identity, platform.layout.xstream_flatten_pcells,

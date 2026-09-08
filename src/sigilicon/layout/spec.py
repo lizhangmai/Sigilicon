@@ -452,7 +452,12 @@ def load_layout_spec(
             raise ValueError(f"unsupported direction for {name}: {direction!r}")
         directions[name] = direction
 
-    pdk = resolve_platform_snapshot(repository, pdk_key, snapshot=platform)
+    pdk = resolve_platform_snapshot(
+        repository,
+        repository.require_owner(spec_path).name,
+        pdk_key,
+        snapshot=platform,
+    )
     if pdk.layout is None:
         raise ValueError(
             f"platform {pdk_key!r} does not declare a layout capability"
@@ -542,6 +547,7 @@ def resolve_layout_spec(
     owner = project.owner_for(spec_path)
     resolved_pdk = resolve_platform_snapshot(
         project,
+        project.require_owner(spec_path).name,
         snapshot.pdk.key,
         snapshot=snapshot.pdk if platform is None else platform,
     )

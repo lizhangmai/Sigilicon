@@ -32,7 +32,7 @@ def _write_native_simulation_spec(tmp_path: Path) -> tuple[Path, Path]:
     write_project_context(root)
     owner = root / "ip/compute/verification/oa/tb_native"
     owner.mkdir(parents=True)
-    write_test_platform(root)
+    write_test_platform(root, owner="compute")
     (owner / "setup.il").write_text(
         "procedure(fixtureNativeConfig(lib cell dut sourceView refs) t)\n"
         "procedure(fixtureNativeMaestro(session lib cell modelFile modelSection) t)\n",
@@ -468,7 +468,7 @@ def test_native_rdb_contract_can_audit_nondefault_setup_model_identity(
     tmp_path: Path,
 ) -> None:
     root, spec_path = _write_native_simulation_spec(tmp_path)
-    simulation = root / "configs/platform/testpdk/simulation.toml"
+    simulation = root / "ip/compute/configs/platform/testpdk/simulation.toml"
     simulation.write_text(
         simulation.read_text(encoding="utf-8")
         + '''

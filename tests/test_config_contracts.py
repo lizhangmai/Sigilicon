@@ -48,11 +48,6 @@ contract = "ip/example/component.toml"
     )
     _write(
         root,
-        "configs/platform/catalog.toml",
-        header.format(kind="platform-catalog") + "\n[platforms]\n",
-    )
-    _write(
-        root,
         "ip/example/configs/operations.toml",
         '''schema = 5
 contract_kind = "owner-operations"
@@ -68,7 +63,7 @@ filesets = [{ component = "example", fileset = "flow" }]
         _write(
             root,
             f"ip/{owner}/component.toml",
-            f'''schema = 6
+            f'''schema = 7
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "{owner}"
@@ -86,7 +81,7 @@ source = ["manifest"]
     _write(
         root,
         "ip/example/component.toml",
-        '''schema = 6
+        '''schema = 7
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "example"

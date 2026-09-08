@@ -220,6 +220,7 @@ def _source_inputs(
     if platform_inventory is None:
         release_platform = load_platform(
             project,
+            contract.owner,
             library.pdk,
             resources=project.resources(),
         )
@@ -232,6 +233,7 @@ def _source_inputs(
             ) from exc
         release_platform = resolve_platform_snapshot(
             project,
+            contract.owner,
             library.pdk,
             snapshot=platform_snapshot,
         )

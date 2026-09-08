@@ -373,6 +373,7 @@ def plan_xcelium_ams_cell(
     )
     platform = load_platform(
         repository,
+        spec.owner,
         spec.ams.platform,
         resources=resources,
     )

@@ -92,7 +92,7 @@ class LayoutAdapter:
         spec = project.owner(owner).root / _relative(
             _text(config, "spec"), "layout spec"
         )
-        platforms = load_platforms(project, resources=resources)
+        platforms = load_platforms(project, owner, resources=resources)
         planning = plan_layout_spec(
             spec,
             project=project,

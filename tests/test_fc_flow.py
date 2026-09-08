@@ -17,7 +17,7 @@ def fc_project(tmp_path):
     write_file(root / "ip/fc/constraints.sdc", "create_clock -period 2 clk\n")
     write_file(root / "ip/fc/floorplan.tcl", "# fixture floorplan\n")
     write_file(root / "ip/fc/component.toml", '''
-schema=6
+schema=7
 contract_kind="ip-component"
 path_scope="owner"
 owner="fc"

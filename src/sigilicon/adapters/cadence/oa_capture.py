@@ -49,7 +49,9 @@ class OaCaptureAdapter:
         assembly = load_oa_library_source(manifest, project=project)
         if not any(item.cell == cell and any(row.name == view for row in item.views) for item in assembly.cells):
             raise ContractError("OA capture must select an owned view")
-        platform = load_platform(project, assembly.pdk, resources=resources)
+        platform = load_platform(
+            project, owner, assembly.pdk, resources=resources
+        )
         if platform.oa is None:
             raise ContractError("OA capture requires a technology binding")
         return owner, cell, view, assembly, platform

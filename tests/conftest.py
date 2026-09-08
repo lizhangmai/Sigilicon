@@ -55,7 +55,6 @@ owner = "test"
 
 [catalogs]
 ip = "catalogs/ip.toml"
-platform = "configs/platform/catalog.toml"
 
 [paths]
 project_root = "."
@@ -87,18 +86,6 @@ owner = "test"
 ''',
         encoding="utf-8",
     )
-    platform_root = root / "configs/platform"
-    platform_root.mkdir(parents=True, exist_ok=True)
-    (platform_root / "catalog.toml").write_text(
-        '''schema = 1
-contract_kind = "platform-catalog"
-path_scope = "repository"
-owner = "test"
-
-[platforms]
-''',
-        encoding="utf-8",
-    )
     return contract
 
 
@@ -114,9 +101,14 @@ def write_component_owner(
     owner_root.mkdir(parents=True, exist_ok=True)
     component = owner_root / "component.toml"
     source_ids: dict[str, str] = {}
+    platform_catalog = owner_root / "configs/platform/catalog.toml"
     for values in filesets.values():
         for value in values:
             source_ids.setdefault(value, f"source_{len(source_ids)}")
+    if platform_catalog.is_file():
+        source_ids[
+            platform_catalog.relative_to(root).as_posix()
+        ] = "platform_catalog"
     source_lines = [
         f'{source_id} = "{path}"' for path, source_id in source_ids.items()
     ]
@@ -125,7 +117,7 @@ def write_component_owner(
         rendered = ", ".join(f'"{source_ids[value]}"' for value in values)
         fileset_lines.append(f"{name} = [{rendered}]")
     component.write_text(
-        f'''schema = 6
+        f'''schema = 7
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "{owner}"
@@ -133,6 +125,7 @@ root = "ip/{owner}"
 
 name = "{owner}"
 kind = "rtl-ip"
+{('platform_catalog = "platform_catalog"' if platform_catalog.is_file() else '')}
 
 [sources]
 {chr(10).join(source_lines)}
@@ -144,27 +137,60 @@ kind = "rtl-ip"
     )
     catalog = root / "catalogs/ip.toml"
     source = catalog.read_text(encoding="utf-8")
-    catalog.write_text(
-        source
-        + f'''\n[components.{owner}]
+    if f"[components.{owner}]" not in source:
+        catalog.write_text(
+            source
+            + f'''\n[components.{owner}]
 contract = "ip/{owner}/component.toml"
 ''',
-        encoding="utf-8",
-    )
+            encoding="utf-8",
+        )
     return component
 
 
-def write_test_platform(root: Path, key: str = "testpdk") -> Path:
+def _select_platform_catalog(root: Path, owner: str) -> None:
+    """Attach the owner-local test platform catalog to one component."""
+
+    component = root / "ip" / owner / "component.toml"
+    if not component.is_file():
+        write_component_owner(root, owner, filesets={})
+        return
+    source = component.read_text(encoding="utf-8")
+    if 'platform_catalog = "platform_catalog"' in source:
+        return
+    role_anchor = "\n[[component]]\n" if "\n[[component]]\n" in source else "\n[sources]\n"
+    source = source.replace(
+        role_anchor,
+        '\nplatform_catalog = "platform_catalog"\n' + role_anchor,
+        1,
+    )
+    source = source.replace(
+        "\n[sources]\n",
+        "\n[sources]\n"
+        f'platform_catalog = "ip/{owner}/configs/platform/catalog.toml"\n',
+        1,
+    )
+    component.write_text(source, encoding="utf-8")
+
+
+def write_test_platform(
+    root: Path,
+    key: str = "testpdk",
+    *,
+    owner: str = "fixture",
+    owner_directory: str | None = None,
+) -> Path:
     """Write a minimal cataloged simulation/OA platform for offline tests."""
 
-    platform_root = root / "configs/platform"
+    owner_directory = owner if owner_directory is None else owner_directory
+    platform_root = root / "ip" / owner_directory / "configs/platform"
     platform = platform_root / key
     platform.mkdir(parents=True, exist_ok=True)
     (platform_root / "catalog.toml").write_text(
         f'''schema = 1
 contract_kind = "platform-catalog"
-path_scope = "repository"
-owner = "test"
+path_scope = "owner"
+owner = "{owner}"
 
 [platforms]
 {key} = "{key}/platform.toml"
@@ -175,7 +201,7 @@ owner = "test"
         f'''schema = 1
 contract_kind = "platform-definition"
 path_scope = "platform"
-owner = "{key}"
+owner = "{owner}"
 
 name = "Test PDK"
 
@@ -189,7 +215,7 @@ oa = "oa.toml"
         f'''schema = 1
 contract_kind = "platform-simulation"
 path_scope = "platform"
-owner = "{key}"
+owner = "{owner}"
 
 default_model_set = "nominal"
 
@@ -203,7 +229,7 @@ sections = ["tt"]
         f'''schema = 1
 contract_kind = "platform-oa"
 path_scope = "platform"
-owner = "{key}"
+owner = "{owner}"
 
 technology_library = "techLib"
 reference_libraries = ["deviceLib"]
@@ -212,14 +238,28 @@ reference_libraries = ["deviceLib"]
     )
     model = platform / "model.scs"
     model.write_text("// model\n", encoding="utf-8")
+    if owner_directory == owner:
+        _select_platform_catalog(root, owner)
     return model
 
 
-def write_test_layout_platform(root: Path, key: str = "testpdk") -> None:
+def write_test_layout_platform(
+    root: Path,
+    key: str = "testpdk",
+    *,
+    owner: str = "fixture",
+    owner_directory: str | None = None,
+) -> None:
     """Extend the minimal platform with offline layout/verification contracts."""
 
-    write_test_platform(root, key)
-    platform = root / "configs/platform" / key
+    write_test_platform(
+        root,
+        key,
+        owner=owner,
+        owner_directory=owner_directory,
+    )
+    owner_directory = owner if owner_directory is None else owner_directory
+    platform = root / "ip" / owner_directory / "configs/platform" / key
     manifest = platform / "platform.toml"
     manifest.write_text(
         manifest.read_text(encoding="utf-8")
@@ -230,7 +270,7 @@ def write_test_layout_platform(root: Path, key: str = "testpdk") -> None:
         f'''schema = 2
 contract_kind = "platform-layout"
 path_scope = "platform"
-owner = "{key}"
+owner = "{owner}"
 dbu_per_micron = 1000
 layermap = "layermap"
 ''',
@@ -240,7 +280,7 @@ layermap = "layermap"
         f'''schema = 2
 contract_kind = "platform-verification"
 path_scope = "platform"
-owner = "{key}"
+owner = "{owner}"
 qrc_tech_file = "qrc.tech"
 [drc]
 deck = "drc.deck"
@@ -355,7 +395,7 @@ def project_factory(tmp_path: Path) -> Callable[..., tuple[Path, Path]]:
         design_dir.mkdir(parents=True)
         virtuoso_dir.mkdir(parents=True)
         (virtuoso_dir / "cds.lib").write_text("# test cds.lib\n", encoding="utf-8")
-        write_test_platform(root)
+        write_test_platform(root, owner="example")
         (design_dir / "circuit.scs").write_text(
             """subckt inv IN OUT VDD VSS
 MP0 (OUT IN VDD VDD) pch_mac l=30n w=200n

@@ -144,6 +144,15 @@ class RepositoryOwner:
         )
 
     @property
+    def platform_catalog(self) -> Path | None:
+        relative = self.component.platform_catalog
+        return (
+            None
+            if relative is None
+            else self.component.project_root.joinpath(*relative.parts)
+        )
+
+    @property
     def release_contract(self) -> Path | None:
         relative = self.component.release_contract
         return (
@@ -526,14 +535,7 @@ class Project:
 
         return tuple(
             sorted(
-                {
-                    *(owner.root for owner in self.owners),
-                    *(
-                        path.parent
-                        for role, path in self.catalog_paths
-                        if role == "platform"
-                    ),
-                }
+                {owner.root for owner in self.owners}
             )
         )
 
@@ -766,6 +768,11 @@ class Project:
                 for owner in self.owners
                 if owner.component.operation_catalog is not None
             ),
+            *(
+                self.project_root.joinpath(*owner.component.platform_catalog.parts)
+                for owner in self.owners
+                if owner.component.platform_catalog is not None
+            ),
         }
         return canonical_digest(
             {
@@ -861,6 +868,10 @@ class Project:
             paths.append(
                 self.project_root.joinpath(*owner.component.operation_catalog.parts)
             )
+        if owner.component.platform_catalog is not None:
+            paths.append(
+                self.project_root.joinpath(*owner.component.platform_catalog.parts)
+            )
         return tuple(dict.fromkeys(path.absolute() for path in paths))
 
     @property
@@ -894,6 +905,24 @@ class Project:
         if path is None:
             key = validate_artifact_component(name, "catalog name")
             raise ValueError(f"repository has no {key!r} catalog")
+        return path
+
+    def find_platform_catalog(self, owner: str) -> Path | None:
+        """Return one owner's selected platform catalog, when declared."""
+
+        selected = self.owner(owner)
+        self._require_owner_snapshot(selected)
+        return selected.platform_catalog
+
+    def platform_catalog(self, owner: str) -> Path:
+        """Return one owner's required platform catalog."""
+
+        selected = self.owner(owner)
+        path = self.find_platform_catalog(selected.name)
+        if path is None:
+            raise ValueError(
+                f"owner {selected.name!r} has no platform_catalog selection"
+            )
         return path
 
     def ip_catalog_snapshot(self) -> RepositoryCatalogSnapshot:

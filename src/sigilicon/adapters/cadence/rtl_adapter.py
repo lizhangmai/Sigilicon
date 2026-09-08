@@ -91,7 +91,9 @@ class SpectreAdapter:
         if "program" in step.config:
             from sigilicon.domain.platform import load_platform
             config, *_ = measurement_configuration(step)
-            platform = load_platform(project, config["platform"])
+            platform = load_platform(
+                project, config["owner"], config["platform"]
+            )
             if platform.simulation is None:
                 raise ContractError("Spectre measurement requires a simulation platform")
             platform.simulation.model_set(config["model_set"])

@@ -219,6 +219,7 @@ def load_design_spec(
 
     pdk = resolve_platform_snapshot(
         repository,
+        repository.require_owner(spec_path).name,
         _string(design.get("pdk"), "design.pdk"),
         snapshot=platform,
     )

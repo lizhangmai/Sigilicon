@@ -193,7 +193,6 @@ def _bind_test_adapters(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _write_project(root: Path) -> Path:
     (root / "catalogs").mkdir(parents=True, exist_ok=True)
-    (root / "configs/platform").mkdir(parents=True, exist_ok=True)
     owner = root / "ip/example"
     (owner / "configs").mkdir(parents=True)
     (root / "sigilicon.toml").write_text(
@@ -204,7 +203,6 @@ owner = "test"
 
 [catalogs]
 ip = "catalogs/ip.toml"
-platform = "configs/platform/catalog.toml"
 
 [paths]
 project_root = "."
@@ -237,18 +235,8 @@ contract = "ip/example/component.toml"
 """,
         encoding="utf-8",
     )
-    (root / "configs/platform/catalog.toml").write_text(
-        """schema = 1
-contract_kind = "platform-catalog"
-path_scope = "repository"
-owner = "test"
-
-[platforms]
-""",
-        encoding="utf-8",
-    )
     (owner / "component.toml").write_text(
-        """schema = 6
+        """schema = 7
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "example"
@@ -499,7 +487,7 @@ def test_plan_identity_excludes_unselected_owner_changes(tmp_path: Path) -> None
     foreign = tmp_path / "ip/foreign"
     (foreign / "configs").mkdir(parents=True)
     (foreign / "component.toml").write_text(
-        '''schema = 6
+        '''schema = 7
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "foreign"
@@ -951,7 +939,7 @@ contract = "ip/foreign/component.toml"
     foreign = tmp_path / "ip/foreign"
     foreign.mkdir()
     (foreign / "component.toml").write_text(
-        """schema = 6
+        """schema = 7
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "foreign"

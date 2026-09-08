@@ -946,6 +946,7 @@ def plan_oa_library_rebuild(
 
         platform_snapshot: PlatformSnapshot = load_platform(
             project,
+            project.require_owner(source.manifest_path).name,
             source.pdk,
             resources=Resources(),
         )
@@ -961,6 +962,7 @@ def plan_oa_library_rebuild(
                 ) from exc
         resolve_platform_snapshot(
             project,
+            project.require_owner(source.manifest_path).name,
             source.pdk,
             snapshot=platform_snapshot,
         )
@@ -989,7 +991,12 @@ def plan_oa_library_rebuild(
         architecture_source_documents,
     )
     views = _plan_views(source, testbenches)
-    selected_platform = resolve_platform_snapshot(project, source.pdk, snapshot=platform_snapshot)
+    selected_platform = resolve_platform_snapshot(
+        project,
+        project.require_owner(source.manifest_path).name,
+        source.pdk,
+        snapshot=platform_snapshot,
+    )
     for step in views:
         if step.native_snapshot is not None and (selected_platform.oa is None or step.native_snapshot.technology_library != selected_platform.oa.technology_library):
             raise ValueError("native OA snapshot technology disagrees with its platform")

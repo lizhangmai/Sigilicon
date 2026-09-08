@@ -23,7 +23,7 @@ _CONFIG_SCHEMAS = {
     "platform-layout": 2,
     "platform-verification": 2,
     "ip-dependency-lock": 3,
-    "ip-component": 6,
+    "ip-component": 7,
     "ip-catalog": 2,
     "ip-release": 5,
     "ip-operating-variant": 2,

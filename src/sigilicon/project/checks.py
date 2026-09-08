@@ -127,12 +127,11 @@ def inspect_repository_designs(
         owner.name: owner.component.path for owner in context.owners
     }
 
-    platform_inventory = (
-        {}
-        if context.find_catalog("platform") is None
-        else load_platforms(context)
-    )
-    platform_catalog = getattr(platform_inventory, "catalog", None)
+    platform_inventories = {
+        owner.name: load_platforms(context, owner.name)
+        for owner in context.owners
+        if owner.component.platform_catalog is not None
+    }
 
     architecture_source_documents = _architecture_source_documents(context)
 
@@ -162,7 +161,9 @@ def inspect_repository_designs(
         assembly: plan_oa_library_rebuild(
             assembly,
             project=context,
-            platform_inventory=platform_inventory,
+            platform_inventory=platform_inventories[
+                context.require_owner(assembly).name
+            ],
             oa_source_inventory=oa_source_inventory,
             architecture_source_documents=architecture_source_documents,
         )
@@ -195,7 +196,9 @@ def inspect_repository_designs(
             path,
             project=context,
             snapshot=snapshot,
-            platform=platform_inventory,
+            platform=platform_inventories[
+                context.require_owner(path).name
+            ],
         )
         for source_path, document in layout.source_documents.items():
             previous = layout_source_documents.get(source_path)
@@ -273,26 +276,30 @@ def inspect_repository_designs(
         ip_releases[name] = release_row
 
     platforms: dict[str, Any] = {}
-    for name, platform in platform_inventory.items():
-        platforms[name] = {
-            "manifest": platform.path.relative_to(root).as_posix(),
-            "owner": platform.owner,
+    for owner, inventory in sorted(platform_inventories.items()):
+        platforms[owner] = {
+            name: {
+                "manifest": platform.path.relative_to(root).as_posix(),
+                "owner": platform.owner,
+            }
+            for name, platform in inventory.items()
         }
 
     source_inventory.verify(
         "component graph snapshot",
         component_source_documents,
     )
-    if platform_catalog is not None:
+    for platform_inventory in platform_inventories.values():
+        platform_catalog = platform_inventory.catalog
         source_inventory.verify(
             "platform catalog snapshot",
             {platform_catalog.path: platform_catalog.document},
         )
-    for platform in platform_inventory.values():
-        source_inventory.verify(
-            "platform source snapshot",
-            platform.source_documents,
-        )
+        for platform in platform_inventory.values():
+            source_inventory.verify(
+                "platform source snapshot",
+                platform.source_documents,
+            )
     for contract in release_inventory.values():
         if contract.document:
             source_inventory.verify(

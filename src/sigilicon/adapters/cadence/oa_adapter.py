@@ -332,7 +332,9 @@ def _oa_source_plan(project: Project, step: Step, *, fields: frozenset[str],
     if manifest is None:
         raise ContractError(f"owner {owner!r} has no OA assembly")
     planning = plan_oa_library_rebuild(manifest, project=project,
-        platform_inventory=load_platforms(project, resources=resources),
+        platform_inventory=load_platforms(
+            project, owner, resources=resources
+        ),
         **({"testbench": config["testbench"]} if testbench_only else {}))
     if "testbench" in fields and sum(item.cell == config["testbench"] for item in planning.testbenches) != 1:
         raise ContractError(f"unknown native OA testbench: {config['testbench']}")

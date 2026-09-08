@@ -561,6 +561,7 @@ def _load_native_oa_simulation_spec(
         raise ValueError("testbench.simulator must be spectre or ams")
     pdk = resolve_platform_snapshot(
         context,
+        context.require_owner(spec_path).name,
         _identifier(platform.get("pdk"), "platform.pdk"),
         snapshot=platform_snapshot,
     )

@@ -52,7 +52,7 @@ def build_layout_plan(spec):
     monkeypatch.setattr("sigilicon.adapters.cadence.oa_client.get_client", lambda _resources: object())
     monkeypatch.setattr("sigilicon.adapters.cadence.layout_generation.generate_layout", fake_oa_write)
     if fault == "missing-oa":
-        platform = root / "configs/platform/testpdk/platform.toml"
+        platform = root / "ip/example/configs/platform/testpdk/platform.toml"
         platform.write_text(platform.read_text().replace('oa = "oa.toml"\n', ''))
     project = Project.open(root)
     assert load_layout_spec(layout, project=project).generator_dependencies
@@ -91,7 +91,7 @@ def _write_component(
         for value in values:
             source_ids.setdefault(value, f"source_{len(source_ids)}")
     rows = [
-        "schema = 6",
+        "schema = 7",
         'contract_kind = "ip-component"',
         f'root = "ip/{name}"',
         'path_scope = "owner"',
@@ -135,7 +135,7 @@ def _write_fixture(
     generator_dependencies: tuple[str, ...] = (
         "../own_dependency.py",
         "../../shared/shared_dependency.py",
-        "../../../configs/platform/testpdk/layout.toml",
+        "../configs/platform/testpdk/layout.toml",
     ),
     generator_modules: tuple[str, ...] = (
         "ip.example.cell.recipe",
@@ -145,7 +145,6 @@ def _write_fixture(
 ) -> tuple[Path, Path]:
     root = tmp_path / "project"
     write_project_context(root)
-    write_test_layout_platform(root)
 
     shared_root = root / "ip/shared"
     shared_root.mkdir(parents=True)
@@ -229,6 +228,7 @@ def _write_fixture(
             ("shared", "ip/shared/component.toml"),
         ),
     )
+    write_test_layout_platform(root, owner="example")
 
     return root, layout
 
@@ -242,7 +242,10 @@ def test_layout_generators_allow_owned_source_library_and_exact_platform_contrac
 
     assert spec.generator_source == root / "ip/example/cell/layout_generator.py"
     assert root / "ip/shared/shared_dependency.py" in spec.generator_dependencies
-    assert root / "configs/platform/testpdk/layout.toml" in spec.generator_dependencies
+    assert (
+        root / "ip/example/configs/platform/testpdk/layout.toml"
+        in spec.generator_dependencies
+    )
 
 
 def test_layout_module_resolution_never_executes_owner_packages(tmp_path: Path) -> None:
@@ -345,7 +348,7 @@ def test_layout_generator_cannot_use_sibling_owner_without_component_graph_edge(
         tmp_path,
         generator_dependencies=(
             "../../other/other_dependency.py",
-            "../../../configs/platform/testpdk/layout.toml",
+            "../configs/platform/testpdk/layout.toml",
         ),
         generator_modules=("ip.example.cell.recipe",),
     )
@@ -370,7 +373,7 @@ def test_layout_generator_rejects_unowned_project_dependency_except_selected_pla
         tmp_path,
         generator_dependencies=(
             "../../../repository_helper.py",
-            "../../../configs/platform/testpdk/layout.toml",
+            "../configs/platform/testpdk/layout.toml",
         ),
         generator_modules=("ip.example.cell.recipe",),
     )
