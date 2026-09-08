@@ -18,6 +18,9 @@ qualification 门槛和仓库布局由调用项目拥有。标准 ASIC、模拟/
   与 adapter planner，
   不建立平行 composition 入口。adapter 是 package-owned trusted code，不是同进程插件沙箱；
   owner 不能注入 adapter Python。
+  工具插件借鉴 Hammer 的配置、执行与结果收集分工：设计/工艺 Tcl 是调用项目拥有的
+  source 输入，adapter 直接执行并绑定参数、资源和 typed artifacts，不生成设计流程 Tcl
+  来限制 caller 的定制能力。通用工具报告解析属于 adapter，数值验收属于 owner contract。
   adapter 启动的工具必须使用公共 no-follow/process supervisor seam，不能把裸路径检查冒充
   外部进程隔离。只有存在真实变化的实现时才建立 adapter。旧接口迁移采用替换并删除，
   不提供 alias、兼容 schema、双写或弃用期。

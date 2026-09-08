@@ -293,6 +293,8 @@ def execute_structural_link(
             "SIGILICON_STRUCTURAL_LIBRARY": plan.library_name,
             "SIGILICON_STRUCTURAL_MACRO_CELL": plan.macro_cell,
             "SIGILICON_STRUCTURAL_TOP": plan.top,
+            "SIGILICON_STRUCTURAL_EXPECTED_MACROS": str(plan.expected_macro_instances),
+            "SIGILICON_STRUCTURAL_EXPECTED_UNRESOLVED": str(plan.expected_unresolved_references),
             "SIGILICON_STRUCTURAL_PARAMETERS": ",".join(
                 f"{name}={value}" for name, value in plan.parameter_overrides.items()
             ),

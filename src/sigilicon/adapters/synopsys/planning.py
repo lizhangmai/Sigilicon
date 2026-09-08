@@ -78,7 +78,7 @@ class Action(ABC):
 
 
 class RunnerAdapter:
-    """Shared compile/readiness boundary for the four owner runner protocols."""
+    """Shared compile/readiness interface for owner shell runner protocols."""
 
     action_type: type[Action]
 
@@ -145,40 +145,6 @@ class VcsAction(Action):
         )
 
 
-@dataclass(frozen=True)
-class DcAction(Action):
-    kind: ClassVar[str] = "synopsys.dc"
-    invocation: Invocation
-    corner: str
-    constraints: str
-    evaluator: str
-    hdl: HdlCompilation
-    reports: tuple[str, ...]
-    verdict: str
-
-    @property
-    def contract(self) -> StepContract:
-        return StepContract(produces=(
-            ArtifactProduct("log", "log.synopsys", "many"),
-            ArtifactProduct("mapped-netlist", "netlist.verilog", path="mapped.v"),
-            ArtifactProduct("mapped-constraints", "constraints.sdc", path="mapped.sdc"),
-            ArtifactProduct("checkpoint", "checkpoint.synopsys-ddc", path="mapped.ddc"),
-            *(ArtifactProduct("report", "report.synopsys", path=name) for name in self.reports),
-            ArtifactProduct("execution-verdict", "evidence.tool-verdict", path=self.verdict)))
-
-    @classmethod
-    def compile(cls, step: Step) -> DcAction:
-        config = _strict_config(step, frozenset({
-            "runner", "variant", "timeout_seconds", "corner", "constraints",
-            "evaluator", "hdl", "reports", "verdict_report",
-        }))
-        return cls(
-            Invocation.compile(step, "SIGILICON_SYNOPSYS_DC_SHELL"), _text(config, "corner"),
-            source(step, "constraints"), source(step, "evaluator"),
-            HdlCompilation.resolve(step.config.get("hdl"), {item.reference: item.path for item in step.source_closure}),
-            tuple(_safe_relative(name, "DC report") for name in _strings(config, "reports")),
-            _safe_relative(_text(config, "verdict_report"), "DC verdict report"),
-        )
 
 
 @dataclass(frozen=True)

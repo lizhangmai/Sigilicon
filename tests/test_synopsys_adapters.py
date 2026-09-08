@@ -9,7 +9,6 @@ import sys
 
 import pytest
 
-from sigilicon.adapters.synopsys.dc_adapter import DcAdapter
 from sigilicon.adapters.synopsys.fc_adapter import FcAdapter
 from sigilicon.adapters.synopsys.hspice_adapter import HspiceAdapter
 from sigilicon.adapters.synopsys.vcs_adapter import VcsAdapter
@@ -33,7 +32,7 @@ def _context(
     dependencies: dict[str, StepResult] | None = None,
 ) -> ExecutionIO:
     project_root = next(path for path in (tmp_path, *tmp_path.parents) if (path / "sigilicon.toml").is_file())
-    adapters = {adapter.name: adapter for adapter in (VcsAdapter(), DcAdapter(), FcAdapter(), HspiceAdapter())}
+    adapters = {adapter.name: adapter for adapter in (VcsAdapter(), FcAdapter(), HspiceAdapter())}
     captured = []
     for path in step.sources:
         location = tmp_path / "run/inputs/sources" / path
@@ -63,7 +62,7 @@ def _context(
     )
 
 
-@pytest.mark.parametrize("adapter", (VcsAdapter(), DcAdapter(), FcAdapter()))
+@pytest.mark.parametrize("adapter", (VcsAdapter(), FcAdapter()))
 def test_synopsys_adapters_reject_unknown_configuration_fields(adapter, tmp_path: Path) -> None:
     common = {
         "runner": "flow/run.sh",
@@ -76,12 +75,6 @@ def test_synopsys_adapters_reject_unknown_configuration_fields(adapter, tmp_path
             "target": "rtl",
             "success_marker": "passed",
             "hdl": {"top": "design", "sources": [{"component": "fixture", "source": "rtl/design.sv"}] + [{"component": "fixture", "source": "dv/testbench.sv"}]}
-        },
-        "synopsys.dc": {
-            **common,
-            "constraints": "flow/constraints.sdc",
-            "corner": "tt",
-            "hdl": {"top": "design", "sources": [{"component": "fixture", "source": "rtl/design.sv"}]}
         },
         "synopsys.fc": {
             **common,
@@ -251,153 +244,6 @@ printf 'tampered\n' >>"$source_file"
     assert rtl.read_text(encoding="utf-8").endswith("tampered\n")
 
 
-@pytest.mark.parametrize("mismatch", (None, "owner", "stage", "variant", "corner", "plan_identity", "run_id", "step_id"))
-def test_dc_backend_collects_only_declared_delivery_files(
-    tmp_path: Path, mismatch: str | None
-) -> None:
-    sources = tmp_path / "run/inputs/sources"
-    runner = _file(
-        sources / "impl/syn/run_dc.sh",
-        """#!/usr/bin/env bash
-set -euo pipefail
-test -x "$SIGILICON_SYNOPSYS_DC_SHELL"
-mkdir -p "$SIGILICON_DC_OUTPUT_ROOT"
-for output in mapped.v mapped.sdc mapped.ddc check_design.rpt area.rpt; do
-  printf '%s\n' "$output" >"$SIGILICON_DC_OUTPUT_ROOT/$output"
-done
-printf '{"schema":2,"plan_identity":"1111111111111111111111111111111111111111111111111111111111111111","run_id":"22222222222222222222222222222222","step_id":"synthesis","corner":"tt","contract_kind":"tool-verdict","owner":"fixture","stage":"synthesis","variant":"test","passed":true,"product_qualification_conclusion":false,"checks":{"timing_clean":true}}\n' \
-  >"$SIGILICON_DC_OUTPUT_ROOT/verdict.json"
-mkdir -p "$SIGILICON_DC_OUTPUT_ROOT/cache"
-ln -s ../mapped.ddc "$SIGILICON_DC_OUTPUT_ROOT/cache/current.ddc"
-""",
-        executable=True,
-    )
-    _file(sources / "rtl/design.sv")
-    _file(sources / "impl/syn/constraints.sdc")
-    _file(sources / "tools/evaluate.py")
-    site = tmp_path / "site"
-    executable = site / "dc_shell"
-    target = _file(
-        site / "snps_shell",
-        "#!/bin/sh\nexit 0\n",
-        executable=True,
-    )
-    executable.symlink_to(target.name)
-    runner.write_text(
-        runner.read_text(encoding="utf-8").replace(
-            'test -x "$SIGILICON_SYNOPSYS_DC_SHELL"',
-            '"$SIGILICON_SYNOPSYS_DC_SHELL"',
-        ),
-        encoding="utf-8",
-    )
-    files: dict[str, str] = {}
-    for flavor in ("RVT", "HVT", "LVT"):
-        files[f"stdcell.{flavor.lower()}.db.tt"] = str(
-            _file(site / f"{flavor.lower()}.db")
-        )
-    step = Step(
-        "synthesis",
-        "synopsys.dc",
-        {
-            "runner": runner.relative_to(sources).as_posix(),
-            "constraints": "impl/syn/constraints.sdc",
-            "variant": "test",
-            "corner": "tt",
-            "evaluator": "tools/evaluate.py",
-            "timeout_seconds": 10,
-            "reports": ("check_design.rpt", "area.rpt"),
-            "verdict_report": "verdict.json",
-            "hdl": {"top": "design", "sources": [{"component": "fixture", "source": "rtl/design.sv"}]}
-        },
-        sources=(
-            "impl/syn/run_dc.sh",
-            "impl/syn/constraints.sdc",
-            "rtl/design.sv",
-            "tools/evaluate.py",
-        ),
-        runtime=RuntimeEnvironment(
-            tools={
-                "SIGILICON_RUNNER_SHELL": "runtime.bash",
-                "SIGILICON_SYNOPSYS_DC_SHELL": "synopsys.dc-shell",
-            },
-            files={
-                f"SIGILICON_STDCELL_{flavor}_DB": f"stdcell.{flavor.lower()}.db.tt"
-                for flavor in ("RVT", "HVT", "LVT")
-            },
-        ),
-    )
-    context = _context(
-        tmp_path,
-        step,
-        Resources(
-            tools={
-                "runtime.bash": "/bin/bash",
-                "synopsys.dc-shell": str(executable),
-            },
-            files=files,
-            environment=dict(os.environ),
-        ),
-    )
-    adapter = DcAdapter()
-
-    if mismatch is not None:
-        expected = {"owner": "fixture", "stage": "synthesis", "variant": "test", "corner": "tt", "plan_identity": "1" * 64, "run_id": "2" * 32, "step_id": "synthesis"}
-        runner.write_text(runner.read_text().replace(
-            f'"{mismatch}":"{expected[mismatch]}"', f'"{mismatch}":"unrelated"'
-        ))
-        result = adapter.run(context)
-        assert result.status == "failed"
-        assert f"verdict {mismatch} mismatch" in result.message
-        assert {artifact.role for artifact in result.artifacts} >= {"mapped-netlist", "execution-verdict"}
-        return
-
-    assert all(
-        check.status == "ready"
-        for check in adapter.preflight(context.step, context.runtime)
-    )
-    result = adapter.run(context)
-
-    assert result.status == "succeeded"
-    assert {artifact.role for artifact in result.artifacts} == {
-        "log",
-        "mapped-netlist",
-        "mapped-constraints",
-        "checkpoint",
-        "report",
-        "execution-verdict",
-    }
-    assert len(result.artifacts) == 8
-    verdict = next(
-        artifact for artifact in result.artifacts
-        if artifact.role == "execution-verdict"
-    )
-    assert json.loads(verdict.path.read_text())["passed"] is True
-    assert not (context.work_directory / "tool").exists()
-
-    failed_context = _context(tmp_path / "failed-verdict", step, context.runtime)
-    failed_runner = _file(
-        failed_context.source_directory / "impl/syn/run_dc.sh",
-        runner.read_text(encoding="utf-8").replace(
-            '"passed":true', '"passed":false'
-        ).replace('"timing_clean":true', '"timing_clean":false'),
-        executable=True,
-    )
-    _file(failed_context.source_directory / "rtl/design.sv")
-    _file(failed_context.source_directory / "impl/syn/constraints.sdc")
-    _file(failed_context.source_directory / "tools/evaluate.py")
-    failed = adapter.run(failed_context)
-
-    assert failed.status == "failed"
-    assert failed.message == "DC execution completed but owner evidence failed"
-    assert {artifact.role for artifact in failed.artifacts} >= {
-        "mapped-netlist",
-        "execution-verdict",
-    }
-    failed_verdict = next(
-        artifact for artifact in failed.artifacts
-        if artifact.role == "execution-verdict"
-    )
-    assert json.loads(failed_verdict.path.read_text())["passed"] is False
 
 
 def test_hspice_failure_preserves_campaign_and_qualification_evidence(

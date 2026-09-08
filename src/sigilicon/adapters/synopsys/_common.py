@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import ExitStack
-from dataclasses import dataclass, replace
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -53,80 +53,6 @@ _TOOL_LOCATION_ENVIRONMENT = frozenset(
 )
 
 
-@dataclass(frozen=True)
-class _ToolVerdict:
-    owner: str
-    stage: str
-    variant: str
-    passed: bool
-    product_qualification_conclusion: bool
-    checks: Mapping[str, bool]
-
-    @classmethod
-    def load(
-        cls, path: Path, *, context: ExecutionIO, stage: str, variant: str, corner: str
-    ) -> _ToolVerdict:
-        try:
-            with owned_input_file(path, require_single_link=True) as source:
-                payload = json.loads(os.pread(source.fd, os.fstat(source.fd).st_size, 0))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise ExecutionError(f"invalid tool verdict {path.name}: {exc}") from exc
-        fields = {
-            "schema",
-            "contract_kind",
-            "owner",
-            "stage",
-            "variant",
-            "passed",
-            "product_qualification_conclusion",
-            "checks",
-            "plan_identity", "run_id", "step_id", "corner",
-        }
-        if not isinstance(payload, dict) or set(payload) != fields:
-            raise ExecutionError(f"invalid tool verdict envelope in {path.name}")
-        if payload["schema"] != 2 or payload["contract_kind"] != "tool-verdict":
-            raise ExecutionError(f"unsupported tool verdict contract in {path.name}")
-        texts = {
-            name: payload[name]
-            for name in ("owner", "stage", "variant")
-        }
-        if any(not isinstance(value, str) or not value for value in texts.values()):
-            raise ExecutionError(f"invalid tool verdict identity in {path.name}")
-        expected = {
-            "owner": context.owner, "stage": stage, "variant": variant, "corner": corner,
-            "plan_identity": context.plan_identity, "run_id": context.run_id, "step_id": context.step.id,
-        }
-        for name, value in expected.items():
-            if payload[name] != value:
-                raise ExecutionError(
-                    f"tool verdict {name} mismatch: expected {value!r}, got {payload[name]!r}"
-                )
-        passed = payload["passed"]
-        qualification = payload["product_qualification_conclusion"]
-        checks = payload["checks"]
-        if not isinstance(passed, bool) or not isinstance(qualification, bool):
-            raise ExecutionError(f"invalid tool verdict conclusion in {path.name}")
-        if (
-            not isinstance(checks, dict)
-            or not checks
-            or any(
-                not isinstance(name, str)
-                or not name
-                or not isinstance(value, bool)
-                for name, value in checks.items()
-            )
-        ):
-            raise ExecutionError(f"invalid tool verdict checks in {path.name}")
-        if passed != all(checks.values()):
-            raise ExecutionError(f"inconsistent tool verdict conclusion in {path.name}")
-        return cls(
-            owner=texts["owner"],
-            stage=texts["stage"],
-            variant=texts["variant"],
-            passed=passed,
-            product_qualification_conclusion=qualification,
-            checks=checks,
-        )
 
 
 def _text(config: Mapping[str, Any], name: str) -> str:

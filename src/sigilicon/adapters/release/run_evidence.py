@@ -141,16 +141,22 @@ def validate_execution(record: Mapping) -> VerifiedExecution:
         return VerifiedExecution(check, result["owner"], layout["name"], plan["variant"], {},
                                  frozenset(), inputs, outputs)
     check = "synthesis" if adapter == "synopsys.dc" else "physical-implementation"
-    if (evidence.get("stage") != check or evidence.get("variant") != action["invocation"]["variant"]
+    variant = action["variant"] if adapter == "synopsys.dc" else action["invocation"]["variant"]
+    if (evidence.get("stage") != check or evidence.get("variant") != variant
             or evidence.get("corner") != action["corner"]):
         raise ValueError("tool verdict applicability disagrees with its action")
     if adapter == "synopsys.dc":
         inputs = identities(sources[path] for path in (*action["hdl"]["sources"], action["constraints"]))
+        for library in action["libraries"]:
+            inputs |= identities(item for item in artifacts if item["step"] == library["step"]
+                                 and item["role"] == library["role"] and item["kind"] == library["kind"]
+                                 and (library["path"] is None or item["path"] ==
+                                      f'outputs/{library["step"]}/{library["role"]}/{library["path"]}'))
     else:
         inputs = identities(item for item in artifacts
             if (item["step"] == action["synthesis_step"] and item["role"] in {"mapped-netlist", "mapped-constraints"})
             or (item["step"] == action["reference_step"] and item["role"] == "reference-library"))
     outputs = identities(item for item in artifacts if item["step"] == reference.step
                          and not item["kind"].startswith(("evidence.", "log.", "report.")))
-    return VerifiedExecution(check, result["owner"], action["hdl"]["top"] if adapter == "synopsys.dc" else action["top"], action["invocation"]["variant"],
+    return VerifiedExecution(check, result["owner"], action["hdl"]["top"] if adapter == "synopsys.dc" else action["top"], variant,
                              {"corner": action["corner"]}, frozenset(checks), inputs, outputs)
