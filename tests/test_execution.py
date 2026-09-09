@@ -5,6 +5,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -357,6 +358,57 @@ def _project(root: Path, *adapters) -> Project:
     global _TEST_ADAPTERS
     _TEST_ADAPTERS = adapters
     return Project.open(root)
+
+
+
+@pytest.mark.parametrize("mode", ("succeeded", "failed", "exception"))
+def test_waveforms_live_through_consumers_and_are_removed_at_run_end(tmp_path: Path, mode: str) -> None:
+    from sigilicon.execution.artifact_reference import ArtifactProduct, ArtifactReference, StepContract
+    _write_project(tmp_path)
+    reference = ArtifactReference("source", "activity", "data.waveform", path="activity.vcd")
+
+    class WaveProducer(CopyAdapter):
+        def contract(self, project, step):
+            return StepContract(produces=(ArtifactProduct("activity", "data.waveform", path="activity.vcd"),))
+
+        def run(self, context):
+            database = context.work_directory / "psf"
+            database.mkdir()
+            (database / "transient").write_text("raw database")
+            (context.work_directory / "activity.vcd.gz").write_bytes(b"compressed waveform")
+            wave = context.write_text("activity", "activity.vcd", "activity samples")
+            return StepResult.succeeded(artifacts=(Artifact("activity", "data.waveform", wave),))
+
+    class PowerConsumer(UpperAdapter):
+        def contract(self, project, step):
+            return StepContract(consumes=(reference,))
+
+        def run(self, context):
+            wave, = context.artifacts(reference)
+            assert wave.read_text() == "activity samples"
+            if mode == "exception":
+                raise RuntimeError("measurement stopped")
+            report = context.write_text("measurement", "power.csv", "energy_j\n1e-12\n")
+            return StepResult(mode, (Artifact("measurement", "table.power", report),),
+                              message="" if mode == "succeeded" else "measurement failed")
+
+    project = _project(tmp_path, WaveProducer(), PowerConsumer())
+    run_id = "8" * 32
+    if mode == "exception":
+        with pytest.raises(RuntimeError, match="measurement stopped"):
+            project.run(project.plan("example:all"), run_id=run_id)
+    else:
+        result = project.run(project.plan("example:all"), run_id=run_id)
+        stored = _read_run(project, "example:all", result.run_id)
+        assert stored.status == mode
+        assert stored.outcomes[1].result.artifacts[0].read_text() == "energy_j\n1e-12\n"
+        assert result.outcomes[0].result.artifacts == ()
+    root = _run_root(project, "example:all", run_id)
+    assert not list(root.rglob("*.vcd"))
+    assert not list(root.rglob("*.vcd.gz"))
+    assert not list(root.rglob("psf"))
+    manifest = json.loads((root / "manifest.json").read_text())
+    assert all("activity.vcd" not in entry["path"] for entries in manifest["files"].values() for entry in entries)
 
 
 def test_large_chain_execution_does_not_rescan_the_global_source_set(
@@ -1138,10 +1190,6 @@ def test_run_clean_never_follows_a_role_replaced_after_validation(
     def replace_after_validation(store, selected, manifest):
         records = original(store, selected, manifest)
         outputs = selected.paths.role("outputs")
-        outputs.chmod(0o700)
-        for child in outputs.rglob("*"):
-            if child.is_file():
-                child.chmod(0o600)
         for child in sorted(
             outputs.rglob("*"), key=lambda path: len(path.parts), reverse=True
         ):
@@ -1273,8 +1321,9 @@ def test_backend_consumes_the_sealed_source_not_the_live_owner_file(
 
     assert result.outcomes[0].result.artifacts[0].path.read_text() == "hello\n"
     sealed = _run_root(project, "example:check", result.run_id) / "inputs/sources/configs/value.txt"
-    assert sealed.stat().st_mode & 0o777 == 0o444
-    assert sealed.parent.stat().st_mode & 0o777 == 0o555
+    sealed.write_text("editable copy\n", encoding="utf-8")
+    assert live.read_text(encoding="utf-8") == "later\n"
+    shutil.rmtree(_run_root(project, "example:check", result.run_id))
 
 
 def test_sealed_input_mutation_is_uncertain_and_remains_readable(
@@ -1285,7 +1334,6 @@ def test_sealed_input_mutation_is_uncertain_and_remains_readable(
     class MutatingAdapter(CopyAdapter):
         def run(self, context: ExecutionIO) -> StepResult:
             sealed = context.source_path("configs/value.txt")
-            sealed.chmod(0o644)
             sealed.write_text("changed during execution\n", encoding="utf-8")
             raise RuntimeError("adapter failed after changing its input")
 
@@ -1447,7 +1495,6 @@ def test_binary_resource_is_sealed_without_text_decoding(tmp_path: Path) -> None
     next(
         resource for resource in plan_resources if resource["kind"] == "file"
     )["size"] += 1
-    plan_path.chmod(0o600)
     plan_path.write_text(json.dumps(plan_record), encoding="utf-8")
     with pytest.raises(RunStoreError, match="changed|digest|identity|metadata"):
         _read_run(project, "example:check", result.run_id)
@@ -1583,7 +1630,6 @@ def test_external_resource_reader_rejects_sealed_content_tampering(
             step = context.step
             sealed = context.resource_path(step.resources[0])
             metadata = sealed.stat()
-            sealed.chmod(0o600)
             sealed.write_text("forged model!\n", encoding="utf-8")
             with pytest.raises(ExecutionError, match="resource identity drift"):
                 context.resource_text(step.resources[0])
@@ -1592,7 +1638,6 @@ def test_external_resource_reader_rejects_sealed_content_tampering(
                 sealed,
                 ns=(metadata.st_atime_ns, metadata.st_mtime_ns),
             )
-            sealed.chmod(0o444)
             return StepResult.succeeded()
 
     project = _project(tmp_path, TamperingAdapter())
@@ -2180,7 +2225,6 @@ def test_closed_run_materialization_verifies_content_and_rejects_fake_signoff(tm
     with pytest.raises((ValueError, json.JSONDecodeError)):
         execution_from_run(materialization, selection)
     artifact, = materialization.artifacts(selection)
-    artifact.path.chmod(0o644)
     artifact.path.write_text("mutated")
     with pytest.raises((RuntimeError, ContractError), match="changed|digest|size|identity|content"):
         materialization.materialize(selection, tmp_path / "export/tampered.txt")

@@ -565,8 +565,6 @@ def _import_netlist(
                 + "\n"
             ).encode("utf-8")
         )
-        os.fchmod(owned_parameter.fd, 0o444)
-        os.fchmod(owned_staged_cds.fd, 0o444)
         pass_fds = [
             netlist_fd,
             owned_parameter.fd,

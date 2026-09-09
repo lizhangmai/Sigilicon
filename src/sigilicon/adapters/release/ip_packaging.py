@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
-import stat
 import uuid
 from typing import Any, Mapping
 
@@ -843,15 +842,6 @@ def _audit_loaded_ip_release(
         if parent != Path(".")
     }
     inventory = SafeTree(release_root).inventory()
-    writable = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
-    for relative, file in inventory.files.items():
-        if file.mode & writable:
-            raise RuntimeError(f"IP release file is writable: {relative}")
-    for relative, mode in inventory.directories.items():
-        if mode & writable:
-            raise RuntimeError(
-                f"IP release directory is writable: {relative}"
-            )
     if (
         set(inventory.files) != expected_files
         or set(inventory.directories) != expected_directories

@@ -67,7 +67,7 @@ def test_measurement_inputs_belong_to_the_selected_source_closure(
 
 
 @pytest.mark.parametrize("mode", ("pass", "fail", "exception"))
-def test_measurement_preserves_raw_outputs_before_owner_evaluation(tmp_path: Path, mode: str) -> None:
+def test_measurement_keeps_results_and_discards_waveforms(tmp_path: Path, mode: str) -> None:
     project = _measurement_project(tmp_path, mode)
     plan = project.plan("fixture:measure")
     result = project.run(plan)
@@ -76,9 +76,8 @@ def test_measurement_preserves_raw_outputs_before_owner_evaluation(tmp_path: Pat
         owner="fixture", operation="measure", variant=None, run_id=result.run_id,
     )
     assert stored.status == result.status
-    raw = next(artifact for outcome in result.outcomes for artifact in outcome.result.artifacts
-               if artifact.kind == "raw.cadence-spectre")
-    assert raw.path.read_text() == "raw waveform\n"
+    assert not list(result.run_root.rglob("*.prn"))
+    assert not list(result.run_root.rglob("waveforms.csv"))
     if mode != "exception":
         evidence = next(artifact for outcome in result.outcomes for artifact in outcome.result.artifacts
                         if artifact.kind == "evidence.measurement")

@@ -18,7 +18,6 @@ import sigilicon.domain.oa_library as oa_library_domain
 import sigilicon.adapters.release.ip_packaging as ip_packaging
 import sigilicon.adapters.release.ip_release_planning as ip_release_planning
 from sigilicon.adapters.release import source_control
-from sigilicon.artifacts import SafeTree
 from sigilicon.domain.ip_release import (
     MixedSignalIpInterface,
     CircuitIpInterface,
@@ -116,24 +115,6 @@ config = {{ owner = "{owner}", maturity = "development" }}
 ''',
         encoding="utf-8",
     )
-
-
-def test_readonly_release_tree_rejects_symlink_members(tmp_path: Path) -> None:
-    staging = tmp_path / "staging"
-    staging.mkdir()
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    outside.chmod(0o700)
-    (staging / "link").symlink_to(outside, target_is_directory=True)
-
-    try:
-        with pytest.raises(RuntimeError, match="symlinks"):
-            SafeTree(staging).make_readonly()
-        assert outside.stat().st_mode & 0o777 == 0o700
-    finally:
-        outside.chmod(0o700)
-        staging.chmod(0o700)
-        (staging / "link").unlink(missing_ok=True)
 
 
 def _contract_fixture(root: Path) -> Path:
@@ -976,7 +957,6 @@ def test_native_oa_package_rejects_digital_interface_sections(
     tampered_root = tmp_path / "tampered-native-release"
     shutil.copytree(manifest_path.parent, tampered_root)
     tampered_manifest = tampered_root / "manifest.json"
-    tampered_manifest.chmod(0o600)
     manifest = json.loads(tampered_manifest.read_text(encoding="utf-8"))
     interface_view = release_view(
         manifest,
@@ -984,7 +964,6 @@ def test_native_oa_package_rejects_digital_interface_sections(
         export="native-top",
     )
     interface_path = tampered_root / str(interface_view["path"])
-    interface_path.chmod(0o600)
     interface_path.write_text(
         interface_path.read_text(encoding="utf-8")
         + '''
@@ -1026,7 +1005,6 @@ def test_native_oa_package_rejects_missing_reachable_subcircuit(
     tampered_root = tmp_path / "tampered-native-hierarchy"
     shutil.copytree(manifest_path.parent, tampered_root)
     tampered_manifest = tampered_root / "manifest.json"
-    tampered_manifest.chmod(0o600)
     manifest = json.loads(tampered_manifest.read_text(encoding="utf-8"))
     circuit_view = release_view(
         manifest,
@@ -1034,7 +1012,6 @@ def test_native_oa_package_rejects_missing_reachable_subcircuit(
         export="native-top",
     )
     circuit_path = tampered_root / str(circuit_view["path"])
-    circuit_path.chmod(0o600)
     source = circuit_path.read_text(encoding="utf-8")
     source = source[: source.index("subckt NATIVE_CHILD")] + source[
         source.index("subckt NATIVE_TOP") :
@@ -1099,7 +1076,6 @@ def test_rtl_release_plans_and_audits_without_oa_sources(
         tampered_root = tmp_path / "tampered" / name
         shutil.copytree(manifest.parent, tampered_root)
         tampered_manifest = tampered_root / "manifest.json"
-        tampered_manifest.chmod(0o600)
         payload = json.loads(tampered_manifest.read_text(encoding="utf-8"))
         return tampered_manifest, payload
 
@@ -1239,7 +1215,6 @@ def test_package_audit_recomputes_capability_from_views(tmp_path: Path, monkeypa
     for view in manifest["views"]:
         if view["role"] == "rtl_source":
             view["capabilities"] = ["diagnostic"]
-    manifest_path.chmod(0o644)
     manifest_path.write_text(json.dumps(manifest))
     with pytest.raises(RuntimeError, match="availability"):
         ip_packaging.audit_ip_release_manifest(manifest_path)
@@ -1515,11 +1490,9 @@ def test_package_audit_rejects_conflicting_receipt_applicability(tmp_path: Path,
     path = manifest_path.parent / view["path"]
     receipt = json.loads(path.read_text())
     receipt["variant"] = view["variant"] = "nominal"
-    path.chmod(0o644)
     path.write_text(json.dumps(receipt))
     view["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
     view["size"] = path.stat().st_size
-    manifest_path.chmod(0o644)
     manifest_path.write_text(json.dumps(manifest))
     with pytest.raises(RuntimeError, match="applicability-conflict"):
         ip_packaging.audit_ip_release_manifest(manifest_path)
@@ -1564,11 +1537,9 @@ def test_package_audit_validates_receipt_content_bindings(tmp_path: Path, fault:
     path = manifest_path.parent / view["path"]
     receipt = json.loads(path.read_text())
     _damage_receipt(receipt, fault)
-    path.chmod(0o644)
     path.write_text(json.dumps(receipt))
     view["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
     view["size"] = path.stat().st_size
-    manifest_path.chmod(0o644)
     manifest_path.write_text(json.dumps(manifest))
     with pytest.raises(RuntimeError, match="qualified view semantics"):
         ip_packaging.audit_ip_release_manifest(manifest_path)
@@ -1713,7 +1684,6 @@ capabilities = ["synthesis", "physical_implementation", "circuit_simulation"]
             with pytest.raises(RuntimeError, match="missing or ambiguous"):
                 package.select("native-top", selector)
     artifact = package.view("native-top", "liberty-nominal-ss")
-    artifact.path.chmod(0o644)
     artifact.path.write_text("tampered\n")
     with pytest.raises(RuntimeError, match="content changed"):
         package.select("native-top", ViewSelector("raw_macro_liberty_or_db", "nominal", {"process": "ss"}))

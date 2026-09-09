@@ -114,7 +114,6 @@ def run_spectre_deck(
         ("spectre.scs",),
         render_deck(canonical_paths),
     )
-    canonical_deck.chmod(0o444)
     executable = resources.require_tool("cadence.spectre")
     work_dir = record.directory("work")
     completed = None
@@ -137,7 +136,6 @@ def run_spectre_deck(
             ("spectre.tool.scs",),
             render_deck(tool_paths),
         )
-        invocation_deck.chmod(0o444)
         with owned_input_file(invocation_deck) as owned_deck:
             command = (
                 *owned_spectre.command,

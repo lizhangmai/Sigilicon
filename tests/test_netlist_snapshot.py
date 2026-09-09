@@ -46,6 +46,22 @@ def test_materialized_snapshot_does_not_follow_existing_symlink(
     assert outside.read_text(encoding="utf-8") == "do-not-touch\n"
 
 
+def test_materialized_snapshot_is_writable_and_checks_content(tmp_path: Path) -> None:
+    source = _source(tmp_path / "source.scs")
+    snapshot = load_netlist_snapshot(source)
+    destination = tmp_path / "run" / "snapshot.scs"
+    artifact = materialize_netlist_snapshot(snapshot, destination)
+
+    assert artifact.verify() == destination
+    assert materialize_netlist_snapshot(snapshot, destination).path == destination
+    destination.write_text("changed copy\n", encoding="utf-8")
+    assert source.read_text(encoding="utf-8") == snapshot.text
+    with pytest.raises(RuntimeError, match="conflicting content"):
+        materialize_netlist_snapshot(snapshot, destination)
+    destination.unlink()
+    destination.parent.rmdir()
+
+
 def test_materialized_snapshot_detects_inode_replacement(tmp_path: Path) -> None:
     snapshot = load_netlist_snapshot(_source(tmp_path / "source.scs"))
     artifact = materialize_netlist_snapshot(

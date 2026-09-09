@@ -72,7 +72,7 @@ class SpectrePWLSource:
 
 @dataclass(frozen=True)
 class MaterializedNetlist:
-    """A nofollow artifact bound to one read-only regular-file inode."""
+    """A nofollow artifact bound to one regular-file inode."""
 
     path: Path
     device: int
@@ -120,10 +120,9 @@ class MaterializedNetlist:
             if (
                 not stat.S_ISREG(metadata.st_mode)
                 or metadata.st_nlink != 1
-                or metadata.st_mode & 0o222
             ):
                 raise RuntimeError(
-                    "immutable netlist artifact is not a read-only, single-link "
+                    "immutable netlist artifact is not a single-link "
                     f"regular file: {self.path}"
                 )
             visible = os.stat(
@@ -300,7 +299,7 @@ def materialize_netlist_snapshot(
     snapshot: NetlistSnapshot,
     destination: Path,
 ) -> MaterializedNetlist:
-    """Create or verify a read-only artifact containing the exact snapshot bytes."""
+    """Create or verify an artifact containing the exact snapshot bytes."""
 
     payload = snapshot.text.encode("utf-8")
     destination = Path(os.path.abspath(destination))
@@ -316,7 +315,7 @@ def materialize_netlist_snapshot(
                 | os.O_EXCL
                 | os.O_CLOEXEC
                 | os.O_NOFOLLOW,
-                0o444,
+                0o644,
                 dir_fd=parent_fd,
             )
             created = True
@@ -335,7 +334,6 @@ def materialize_netlist_snapshot(
                         f"could not write immutable netlist artifact: {destination}"
                     )
                 remaining = remaining[written:]
-            os.fchmod(descriptor, 0o444)
             os.fsync(descriptor)
             os.fsync(parent_fd)
         metadata = os.fstat(descriptor)
@@ -344,8 +342,6 @@ def materialize_netlist_snapshot(
                 f"immutable netlist artifact is not a single-link regular file: "
                 f"{destination}"
             )
-        if metadata.st_mode & 0o222:
-            raise RuntimeError(f"immutable netlist artifact is writable: {destination}")
         os.lseek(descriptor, 0, os.SEEK_SET)
         chunks: list[bytes] = []
         while chunk := os.read(descriptor, 1024 * 1024):

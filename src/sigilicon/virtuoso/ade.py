@@ -30,7 +30,6 @@ def _staged_native_setup_source(native_setup: Any) -> Iterator[Path]:
             (snapshot.source_path.name,),
             snapshot.text,
         ).resolve()
-        source.chmod(0o444)
         yield source
 
 

@@ -597,6 +597,7 @@ def test_native_setup_adapter_stages_the_snapshot_bytes(tmp_path: Path) -> None:
     with _staged_native_setup_source(native_setup) as staged:
         assert staged != source.resolve()
         assert staged.read_text(encoding="utf-8") == "; planned\n"
-        assert staged.stat().st_mode & 0o222 == 0
+        staged.write_text("; editable copy\n", encoding="utf-8")
+        assert source.read_text(encoding="utf-8") == "; drifted\n"
 
     assert not staged.exists()

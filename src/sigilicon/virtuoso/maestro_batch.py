@@ -343,7 +343,6 @@ def run_isolated_maestro(
             rdb_export=owned_rdb.child_path,
         )
         owned_control.write_bytes(control_script.encode("utf-8"))
-        os.fchmod(owned_control.fd, 0o444)
         with ExitStack() as cds_resources:
             canonical_cds, cds_resource_fds = _canonical_worker_cds_lib(
                 cds_source,
@@ -351,13 +350,12 @@ def run_isolated_maestro(
                 resources=cds_resources,
             )
             owned_canonical_cds.write_bytes(canonical_cds.encode("utf-8"))
-            os.fchmod(owned_canonical_cds.fd, 0o444)
             owned_canonical_cds.require_visible()
             with (
                 # Cadence propagates -cdslib to evaluator grandchildren.  A
                 # deleted memfd works for the first Virtuoso process but is
                 # not a reopenable CLA path there, so expose the exact
-                # read-only, watched artifact through its held directory.
+                # watched artifact through its held directory.
                 owned_input_file(owned_canonical_cds.path) as owned_worker_cds,
                 owned_sealed_input(
                     control_script.encode("utf-8"),

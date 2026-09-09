@@ -121,7 +121,7 @@ def validate_execution(record: Mapping) -> VerifiedExecution:
         inputs = identities(sources[path] for path in (action["circuit"], action["spec"], *action["inputs"]))
         coverage = frozenset(key for key, value in evidence["measurements"].get("criteria", {}).items() if value is True)
         outputs = identities(item for item in artifacts if item["step"] == reference.step
-                             and item["kind"] in {"raw.cadence-spectre", "table.measurement"})
+                             and item["kind"] in {"evidence.measurement", "table.measurement"})
         return VerifiedExecution("measurement", result["owner"], action["top"], plan["variant"],
                                  evidence["condition"], coverage, inputs, outputs)
     if adapter == "mentor.calibre":

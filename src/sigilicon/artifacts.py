@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import stat
 import threading
 import uuid
@@ -28,6 +29,20 @@ ARTIFACT_STATUSES = frozenset(
 )
 TERMINAL_STATUSES = ARTIFACT_STATUSES - {"running"}
 RUN_ROLES = frozenset({"inputs", "work", "outputs", "logs"})
+
+
+def is_waveform_path(path: Path) -> bool:
+    """Recognize generated waveform databases and sampled signal tables."""
+    suffixes = {".vcd", ".vpd", ".fsdb", ".shm", ".wdb", ".wlf", ".raw",
+                ".psf", ".psfxl", ".tran", ".tr0", ".ac0", ".sw0", ".saif", ".prn"}
+    names = {"psf", "psfbin", "psfascii", "psfxl", "waveforms.csv"}
+    for part in path.parts:
+        name = part.lower()
+        if Path(name).suffix in {".gz", ".bz2", ".xz", ".zst"}:
+            name = Path(name).stem
+        if name in names or Path(name).suffix in suffixes:
+            return True
+    return False
 
 
 class ArtifactManifestError(RuntimeError):
@@ -533,97 +548,6 @@ class SafeTree:
             MappingProxyType(files),
             MappingProxyType(directories),
         )
-
-    def make_readonly(self) -> None:
-        """Freeze every regular file and directory through held descriptors."""
-
-        root_fd = _open_nofollow_directory(self.root, create_missing=False)
-        expected_root = os.fstat(root_fd)
-
-        def freeze(directory_fd: int, prefix: Path) -> None:
-            for name in sorted(os.listdir(directory_fd)):
-                relative = prefix / name
-                visible = os.stat(
-                    name,
-                    dir_fd=directory_fd,
-                    follow_symlinks=False,
-                )
-                if stat.S_ISLNK(visible.st_mode):
-                    raise RuntimeError(
-                        f"safe tree cannot contain symlinks: {relative}"
-                    )
-                if stat.S_ISREG(visible.st_mode):
-                    descriptor = os.open(
-                        name,
-                        os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
-                        dir_fd=directory_fd,
-                    )
-                    try:
-                        held = os.fstat(descriptor)
-                        if not _same_inode(visible, held):
-                            raise RuntimeError(
-                                f"safe tree file changed while freezing: {relative}"
-                            )
-                        os.fchmod(
-                            descriptor,
-                            stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH,
-                        )
-                    finally:
-                        os.close(descriptor)
-                    continue
-                if not stat.S_ISDIR(visible.st_mode):
-                    raise RuntimeError(
-                        f"safe tree contains an unsupported entry: {relative}"
-                    )
-                child = os.open(
-                    name,
-                    os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
-                    dir_fd=directory_fd,
-                )
-                try:
-                    held = os.fstat(child)
-                    if not _same_inode(visible, held):
-                        raise RuntimeError(
-                            f"safe tree directory changed while freezing: {relative}"
-                        )
-                    freeze(child, relative)
-                    os.fchmod(
-                        child,
-                        stat.S_IRUSR
-                        | stat.S_IXUSR
-                        | stat.S_IRGRP
-                        | stat.S_IXGRP
-                        | stat.S_IROTH
-                        | stat.S_IXOTH,
-                    )
-                finally:
-                    os.close(child)
-            os.fsync(directory_fd)
-
-        try:
-            freeze(root_fd, Path())
-            os.fchmod(
-                root_fd,
-                stat.S_IRUSR
-                | stat.S_IXUSR
-                | stat.S_IRGRP
-                | stat.S_IXGRP
-                | stat.S_IROTH
-                | stat.S_IXOTH,
-            )
-            visible_fd = _open_nofollow_directory(
-                self.root,
-                create_missing=False,
-            )
-            try:
-                if not _same_inode(expected_root, os.fstat(visible_fd)):
-                    raise RuntimeError(
-                        f"safe tree root changed while freezing: {self.root}"
-                    )
-            finally:
-                os.close(visible_fd)
-        finally:
-            os.close(root_fd)
 
     def remove(self, expected: os.stat_result) -> None:
         """Remove the expected root through held parent/root descriptors."""
@@ -1269,6 +1193,46 @@ class RunRecord:
             else:
                 entries[index] = reference
             return reference
+
+    def discard_waveforms(self) -> set[Path]:
+        """Drop temporary waveforms after the run's consumers have finished."""
+        with self._lock:
+            self._require_running("discard temporary waveforms")
+            removed: set[Path] = set()
+            for role in ("outputs", "work"):
+                root = self.paths.role(role)
+                if root.is_symlink():
+                    raise RuntimeError(f"managed {role} root was replaced: {root}")
+                for directory, children, files in os.walk(root, followlinks=False):
+                    for name in [*children, *files]:
+                        path = Path(directory) / name
+                        relative = path.relative_to(self.paths.root)
+                        if not is_waveform_path(relative):
+                            continue
+                        if path.is_dir() and not path.is_symlink():
+                            shutil.rmtree(path)
+                        else:
+                            path.unlink()
+                        if name in children:
+                            children.remove(name)
+                        removed.add(relative)
+            for relative in tuple(removed):
+                parent = relative.parent
+                while len(parent.parts) > 1:
+                    path = self.paths.root / parent
+                    if not path.is_dir() or any(path.iterdir()):
+                        break
+                    path.rmdir()
+                    removed.add(parent)
+                    parent = parent.parent
+            for role, entries in self.manifest["files"].items():
+                retained = [entry for entry in entries
+                            if not any(Path(entry["path"]).is_relative_to(path) for path in removed)]
+                self.manifest["files"][role] = retained
+                self._file_indexes[role] = {entry["path"]: i for i, entry in enumerate(retained)}
+            self._file_states = {path: state for path, state in self._file_states.items()
+                                 if not any(Path(path).is_relative_to(item) for item in removed)}
+            return removed
 
     def _verify_registered_files(self) -> None:
         for entries in self.manifest["files"].values():

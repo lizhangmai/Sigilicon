@@ -66,7 +66,6 @@ class OaModelInputs:
                 tree = SafeTree(root)
                 if set(tree.inventory().files) != {item.relative for item in self.files}:
                     raise RuntimeError(f"OA model directory contains unplanned files: {root}")
-                tree.make_readonly()
                 held_library.require_visible()
         return root / self.entry
 

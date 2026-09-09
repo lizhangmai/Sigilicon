@@ -225,12 +225,10 @@ def import_oa_text_view(
         # Keep the planned bytes in a private named file, watched throughout
         # the invocation; an anonymous memfd cannot satisfy that protocol.
         staged_source.write_bytes(snapshot.text.encode("utf-8"))
-        os.fchmod(staged_source.fd, 0o444)
         owned_source = source_lifetime.enter_context(owned_input_file(staged_source.path))
         owned_cds_lib.write_bytes(
             f"DEFINE {library} {owned_library.child_path}\n".encode("utf-8")
         )
-        os.fchmod(owned_cds_lib.fd, 0o444)
         command = (
             *owned_launcher.command,
             "-CDSLIB",

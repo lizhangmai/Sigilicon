@@ -182,7 +182,6 @@ def native_outputs(monkeypatch):
             (root / "mapped.ddc").unlink()
             (root / "mapped.ddc").symlink_to(root / "scratch/undeclared.txt")
         if outputs["tamper"]:
-            rtl.chmod(0o600)
             rtl.write_text("modified during tool invocation\n")
         return ProcessResult(outputs["exit_code"], outputs["dc_log"], "")
 

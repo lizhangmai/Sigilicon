@@ -6,12 +6,13 @@ from collections.abc import Callable, Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 import hashlib
+import json
 import os
 from pathlib import Path, PurePosixPath
 import stat
 from typing import Any, Iterator
 
-from sigilicon.artifacts import RunRecord, SafeTree, new_identity, read_nofollow_text
+from sigilicon.artifacts import RunRecord, SafeTree, atomic_write_json, new_identity, read_nofollow_text
 from sigilicon.execution._result import Artifact, RunResult, StepOutcome, StepResult
 from sigilicon.execution._values import ContractError, ExecutionError
 from sigilicon.execution._plan import ExecutionPlan, PreflightCheck, PreflightResult, Step
@@ -102,6 +103,27 @@ def _held_step_inputs(
             raise InputIntegrityError(
                 "sealed adapter input changed during execution"
             ) from exc
+
+
+def _discard_waveforms(record: RunRecord, outcomes: list[StepOutcome]) -> None:
+    removed = record.discard_waveforms()
+    if not removed:
+        return
+    for index, outcome in enumerate(outcomes):
+        artifacts = tuple(artifact for artifact in outcome.result.artifacts
+                          if not any(artifact.path.relative_to(record.paths.root).is_relative_to(path)
+                                     for path in removed))
+        if artifacts == outcome.result.artifacts:
+            continue
+        outcomes[index] = replace(outcome, result=replace(outcome.result, artifacts=artifacts))
+        name = f"step-{outcome.step}-result.json"
+        value = json.loads(read_nofollow_text(record.paths.role("outputs") / name))
+        value["artifacts"] = [dict(role=artifact.role, kind=artifact.kind,
+                                   path=artifact.path.relative_to(record.paths.root).as_posix())
+                              for artifact in artifacts]
+        path = record.paths.role("outputs") / name
+        atomic_write_json(path, value)
+        record.add_file("outputs", path)
 
 
 def _refresh_failure_inventory(record: RunRecord, paths: RunPaths) -> None:
@@ -252,18 +274,8 @@ def _seal_sources(record: RunRecord, plan: ExecutionPlan) -> Path:
             expected_size=source.size,
             expected_sha256=source.sha256,
         )
-        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
-        try:
-            os.fchmod(descriptor, 0o555 if source.executable else 0o444)
-        finally:
-            os.close(descriptor)
-    for directory in sorted(
-        (path for path in root.rglob("*") if path.is_dir()),
-        key=lambda path: len(path.parts),
-        reverse=True,
-    ):
-        directory.chmod(0o555)
-    root.chmod(0o555)
+        if source.executable:
+            path.chmod(0o755)
     return root
 
 
@@ -289,7 +301,8 @@ def _seal_resources(record: RunRecord, plan: ExecutionPlan) -> Path | None:
                 expected_size=item.size,
                 expected_sha256=item.sha256,
             )
-            path.chmod(0o555 if item.executable else 0o444)
+            if item.executable:
+                path.chmod(0o755)
             continue
         resource_root = record.directory("inputs", *components)
         record.add_file("inputs", resource_root)
@@ -308,15 +321,8 @@ def _seal_resources(record: RunRecord, plan: ExecutionPlan) -> Path | None:
                 expected_size=item.size,
                 expected_sha256=item.sha256,
             )
-            path.chmod(0o555 if item.executable else 0o444)
-        for directory in sorted(
-            (path for path in resource_root.rglob("*") if path.is_dir()),
-            key=lambda path: len(path.parts),
-            reverse=True,
-        ):
-            directory.chmod(0o555)
-        resource_root.chmod(0o555)
-    root.chmod(0o555)
+            if item.executable:
+                path.chmod(0o755)
     return root
 
 
@@ -376,7 +382,10 @@ def _run(
             if outcomes
             else None
         ),
-        prepare_failure=lambda: _refresh_failure_inventory(record, paths),
+        prepare_failure=lambda: (
+            _discard_waveforms(record, outcomes),
+            _refresh_failure_inventory(record, paths),
+        ),
     ):
         record.bind_operation(operation_id)
         record.write_json("inputs", ("execution-plan.json",), plan.record)
@@ -554,6 +563,7 @@ def _run(
             )
             if progress is not None:
                 progress(step.id, result.status)
+        _discard_waveforms(record, outcomes)
         step_statuses = {outcome.result.status for outcome in outcomes}
         if step_statuses == {"succeeded"}:
             status = "succeeded"

@@ -285,7 +285,6 @@ class ReleaseStore:
                 try:
                     os.stat(target, dir_fd=held.fd, follow_symlinks=False)
                 except FileNotFoundError:
-                    SafeTree(temporary).make_readonly()
                     os.rename(temporary_name, target, src_dir_fd=held.fd, dst_dir_fd=held.fd)
                     installed = True
             finally:

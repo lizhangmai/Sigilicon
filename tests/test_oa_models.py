@@ -51,11 +51,9 @@ def test_oa_models_reject_stale_or_modified_inputs(tmp_path, fault):
     library.mkdir(parents=True)
     model = models.install(library)
     support = model.parent / "devices/core.scs"
-    support.parent.chmod(0o755)
     if fault == "missing":
         support.unlink()
     elif fault == "changed":
-        support.chmod(0o644)
         support.write_text("// another device model\n")
     elif fault == "symlink":
         support.unlink()
@@ -76,7 +74,6 @@ def test_oa_models_detect_changes_during_simulation(tmp_path):
     model = models.install(library)
     with pytest.raises(RuntimeError, match="changed|modified"):
         with models.verify(library, [{"file": str(model), "section": "top_tt"}]):
-            model.chmod(0o644)
             model.write_text("// changed while simulator was reading\n")
 
 
