@@ -144,8 +144,7 @@ config = {{ hdl = {{top = "testbench", sources = [{{component = "example", sourc
     if output_mode in {"missing", "symlink"}:
         return
     if output_mode == "capture":
-        output = next(artifact for artifact in result.outcomes[0].result.artifacts if artifact.kind == "data.cadence-xcelium")
-        assert output.read_text() == "activity evidence\n"
+        assert not list(result.run_root.rglob("activity.vcd"))
     assert {artifact.kind for artifact in result.outcomes[0].result.artifacts} >= {"summary.cadence-xcelium"}
 
 

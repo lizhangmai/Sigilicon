@@ -132,3 +132,33 @@ def test_owner_measurement_can_supply_a_bound_qualification_claim(tmp_path: Path
     assert claim.subject == 'fixture'
     assert claim.condition == {'corner': 'tt'}
     assert claim.inputs and claim.outputs
+
+
+def test_measurement_consumes_typed_artifacts_and_runtime_files(tmp_path: Path) -> None:
+    _measurement_project(tmp_path, 'pass')
+    owner = tmp_path / 'ip/fixture'
+    program = owner / 'measure.py'
+    program.write_text(program.read_text().replace('def measurement(request):', '''def measurement(request):
+    import json
+    from pathlib import Path
+    if request['artifacts']:
+        previous = json.loads(Path(request['artifacts']['previous.json']).read_text())
+        assert previous['measurements']['samples'] == 1
+        assert Path(request['files']['CELL']).read_text() == '// standard cells\\n'
+'''))
+    catalog = owner / 'operations.toml'
+    source = catalog.read_text()
+    header, operation = source.split('[operations.measure]\n')
+    second = operation.replace('config = {', 'runtime = "circuit"\nconfig = { artifacts = { "previous.json" = { step = "first", role = "measurement", kind = "evidence.measurement", path = "measurements.json" } },', 1)
+    catalog.write_text(header + '[runtime.circuit.files]\nCELL = "fixture.cells"\n' +
+                       '[[operations.measure.steps]]\nid = "first"\n' + operation +
+                       '[[operations.measure.steps]]\nid = "second"\nneeds = ["first"]\n' + second)
+    cell = write_file(tmp_path / 'cells.spi', '// standard cells\n')
+    with (tmp_path / 'sigilicon.toml').open('a') as stream:
+        stream.write(f'\n[runtime.files]\n"fixture.cells" = "{cell}"\n')
+    project = Project.open(tmp_path)
+    result = project.run(project.plan('fixture:measure'))
+    assert result.status == 'succeeded'
+    measurements = [a for out in result.outcomes for a in out.result.artifacts if a.kind == 'evidence.measurement']
+    assert len(measurements) == 2
+    assert all(json.loads(a.path.read_text())['measurements']['samples'] == 1 for a in measurements)

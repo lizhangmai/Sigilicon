@@ -17,6 +17,7 @@ from sigilicon.adapters.cadence.spectre import run_spectre_deck
 from sigilicon.contracts import freeze_toml_document, require_strings, thaw_toml_document
 from sigilicon.domain.platform import load_platform, model_resource_identities
 from sigilicon.execution import AdapterPreparation
+from sigilicon.execution.artifact_reference import ArtifactReference
 from sigilicon.execution._result import Artifact, StepResult
 from sigilicon.execution._values import ContractError
 from sigilicon.execution._io import ExecutionIO
@@ -37,6 +38,7 @@ class MeasurementAction:
     spec: str
     circuit: str
     inputs: tuple[str, ...]
+    artifacts: tuple[tuple[str, ArtifactReference], ...]
     platform: str
     parameters: Mapping[str, object]
     models: tuple[tuple[str, str], ...]
@@ -50,6 +52,7 @@ class MeasurementAction:
             "top": self.top, "program": self.program,
             "spec": self.spec, "circuit": self.circuit,
             "inputs": list(self.inputs), "platform": self.platform,
+            "artifacts": {name: ref.record for name, ref in self.artifacts},
             "parameters": thaw_toml_document(self.parameters),
             "models": [list(row) for row in self.models], "sections": list(self.sections),
             "timeout_seconds": self.timeout_seconds,
@@ -60,7 +63,7 @@ def measurement_configuration(step: Step):
     config = _strict_config(step, frozenset({
         "owner", "program", "spec", "circuit", "inputs", "platform",
         "model_set", "parameters", "timeout_seconds", "top",
-    }))
+    }), optional=frozenset({"artifacts"}))
     selected = {}
     for field in ("program", "spec", "circuit"):
         value = _relative(_text(config, field), field)
@@ -73,6 +76,18 @@ def measurement_configuration(step: Step):
     )
     if any(value not in step.sources for value in inputs):
         raise ContractError("measurement inputs must select sources from the step filesets")
+    artifacts = config.get("artifacts", {})
+    if not isinstance(artifacts, Mapping):
+        raise ContractError("measurement artifacts must map names to artifact references")
+    references = []
+    for name, raw in artifacts.items():
+        _relative(name, "measurement artifact name")
+        ref = ArtifactReference.from_record(raw)
+        if ref.cardinality != "one":
+            raise ContractError("named measurement artifacts require cardinality one")
+        references.append((name, ref))
+    if step.runtime.tools or step.runtime.directories:
+        raise ContractError("cadence.spectre runtime profiles support files and values only")
     parameters = config.get("parameters", {})
     if not isinstance(parameters, Mapping):
         raise ContractError("measurement parameters must be a table")
@@ -81,11 +96,11 @@ def measurement_configuration(step: Step):
     _text(config, "platform")
     _text(config, "model_set")
     _positive_integer(config, "timeout_seconds")
-    return config, selected, inputs, parameters
+    return config, selected, inputs, parameters, tuple(references)
 
 
 def prepare_measurement(project: Project, step: Step, resources: Resources) -> AdapterPreparation:
-    config, selected, inputs, parameters = measurement_configuration(step)
+    config, selected, inputs, parameters, artifacts = measurement_configuration(step)
     platform = load_platform(
         project,
         _text(config, "owner"),
@@ -104,7 +119,7 @@ def prepare_measurement(project: Project, step: Step, resources: Resources) -> A
                          for asset, relative in models.members)
     action = MeasurementAction(
         owner=_text(config, "owner"), top=_text(config, "top"),
-        **selected, inputs=inputs, platform=_text(config, "platform"),
+        **selected, inputs=inputs, artifacts=artifacts, platform=_text(config, "platform"),
         parameters=freeze_toml_document(parameters), models=model_inputs,
         sections=tuple(models.sections), timeout_seconds=_positive_integer(config, "timeout_seconds"),
     )
@@ -156,6 +171,11 @@ def run_measurement(context: ExecutionIO) -> StepResult:
     context.step.validate_action()
     workspace = context.workspace("spectre", action.record)
     artifacts: list[Artifact] = []
+    artifact_paths = {}
+    for name, reference in action.artifacts:
+        destination = context.work_directory / "artifacts" / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        artifact_paths[name] = str(context.materialize_artifact(reference, destination))
     request = {
         "spec": context.source_text(action.spec),
         "spec_path": action.spec,
@@ -165,6 +185,11 @@ def run_measurement(context: ExecutionIO) -> StepResult:
         "platform": action.platform,
         "parameters": thaw_toml_document(action.parameters),
         "sections": list(action.sections),
+        "artifacts": artifact_paths,
+        "files": {alias: str(context.resource_path(identity))
+                  for alias, identity in context.step.runtime.files.items()},
+        "values": {alias: context.runtime.require_value(identity)
+                   for alias, identity in context.step.runtime.values.items()},
     }
     try:
         generation = _invoke(context, action, {**request, "phase": "render"})
@@ -188,6 +213,11 @@ def run_measurement(context: ExecutionIO) -> StepResult:
             staged["model" if index == 0 else f"support_{index}"] = workspace.copy_file(
                 "inputs", ("models", *relative.parts), context.resource_path(identity),
             )
+        if context.step.runtime.files:
+            workspace.directory("inputs", "runtime")
+        for alias, identity in context.step.runtime.files.items():
+            staged[f"file:{alias}"] = workspace.copy_file(
+                "inputs", ("runtime", alias), context.resource_path(identity))
         def render(paths: Mapping[str, str]) -> str:
             value = template
             for key, path in paths.items():
